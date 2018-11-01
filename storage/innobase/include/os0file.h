@@ -550,11 +550,16 @@ public:
 		compression algorithm != NONE. Ignored if not set */
 		PUNCH_HOLE = 256,
 
+#if defined(UNIV_PMEMOBJ_BUF)
+		NO_COMPRESSION = 512,
+		PM_WRITE  = 1024
+#else
 		/** Force raw read, do not try to compress/decompress.
 		This can be used to force a read and write without any
 		compression e.g., for redo log, merge sort temporary files
 		and the truncate redo log. */
 		NO_COMPRESSION = 512
+#endif
 	};
 
 	/** Default constructor */
@@ -608,9 +613,19 @@ public:
 	bool is_write() const
 		MY_ATTRIBUTE((warn_unused_result))
 	{
+#if defined (UNIV_PMEMOBJ_BUF)
+		return((m_type & WRITE) == WRITE || is_pm_write());
+#else
 		return((m_type & WRITE) == WRITE);
+#endif
 	}
-
+#if defined (UNIV_PMEMOBJ_BUF)
+	bool is_pm_write() const
+		MY_ATTRIBUTE((warn_unused_result))
+	{
+		return((m_type & PM_WRITE) == PM_WRITE);
+	}
+#endif
 	/** @return true if it is a redo log write */
 	bool is_log() const
 		MY_ATTRIBUTE((warn_unused_result))
@@ -1226,6 +1241,12 @@ The wrapper functions have the prefix of "innodb_". */
 			n, read_only, message1, message2,		\
 			__FILE__, __LINE__)
 
+#if defined (UNIV_PMEMOBJ_BUF)
+# define os_aio_batch(param, n)			\
+	pfs_os_aio_batch_func( params , n,	\
+			__FILE__, __LINE__)
+#endif
+
 # define os_file_read_pfs(type, file, buf, offset, n)			\
 	pfs_os_file_read_func(type, file, buf, offset, n, __FILE__, __LINE__)
 
@@ -1481,6 +1502,49 @@ pfs_os_aio_func(
 	const char*	src_file,
 	ulint		src_line);
 
+#if defined (UNIV_PMEMOBJ_BUF)  
+struct __pmem_aio_param;
+typedef struct __pmem_aio_param PMEM_AIO_PARAM;
+struct __pmem_aio_param_arr;
+typedef struct __pmem_aio_param_arr PMEM_AIO_PARAM_ARRAY;
+
+struct __pmem_aio_param {
+	const char*			name;
+	pfs_os_file_t		file;	
+	void*				buf;
+	os_offset_t			offset;
+	ulint				n;	
+	fil_node_t*			m1;
+	void*				m2;
+};
+struct __pmem_aio_param_arr {
+	bool	is_free;
+	PMEM_AIO_PARAM* params;
+};
+
+UNIV_INLINE
+dberr_t
+pfs_os_aio_batch_func(
+		PMEM_AIO_PARAM* params,
+		uint64_t n,
+		const char* src_file,
+		ulint		src_line
+		);
+//pfs_os_aio_batch_func(
+//	IORequest&	type,
+//	ulint		mode,
+//	const char*	name,
+//	pfs_os_file_t	file,
+//	void*		buf,
+//	os_offset_t	offset,
+//	ulint		n,
+//	bool		read_only,
+//	fil_node_t*	m1,
+//	void*		m2,
+//	const char*	src_file,
+//	ulint		src_line);
+
+#endif
 /** NOTE! Please use the corresponding macro os_file_write(), not directly
 this function!
 This is the performance schema instrumented wrapper function for
@@ -1632,6 +1696,13 @@ to original un-instrumented file I/O APIs */
 		n, read_only, message1, message2)			\
 	os_aio_func(type, mode, name, file, buf, offset,		\
 		n, read_only, message1, message2)
+
+#if defined (UNIV_PMEMOBJ_BUF) 
+# define os_aio_batch(type, mode, name, file, buf, offset,			\
+		n, read_only, message1, message2)			\
+	os_aio_batch_func(type, mode, name, file, buf, offset,		\
+		n, read_only, message1, message2) 
+#endif
 
 # define os_file_read_pfs(type, file, buf, offset, n)			\
 	os_file_read_func(type, file, buf, offset, n)
@@ -1954,6 +2025,26 @@ os_aio_func(
 	bool		read_only,
 	fil_node_t*	m1,
 	void*		m2);
+
+#if defined(UNIV_PMEMOBJ_BUF)
+
+dberr_t
+os_aio_batch_func(
+		PMEM_AIO_PARAM* params,
+		uint64_t n_params
+		);
+
+	//IORequest&	type,
+	//ulint		mode,
+	//const char*	name,
+	//pfs_os_file_t	file,
+	//void*		buf,
+	//os_offset_t	offset,
+	//ulint		n,
+	//bool		read_only,
+	//fil_node_t*	m1,
+	//void*		m2);
+#endif
 
 /** Wakes up all async i/o threads so that they know to exit themselves in
 shutdown. */

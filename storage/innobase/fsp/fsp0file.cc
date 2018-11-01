@@ -36,6 +36,10 @@ Created 2013-7-26 by Kevin Lewis
 #include "my_sys.h"
 #endif /* UNIV_HOTBACKUP */
 
+#if defined (UNIV_PMEMOBJ_BUF)
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
+#endif //UNIV_PMEMOBJ_BUF
 /** Initialize the name, size and order of this datafile
 @param[in]	name	tablespace name, will be copied
 @param[in]	flags	tablespace flags */
@@ -333,9 +337,33 @@ Datafile::read_first_page(bool read_only_mode)
 	while (page_size >= UNIV_PAGE_SIZE_MIN) {
 
 		ulint	n_read = 0;
+// Testing this
+#if defined (UNIV_PMEMOBJ_BUF_RECOVERY)
+		//printf("===> PMEM_INFO read page 0 of file %s handle %d \n", m_filepath, m_handle.m_file);
+		 const PMEM_BUF_BLOCK* pblock =  pm_buf_read_page_zero(gb_pmw->pop, gb_pmw->pbuf,
+				 m_filepath, m_first_page);
 
+//#if defined (UNIV_PMEMOBJ_BUF_APPEND)
+//		 const PMEM_BUF_BLOCK* pblock =  pm_buf_read_lasted(gb_pmw->pop, gb_pmw->pbuf,
+//				 page_id_t(0,0), page_size_t(UNIV_PAGE_SIZE, UNIV_PAGE_SIZE, false), m_first_page, true);
+//#else
+//		 const PMEM_BUF_BLOCK* pblock =  pm_buf_read(gb_pmw->pop, gb_pmw->pbuf,
+//				 page_id_t(0,0), page_size_t(UNIV_PAGE_SIZE, UNIV_PAGE_SIZE, false), m_first_page, true);
+//#endif
+		 //if (read_bytes > 0) {
+		 if (pblock) {
+			 err = DB_SUCCESS;
+			 n_read = page_size;
+		 }
+		 else {
+			 //read from disk
+			 err = os_file_read_no_error_handling(
+					 request, m_handle, m_first_page, 0, page_size, &n_read);
+		 }
+#else //UNIV_PMEMOBJ_BUF
 		err = os_file_read_no_error_handling(
 			request, m_handle, m_first_page, 0, page_size, &n_read);
+#endif
 
 		if (err == DB_IO_ERROR && n_read >= UNIV_PAGE_SIZE_MIN) {
 

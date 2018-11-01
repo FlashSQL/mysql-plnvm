@@ -1227,7 +1227,38 @@ fil_io(
 	ulint			len,
 	void*			buf,
 	void*			message);
+#if defined (UNIV_PMEMOBJ_BUF)
+dberr_t
+pm_fil_io_batch(
+		const IORequest&	type,
+		void*				pop_in,
+		void*				pmem_buf_in,
+		void*				plist_in);
 
+void
+pm_buf_flush_spaces_in_list(
+		void* pop_in,
+	   	void* buf_in,
+	   	void* flush_list_in);
+#if defined (UNIV_PMEMOBJ_LSB)
+dberr_t
+pm_lsb_fil_io_batch(
+		const IORequest&	type,
+		void*				pop_in,
+		void*				pmem_lsb_in,
+		void*				pbucket_in);
+void
+pm_lsb_flush_spaces_in_list(
+		void* pop_in,
+	   	void* lsb_in,
+	   	void* flush_list_in);
+#endif //UNIV_PMEMOBJ_LSB
+
+//This function support to get the file handle from space
+fil_node_t* 
+pm_get_node_from_space(uint32_t space_no);
+
+#endif
 /**********************************************************************//**
 Waits for an aio operation to complete. This function is used to write the
 handler for completed requests. The aio array of pending requests is divided

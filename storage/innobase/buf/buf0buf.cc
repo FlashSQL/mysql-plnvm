@@ -4194,9 +4194,12 @@ loop:
 		}
 
 		if (buf_read_page(page_id, page_size)) {
+#if defined(UNIV_PMEMOBJ_BUF)
+			//for pmem buf, we don't need to read-ahead
+#else //original
 			buf_read_ahead_random(page_id, page_size,
 					      ibuf_inside(mtr));
-
+#endif /* UNIV_PMEMOBJ_BUF */
 			retries = 0;
 		} else if (retries < BUF_PAGE_READ_MAX_RETRIES) {
 			++retries;
@@ -5138,13 +5141,17 @@ buf_page_init_for_read(
 	} else {
 		ut_ad(mode == BUF_READ_ANY_PAGE);
 	}
-
 	if (page_size.is_compressed() && !unzip && !recv_recovery_is_on()) {
 		block = NULL;
 	} else {
+		//tdnguyen test
+		//printf ("\n[begin buf_LRU_get_free_block");
+
 		block = buf_LRU_get_free_block(buf_pool);
+		//printf ("  end  buf_LRU_get_free_block]");
 		ut_ad(block);
 		ut_ad(buf_pool_from_block(block) == buf_pool);
+
 	}
 
 	buf_pool_mutex_enter(buf_pool);
@@ -5166,7 +5173,6 @@ buf_page_init_for_read(
 		bpage = NULL;
 		goto func_exit;
 	}
-
 	if (block) {
 		bpage = &block->page;
 
@@ -5709,6 +5715,9 @@ buf_page_io_complete(
 				"the page, read in are "
 				<< page_id_t(read_space_id, read_page_no)
 				<< ", should be " << bpage->id;
+#if defined (UNIV_PMEMOBJ_BUF)
+			return 0;
+#endif
 		}
 
 		compressed_page = Compression::is_compressed_page(frame);

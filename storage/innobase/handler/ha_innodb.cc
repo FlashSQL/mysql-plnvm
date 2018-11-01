@@ -400,6 +400,10 @@ static PSI_mutex_info all_innodb_mutexes[] = {
 	PSI_KEY(log_cmdq_mutex),
 	PSI_KEY(mutex_list_mutex),
 	PSI_KEY(page_cleaner_mutex),
+#if defined (UNIV_PMEMOBJ_BUF)
+	PSI_KEY(pm_list_cleaner_mutex),
+	PSI_KEY(pm_flusher_mutex),
+#endif
 	PSI_KEY(page_zip_stat_per_index_mutex),
 	PSI_KEY(purge_sys_pq_mutex),
 	PSI_KEY(recv_sys_mutex),
@@ -483,6 +487,10 @@ static PSI_thread_info	all_innodb_threads[] = {
 	PSI_KEY(io_read_thread),
 	PSI_KEY(io_write_thread),
 	PSI_KEY(page_cleaner_thread),
+#if defined (UNIV_PMEMOBJ_BUF)
+	PSI_KEY(pm_list_cleaner_thread),
+	PSI_KEY(pm_flusher_thread),
+#endif
 	PSI_KEY(recv_writer_thread),
 	PSI_KEY(srv_error_monitor_thread),
 	PSI_KEY(srv_lock_timeout_thread),
@@ -3693,7 +3701,49 @@ innobase_init(
 	/* -------------- All log files ---------------------------*/
 
 	/* The default dir for log files is the datadir of MySQL */
-
+#if defined(UNIV_AIO_IMPROVE)
+	if (!srv_aio_n_slots_per_seg) {
+		srv_aio_n_slots_per_seg = 256;
+	}
+#endif
+#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	if (!srv_pmem_home_dir) {
+		srv_pmem_home_dir = (char*) "/mnt/pmem1";
+	}
+	if (!srv_pmem_pool_size) {
+		srv_pmem_pool_size = 8 * 1024; //8 GB
+	}
+#endif
+#if defined(UNIV_PMEMOBJ_BUF) 
+	if (!srv_pmem_buf_bucket_size) {
+		srv_pmem_buf_bucket_size = 256;
+	}
+	if (!srv_pmem_buf_size) {
+		srv_pmem_buf_size = 4 * 1024 ; //4 GB
+	}
+	if (!srv_pmem_buf_n_buckets) {
+		srv_pmem_buf_n_buckets = 128;
+	}
+	if (!srv_pmem_buf_flush_pct) {
+		srv_pmem_buf_flush_pct = 0.9; 
+	}
+#endif 
+#if defined (UNIV_PMEMOBJ_BUF_FLUSHER)
+	if (!srv_pmem_n_flush_threads) {
+		srv_pmem_n_flush_threads = 8;
+	}
+	if (!srv_pmem_flush_threshold) {
+		srv_pmem_flush_threshold = srv_pmem_n_flush_threads - 2;
+	}
+#endif 
+#if defined (UNIV_PMEMOBJ_BUF_PARTITION)
+	if (!srv_pmem_n_space_bits) {
+		srv_pmem_n_space_bits = 5;
+	}
+	if (!srv_pmem_page_per_bucket_bits) {
+		srv_pmem_page_per_bucket_bits = 8;
+	}
+#endif 
 	if (!srv_log_group_home_dir) {
 		srv_log_group_home_dir = default_path;
 	}
@@ -4401,7 +4451,17 @@ innobase_commit(
 
 		/* Now do a write + flush of logs. */
 		if (!read_only) {
+#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+			/*Set this flag to true make the trx_commit_complete_for_mysql() do nothing
+			//Since the log buffer now is in NVDIMM, we can safely skip writting
+			//and flushing log records when the transaction commit
+			//the background thread will do the work
+			*/
+			trx->flush_log_later = true;
+			//Do nothing now
+#else //original
 			trx_commit_complete_for_mysql(trx);
+#endif /*UNIV_PMEMOBJ_LOG */
 		}
 
 	} else {
@@ -19435,6 +19495,63 @@ static MYSQL_SYSVAR_BOOL(locks_unsafe_for_binlog, innobase_locks_unsafe_for_binl
   " Force InnoDB to not use next-key locking, to use only row-level locking.",
   NULL, NULL, FALSE);
 
+#if defined(UNIV_AIO_IMPROVE)
+static MYSQL_SYSVAR_ULONG(aio_n_slots_per_seg, srv_aio_n_slots_per_seg,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Max number of slots per segment in AIO, from 1 to 65536, default is 256.",
+  NULL, NULL, 256, 1, 65536, 0);
+#endif 
+#if defined(UNIV_PMEMOBJ_BUF)
+static MYSQL_SYSVAR_ULONG(pmem_buf_bucket_size, srv_pmem_buf_bucket_size,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Size of buckets (number of pages), from 1 to 65536, default is 256.",
+  NULL, NULL, 256, 1, 65536, 0);
+#endif 
+#if defined(UNIV_PMEMOBJ_BUF_FLUSHER)
+static MYSQL_SYSVAR_ULONG(pmem_n_flush_threads, srv_pmem_n_flush_threads,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Number of threads in flusher, from 1 to 64, default is 8.",
+  NULL, NULL, 8, 1, 64, 0);
+
+static MYSQL_SYSVAR_ULONG(pmem_flush_threshold, srv_pmem_flush_threshold,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "If the pointer assign in thread flusher larger than this threshold. The batch flush is trigger, from 1 to 64, default is number of flusher threads - 2.",
+  NULL, NULL, 6, 1, 64, 0);
+
+#endif
+
+#if defined (UNIV_PMEMOBJ_BUF_PARTITION)
+static MYSQL_SYSVAR_ULONG(pmem_n_space_bits, srv_pmem_n_space_bits,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Number of bits present a page_no in partition algorithm, from 1 to 32 (space_no is 4-bytes number), default is 5.",
+  NULL, NULL, 5, 1, 32,0);
+static MYSQL_SYSVAR_ULONG(pmem_page_per_bucket_bits, srv_pmem_page_per_bucket_bits,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Number of bits present the maxmum number of pages per space in a bucket in partition algorithm, from 1 to log2(srv_pmem_buf_bucket_size), default is 10.",
+  NULL, NULL, 10, 1, 32, 0);
+#endif 
+#if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+static MYSQL_SYSVAR_STR(pmem_home_dir, srv_pmem_home_dir,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Path to PMEM home dir.", NULL, NULL, NULL);
+static MYSQL_SYSVAR_ULONG(pmem_pool_size, srv_pmem_pool_size,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "PMEMobjpool size, from 1GB to 16GB, default 8GB.",
+  NULL, NULL, 8*1024, 1024, 16*1024,0);
+static MYSQL_SYSVAR_ULONG(pmem_buf_size, srv_pmem_buf_size,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "PMEM BUFFER SIZE from 1MB to 16GB, default is 4GB.",
+  NULL, NULL, 4*1024, 1, 16*1024,0);
+static MYSQL_SYSVAR_ULONG(pmem_buf_n_buckets, srv_pmem_buf_n_buckets,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Number of buckets in the partition, from 1 to 1024*1024, default is 128.",
+  NULL, NULL, 128, 1, 1024*1024,0);
+static MYSQL_SYSVAR_DOUBLE(pmem_buf_flush_pct, srv_pmem_buf_flush_pct,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Threshold to flush a sub-list, from 0.1 to 1, default is 0.9",
+  NULL, NULL, 0.9, 0.1, 1,0);
+#endif
+
 static MYSQL_SYSVAR_STR(log_group_home_dir, srv_log_group_home_dir,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
   "Path to InnoDB log files.", NULL, NULL, NULL);
@@ -20242,6 +20359,27 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(log_file_size),
   MYSQL_SYSVAR(log_files_in_group),
   MYSQL_SYSVAR(log_write_ahead_size),
+#if defined(UNIV_AIO_IMPROVE)
+  MYSQL_SYSVAR(aio_n_slots_per_seg),
+#endif
+#if defined (UNIV_PMEMOBJ_BUF)
+  MYSQL_SYSVAR(pmem_buf_bucket_size),
+#endif
+#if defined (UNIV_PMEMOBJ_BUF_FLUSHER)
+  MYSQL_SYSVAR(pmem_n_flush_threads),
+  MYSQL_SYSVAR(pmem_flush_threshold),
+#endif 
+#if defined (UNIV_PMEMOBJ_BUF_PARTITION)
+  MYSQL_SYSVAR(pmem_n_space_bits),
+  MYSQL_SYSVAR(pmem_page_per_bucket_bits),
+#endif
+#if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+  MYSQL_SYSVAR(pmem_home_dir),
+  MYSQL_SYSVAR(pmem_pool_size),
+  MYSQL_SYSVAR(pmem_buf_size),
+  MYSQL_SYSVAR(pmem_buf_n_buckets),
+  MYSQL_SYSVAR(pmem_buf_flush_pct),
+#endif
   MYSQL_SYSVAR(log_group_home_dir),
   MYSQL_SYSVAR(log_compressed_pages),
   MYSQL_SYSVAR(max_dirty_pages_pct),

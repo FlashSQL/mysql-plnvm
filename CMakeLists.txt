@@ -13,6 +13,12 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
 
+#tdnguyen added
+#SET (NVM_LIBS mytest)
+SET (NVM_LIB_PMEM pmem)
+SET (NVM_LIB_PMEMOBJ pmemobj)
+#end tdnguyen added
+
 IF(WIN32)
   # CMake 2.8.12 is needed for Visual Studio 2013
   CMAKE_MINIMUM_REQUIRED(VERSION 2.8.12)

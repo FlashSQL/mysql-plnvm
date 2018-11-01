@@ -109,6 +109,19 @@ Created 2/16/1996 Heikki Tuuri
 extern bool srv_lzo_disabled;
 #endif /* HAVE_LZO1X */
 
+#ifdef UNIV_NVM_LOG
+//tdnguyen
+#include <libpmem.h>
+//#include <libmytest.h>
+#include "pmem_log.h"
+#endif
+
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined(UNIV_PMEMOBJ_WAL)
+#include <libpmem.h>
+#include <libpmemobj.h>
+#include "my_pmemobj.h"
+#endif //UNIV_PMEMOBJ_LOG
+
 /** Log sequence number immediately after startup */
 lsn_t	srv_start_lsn;
 /** Log sequence number at shutdown */
@@ -160,6 +173,21 @@ enum srv_shutdown_t	srv_shutdown_state = SRV_SHUTDOWN_NONE;
 /** Files comprising the system tablespace */
 static pfs_os_file_t	files[1000];
 
+#if defined (UNIV_TRACE_FLUSH_TIME)
+ulint gb_flush_time = 0;
+FILE* gb_trace_file = fopen("trace_flush.txt","a");
+#endif 
+#ifdef UNIV_NVM_LOG
+//tdnguyen
+/** global PMEM_FILE_COLL object*/
+PMEM_FILE_COLL* gb_pfc;
+#endif
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL)
+/*global PMEMobjpool*/
+char  PMEM_FILE_PATH [PMEM_MAX_FILE_NAME_LENGTH];
+extern PMEM_WRAPPER* gb_pmw;
+pfs_os_file_t gb_dbw_file;
+#endif //UNIV_PMEMOBJ_LOG
 /** io_handler_thread parameters for thread identification */
 static ulint		n[SRV_MAX_N_IO_THREADS + 6];
 /** io_handler_thread identifiers, 32 is the maximum number of purge threads  */
@@ -344,7 +372,6 @@ create_log_file(
 		ib::error() << "Cannot create " << name;
 		return(DB_ERROR);
 	}
-
 	ib::info() << "Setting log file " << name << " size to "
 		<< (srv_log_file_size >> (20 - UNIV_PAGE_SIZE_SHIFT))
 		<< " MB";
@@ -542,7 +569,10 @@ open_log_file(
 	}
 
 	*size = os_file_get_size(*file);
-
+#ifdef UNIV_NVM_LOG_DEBUG
+	//tdnguyen
+	printf("open log file %s\n", name);
+#endif 
 	ret = os_file_close(*file);
 	ut_a(ret);
 	return(DB_SUCCESS);
@@ -1287,6 +1317,9 @@ srv_shutdown_all_bg_threads()
 			}
 
 			os_event_set(buf_flush_event);
+#if defined (UNIV_PMEMOBJ_BUF)
+//			os_event_set(pm_buf_flush_event);
+#endif
 
 			if (!buf_page_cleaner_is_active
 			    && os_aio_all_slots_free()) {
@@ -1712,6 +1745,60 @@ innobase_start_or_create_for_mysql(void)
 		srv_n_page_cleaners = srv_buf_pool_instances;
 	}
 
+#ifdef UNIV_NVM_LOG
+//tdnguyen
+	ib::info() << "Hello NVM Log from VLDB lab ========\n";
+	gb_pfc = pfc_new(srv_log_file_size);
+#endif
+#if defined (UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL)
+	#ifdef UNIV_PMEMOBJ_LOG
+		ib::info() << "======= Hello PMEMOBJ Log from VLDB lab ========\n";
+	#endif
+	#ifdef UNIV_PMEMOBJ_DBW
+		ib::info() << "======= Hello PMEMOBJ Double Write Buffer from VLDB lab ========\n";
+	#endif
+	#ifdef UNIV_PMEMOBJ_BUF
+		ib::info() << "======= Hello PMEMOBJ Buffer from VLDB lab ========\n";
+	#endif
+	#ifdef UNIV_PMEMOBJ_BUF_FLUSHER
+		ib::info() << "+++++ PMEMOBJ_BUF with add-in FLUSHER threads ========\n";
+	#endif
+	#ifdef UNIV_PMEMOBJ_BUF_PARTITION
+		ib::info() << "+++++ PMEMOBJ_BUF with add-in PARTITION algorithms ========\n";
+	#endif
+	#ifdef UNIV_PMEMOBJ_BUF_APPEND
+		ib::info() << "+++++ PMEMOBJ_BUF with add-in APPEND mode ========\n";
+	#endif
+	#ifdef UNIV_PMEMOBJ_BUF_V2
+		ib::info() << "======= Hello PMEMOBJ Buffer (Ver. 2 No free pool) from VLDB lab ========\n";
+	#endif 
+	#ifdef UNIV_PMEMOBJ_WAL
+		ib::info() << "======= Hello PMEMOBJ WAL from VLDB lab ========\n";
+	#endif 
+	ib::info() << "======== pool_size =" << srv_pmem_pool_size << 
+		"MB; srv_pmem_buf_size= " << srv_pmem_buf_size << "MB; " <<
+	    "; n_buckets=" << srv_pmem_buf_n_buckets <<
+	#ifdef UNIV_PMEMOBJ_BUF_FLUSHER
+	    "; n_flush_threads=" << srv_pmem_n_flush_threads <<
+	    "; flush_threshold=" << srv_pmem_flush_threshold <<
+	#endif
+	    "; n_slots_per_seg=" << srv_aio_n_slots_per_seg <<
+	    "; flush_pct=" << srv_pmem_buf_flush_pct <<
+		";\n";
+
+//	gb_pop = pmem_create_PMEMobjpool(srv_log_group_home_dir);
+	sprintf(PMEM_FILE_PATH, "%s/%s",srv_pmem_home_dir, PMEMOBJ_FILE_NAME);
+	size_t pool_size = srv_pmem_pool_size * 1024 * 1024;
+	gb_pmw = pm_wrapper_create(PMEM_FILE_PATH, pool_size);
+	assert(gb_pmw);
+	int check_pmem = pmemobj_check(PMEM_FILE_PATH, POBJ_LAYOUT_NAME(my_pmemobj));
+	if (check_pmem == -1) {
+		fprintf(stderr, "PMEM_ERROR: PMEM_FILE_PATH is %s, check_pmem = -1, detail: %s \n", PMEM_FILE_PATH, pmemobj_errormsg());
+	}
+	else {
+		printf("PMEM_INO: PMEM CHECK IS OK!\n");
+	}
+#endif
 	srv_boot();
 
 	ib::info() << (ut_crc32_sse2_enabled ? "Using" : "Not using")
@@ -1848,6 +1935,20 @@ innobase_start_or_create_for_mysql(void)
 	fsp_init();
 	log_init();
 
+#if defined (UNIV_PMEMOBJ_BUF)
+	size_t buf_size = srv_pmem_buf_size * 1024 * 1024;
+#if defined (UNIV_PMEMOBJ_LSB)
+	pm_wrapper_lsb_alloc_or_open(gb_pmw,
+							     buf_size,
+								 UNIV_PAGE_SIZE);
+#else
+	pm_wrapper_buf_alloc_or_open(gb_pmw,
+							     buf_size,
+								 UNIV_PAGE_SIZE);
+#endif	
+	//[TODO] Recovery handler
+#endif /* UNIV_PMEMOBJ_BUF */
+
 	recv_sys_create();
 	recv_sys_init(buf_pool_get_curr_size());
 	lock_sys_create(srv_lock_table_size);
@@ -1878,6 +1979,23 @@ innobase_start_or_create_for_mysql(void)
 	while (!buf_page_cleaner_is_active) {
 		os_thread_sleep(10000);
 	}
+#if defined (UNIV_PMEMOBJ_BUF) 
+#if defined (UNIV_PMEMOBJ_LSB)
+	os_thread_create(pm_buf_flush_list_cleaner_coordinator, NULL, NULL);
+#else
+	os_thread_create(pm_buf_flush_list_cleaner_coordinator, NULL, NULL);
+#endif //UNIV_PMEMOBJ_LSB
+
+#if defined (UNIV_PMEMOBJ_BUF_FLUSHER)
+	//os_thread_create(pm_flusher_coordinator, NULL, NULL);
+	printf("PMEM_INFO: ========>   create %d worker threads for pm\n", srv_pmem_n_flush_threads);
+	//for (i = 1; i < srv_n_page_cleaners; ++i) {
+	for (i = 0; i < srv_pmem_n_flush_threads; ++i) {
+		os_thread_create(pm_flusher_worker, NULL, NULL);
+	}
+#endif 
+
+#endif //UNIV_PMEMOBJ_BUF
 
 	srv_start_state_set(SRV_START_STATE_IO);
 
@@ -2222,7 +2340,12 @@ files_checked:
 
 		/* We always try to do a recovery, even if the database had
 		been shut down normally: this is the normal startup path */
-
+#if defined (UNIV_PMEMOBJ_BUF_RECOVERY)
+		//printf("====> PMEM_INFO: start recovery from PMEM in background\n");
+		pm_buf_resume_flushing(gb_pmw->pop, gb_pmw->pbuf);
+		//gb_pmw->pbuf->is_recovery = true;
+		gb_pmw->pbuf->is_recovery = false;
+#endif
 		err = recv_recovery_from_checkpoint_start(flushed_lsn);
 
 		recv_sys->dblwr.pages.clear();
@@ -2282,6 +2405,11 @@ files_checked:
 		are initialized in trx_sys_init_at_db_start(). */
 
 		recv_recovery_from_checkpoint_finish();
+#if defined(UNIV_PMEMOBJ_BUF_RECOVERY) 
+		gb_pmw->pbuf->is_recovery = false;
+		//printf("====> PMEM_INFO: start recovery from PMEM in background\n");
+		//pm_buf_resume_flushing(gb_pmw->pop, gb_pmw->pbuf);
+#endif
 
 		/* Fix-up truncate of tables in the system tablespace
 		if server crashed while truncate was active. The non-
@@ -2569,6 +2697,9 @@ files_checked:
 
 	/* wake main loop of page cleaner up */
 	os_event_set(buf_flush_event);
+#if defined(UNIV_PMEMOBJ_BUF)
+	//os_event_set(pm_buf_flush_event);
+#endif
 
 	sum_of_data_file_sizes = srv_sys_space.get_sum_of_sizes();
 	ut_a(sum_of_new_sizes != ULINT_UNDEFINED);
@@ -2731,7 +2862,6 @@ innobase_shutdown_for_mysql(void)
 	the tablespace header(s), and copy all log data to archive.
 	The step 1 is the real InnoDB shutdown. The remaining steps 2 - ...
 	just free data structures after the shutdown. */
-
 	logs_empty_and_mark_files_at_shutdown();
 
 	if (srv_conc_get_active_threads() != 0) {
@@ -2739,6 +2869,33 @@ innobase_shutdown_for_mysql(void)
 			<< srv_conc_get_active_threads() << " queries still"
 			" inside InnoDB at shutdown";
 	}
+
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_BUF_STAT)
+	//Print the statistic info
+	pm_buf_stat_print_all(gb_pmw->pbuf);	
+#endif
+	pm_wrapper_free(gb_pmw);
+#endif
+
+#if defined (UNIV_TRACE_FLUSH_TIME)
+	printf("=== > TRACE FLUSH TIME: total flush time (ms) = %zu\n ", gb_flush_time);
+//Add the method name in the trace out
+#if defined (UNIV_PMEMOBJ_DBW)
+	fprintf(gb_trace_file, "\n===>TRACE_FLUSH_TIME_DBW: total flush time (ms) = %zu", gb_flush_time);
+#elif defined (UNIV_PMEMOBJ_BUF) && defined (UNIV_PMEMOBJ_WAL)
+	fprintf(gb_trace_file, "\n===>TRACE_FLUSH_TIME_WAL_LESS: total flush time (ms) = %zu", gb_flush_time);
+#elif defined (UNIV_PMEMOBJ_BUF) && defined (UNIV_PMEMOBJ_BUF_PARTITION)
+	fprintf(gb_trace_file, "\n===>TRACE_FLUSH_TIME_PARTITION: total flush time (ms) = %zu", gb_flush_time);
+#elif defined (UNIV_PMEMOBJ_BUF)
+	fprintf(gb_trace_file, "\n===>TRACE_FLUSH_TIME_EVEN: total flush time (ms) = %zu", gb_flush_time);
+#elif defined (UNIV_PMEMOBJ_WAL)
+	fprintf(gb_trace_file, "\n===>TRACE_FLUSH_TIME_WAL: total flush time (ms) = %zu", gb_flush_time);
+#else
+	fprintf(gb_trace_file, "\n===>TRACE_FLUSH_TIME_ORI: total flush time (ms) = %zu", gb_flush_time);
+#endif //defined (UNIV_PMEMOBJ_DBW)
+	fclose(gb_trace_file);
+#endif  //defined (UNIV_TRACE_FLUSH_TIME)
 
 	/* 2. Make all threads created by InnoDB to exit */
 	srv_shutdown_all_bg_threads();
@@ -2821,6 +2978,11 @@ innobase_shutdown_for_mysql(void)
 
 	srv_was_started = FALSE;
 	srv_start_has_been_called = FALSE;
+#ifdef UNIV_NVM_LOG
+	//tdnguyen
+	//free the global PMEM_FILE_COLL
+	pfc_free(gb_pfc);
+#endif
 
 	return(DB_SUCCESS);
 }

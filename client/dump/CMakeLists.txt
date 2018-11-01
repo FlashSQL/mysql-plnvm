@@ -141,6 +141,7 @@ SET(MYSQLPUMP_LIB_SOURCES
   ../../sql-common/my_user.c)
 ADD_CONVENIENCE_LIBRARY(mysqlpump_lib ${MYSQLPUMP_LIB_SOURCES})
 TARGET_LINK_LIBRARIES(mysqlpump_lib
+	#	client_base ${LZ4_LIBRARY} ${NVM_LIB_PMEM} ${NVM_LIB_PMEMOBJ})
    client_base ${LZ4_LIBRARY})
 
 ADD_COMPILE_FLAGS(

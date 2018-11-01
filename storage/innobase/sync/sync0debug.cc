@@ -1404,6 +1404,12 @@ sync_latch_meta_init()
 
 	LATCH_ADD_MUTEX(PAGE_CLEANER, SYNC_PAGE_CLEANER,
 			page_cleaner_mutex_key);
+#if defined (UNIV_PMEMOBJ_BUF)
+	LATCH_ADD_MUTEX(PM_LIST_CLEANER, SYNC_PM_LIST_CLEANER,
+			pm_list_cleaner_mutex_key);
+	LATCH_ADD_MUTEX(PM_FLUSHER, SYNC_PM_FLUSHER,
+			pm_flusher_mutex_key);
+#endif
 
 	LATCH_ADD_MUTEX(PURGE_SYS_PQ, SYNC_PURGE_QUEUE,
 			purge_sys_pq_mutex_key);

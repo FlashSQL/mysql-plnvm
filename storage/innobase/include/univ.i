@@ -225,7 +225,12 @@ and the insert buffer must be empty when the database is started */
                                                 info output */
 #endif
 
+#if defined(UNIV_PMEMOBJ_BUF)
+//Temporaty undefine due to unknow bugs
+#else
 #define UNIV_BTR_DEBUG				/* check B-tree links */
+#endif
+
 #define UNIV_LIGHT_MEM_DEBUG			/* light memory debugging */
 
 // #define UNIV_SQL_DEBUG

@@ -57,6 +57,12 @@ Created 12/9/1995 Heikki Tuuri
 #include "sync0sync.h"
 #endif /* !UNIV_HOTBACKUP */
 
+#if defined(UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL)
+#include "my_pmemobj.h"
+
+extern PMEM_WRAPPER* gb_pmw;
+#endif /*UNIV_PMEMOBJ_LOG*/
+
 /*
 General philosophy of InnoDB redo-logs:
 
@@ -218,7 +224,42 @@ log_buffer_extend(
 
 	log_sys->buf_free -= move_start;
 	log_sys->buf_next_to_write -= move_start;
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	/* reallocate log buffer */
+	srv_log_buffer_size = len / UNIV_PAGE_SIZE + 1;
+	//do not free here, does it by our API
+	//ut_free(log_sys->buf_ptr);
 
+	log_sys->buf_size = LOG_BUFFER_SIZE;
+
+	//log_sys->buf_ptr = static_cast<byte*>(
+	//	ut_zalloc_nokey(log_sys->buf_size * 2 + OS_FILE_LOG_BLOCK_SIZE));
+	if ( pm_wrapper_logbuf_realloc(gb_pmw, 2 * LOG_BUFFER_SIZE + OS_FILE_LOG_BLOCK_SIZE) 
+			== PMEM_ERROR) {
+		printf("PMEMOBJ_ERROR: error when reallocate log buffer in log_buffer_extend()\n");
+	}
+	else {
+
+	}
+
+	log_sys->buf = static_cast<byte*>(pm_wrapper_logbuf_get_logdata(gb_pmw));
+
+	log_sys->first_in_use = true;
+
+	log_sys->max_buf_free = log_sys->buf_size / LOG_BUF_FLUSH_RATIO
+		- LOG_BUF_FLUSH_MARGIN;
+
+	/* restore the last log block */
+	//ut_memcpy(log_sys->buf, tmp_buf, move_end - move_start);
+	pmemobj_memcpy_persist(gb_pmw->pop, log_sys->buf, tmp_buf, move_end - move_start);
+	//set the flag
+	gb_pmw->plogbuf->need_recv = true;
+
+	//Update lsn and buf_free
+	gb_pmw->plogbuf->lsn = log_sys->lsn;
+	gb_pmw->plogbuf->buf_free = log_sys->buf_free;	
+
+#else //original
 	/* reallocate log buffer */
 	srv_log_buffer_size = len / UNIV_PAGE_SIZE + 1;
 	ut_free(log_sys->buf_ptr);
@@ -237,6 +278,8 @@ log_buffer_extend(
 
 	/* restore the last log block */
 	ut_memcpy(log_sys->buf, tmp_buf, move_end - move_start);
+#endif /* UNIV_PMEMOBJ_LOG */
+
 
 	ut_ad(log_sys->is_extending);
 	log_sys->is_extending = false;
@@ -429,7 +472,14 @@ part_loop:
 			- LOG_BLOCK_TRL_SIZE;
 	}
 
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	//copy the trasaction's log records to persistent memory
+	pmemobj_memcpy_persist(gb_pmw->pop, log->buf + log->buf_free, str, len);
+	//set the flag here
+	gb_pmw->plogbuf->need_recv = true;
+#else //original
 	ut_memcpy(log->buf + log->buf_free, str, len);
+#endif /* UNIV_PMEMOBJ_LOG */
 
 	str_len -= len;
 	str = str + len;
@@ -462,7 +512,11 @@ part_loop:
 	if (str_len > 0) {
 		goto part_loop;
 	}
-
+#if defined(UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_WAL)
+	// update the lsn and buf_free
+	gb_pmw->plogbuf->lsn = log->lsn;
+	gb_pmw->plogbuf->buf_free = log->buf_free;	
+#endif /*UNIV_PMEMOBJ_LOG */
 	srv_stats.log_write_requests.inc();
 }
 
@@ -806,9 +860,34 @@ log_init(void)
 	ut_a(LOG_BUFFER_SIZE >= 4 * UNIV_PAGE_SIZE);
 
 	log_sys->buf_size = LOG_BUFFER_SIZE;
+#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	//allocate the log buffer in persistent memory
+	if (!gb_pmw->plogbuf){
+		if ( pm_wrapper_logbuf_alloc(gb_pmw, 2 * LOG_BUFFER_SIZE + OS_FILE_LOG_BLOCK_SIZE)
+				== PMEM_ERROR) {
+			printf("PMEMOBJ_ERROR: error when allocate log buffer in log_init()\n");
+		}
+		//The server is previously shutdown normally. We assign the log buffer now
+		log_sys->buf_ptr = static_cast<byte*> (pm_wrapper_logbuf_get_logdata(gb_pmw));
+	}
+	else {
+		printf("!!!!!!! [PMEMOBJ_INFO]: the server restart from a crash but the log buffer is persist, in pmem: size = %zd lsn = %"PRIu64" \n", 
+				gb_pmw->plogbuf->size, gb_pmw->plogbuf->lsn);
+		/*The server is crash and does not shutdown normally
+		 * our log buffer in pmem has some log records that have not sync to log files
+		 * temporary log_sys->buf_ptr use allocated heap from DRAM
+		 * we will assign it to our pmem heap later in recv_recovery_from_checkpoint_start()
+		 * */
+		log_sys->buf_ptr = static_cast<byte*>(
+			ut_zalloc_nokey(log_sys->buf_size * 2 + OS_FILE_LOG_BLOCK_SIZE));
+		//double check the need_recv flag
+	//	assert(gb_pmw->plogbuf->need_recv);
 
+	}
+#else //original
 	log_sys->buf_ptr = static_cast<byte*>(
 		ut_zalloc_nokey(log_sys->buf_size * 2 + OS_FILE_LOG_BLOCK_SIZE));
+#endif /*UNIV_PMEMOBJ_LOG*/
 	log_sys->buf = static_cast<byte*>(
 		ut_align(log_sys->buf_ptr, OS_FILE_LOG_BLOCK_SIZE));
 
@@ -850,7 +929,13 @@ log_init(void)
 
 	log_sys->buf_free = LOG_BLOCK_HDR_SIZE;
 	log_sys->lsn = LOG_START_LSN + LOG_BLOCK_HDR_SIZE;
-
+#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	//Update the lsn, buf_free in necessary
+	if(gb_pmw->plogbuf->lsn < log_sys->lsn)
+		gb_pmw->plogbuf->lsn = log_sys->lsn;
+	if(gb_pmw->plogbuf->buf_free < log_sys->buf_free)
+		gb_pmw->plogbuf->last_tsec_buf_free = gb_pmw->plogbuf->buf_free = log_sys->buf_free;
+#endif /* UNIV_PMEMOBJ_LOG */
 	MONITOR_SET(MONITOR_LSN_CHECKPOINT_AGE,
 		    log_sys->lsn - log_sys->last_checkpoint_lsn);
 }
@@ -917,6 +1002,28 @@ log_io_complete(
 /*============*/
 	log_group_t*	group)	/*!< in: log group or a dummy pointer */
 {
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	//In original: This function called by fil_aio_wait as async call from log_checkpoint
+	//In our PMEMOBJ_LOG, log_write_up_to use async too, so we need distinguish between two cases
+		
+	if (((ulint) group & 0x1UL)==0) {
+		//This call from log_write_up_to
+		//Just flush
+		switch (srv_unix_file_flush_method) {
+		case SRV_UNIX_O_DSYNC:
+		case SRV_UNIX_NOSYNC:
+			break;
+		case SRV_UNIX_FSYNC:
+		case SRV_UNIX_LITTLESYNC:
+		case SRV_UNIX_O_DIRECT:
+		case SRV_UNIX_O_DIRECT_NO_FSYNC:
+			fil_flush(group->space_id);
+		}
+		return;
+	}
+	//Case 2: follow the original code below
+#endif //UNIV_PMEMOBJ_LOG
+
 	if ((ulint) group & 0x1UL) {
 		/* It was a checkpoint write */
 		group = (log_group_t*)((ulint) group - 1);
@@ -1116,13 +1223,21 @@ loop:
 
 	const ulint	page_no
 		= (ulint) (next_offset / univ_page_size.physical());
-
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	//We can write async when the log buffer is in PMEM
+	//We don't adjust group to group + 1 because we already handled that in log_io_complete
+	fil_io(IORequestLogWrite, false,
+	       page_id_t(group->space_id, page_no),
+	       univ_page_size,
+	       (ulint) (next_offset % UNIV_PAGE_SIZE), write_len, buf,
+	       group);
+#else //original
 	fil_io(IORequestLogWrite, true,
 	       page_id_t(group->space_id, page_no),
 	       univ_page_size,
 	       (ulint) (next_offset % UNIV_PAGE_SIZE), write_len, buf,
 	       group);
-
+#endif
 	srv_stats.os_log_pending_writes.dec();
 
 	srv_stats.os_log_written.add(write_len);
@@ -1551,7 +1666,6 @@ log_complete_checkpoint(void)
 	log_sys->last_checkpoint_lsn = log_sys->next_checkpoint_lsn;
 	MONITOR_SET(MONITOR_LSN_CHECKPOINT_AGE,
 		    log_sys->lsn - log_sys->last_checkpoint_lsn);
-
 	DBUG_PRINT("ib_log", ("checkpoint ended at " LSN_PF
 			      ", flushed to " LSN_PF,
 			      log_sys->last_checkpoint_lsn,
@@ -1567,6 +1681,22 @@ void
 log_io_complete_checkpoint(void)
 /*============================*/
 {
+#if defined( UNIV_NVM_LOG)
+	/*In original InnoDB, this function only call by 
+	 * log_io_complete <- fil_aio_wait <- Log IO thread
+	 * In our NVM_LOG implementation, this function call from 
+	 * this function is call by AIO producer
+	//we already own the lock 
+	*/
+	MONITOR_DEC(MONITOR_PENDING_CHECKPOINT_WRITE);
+
+	ut_ad(log_sys->n_pending_checkpoint_writes > 0);
+
+	if (--log_sys->n_pending_checkpoint_writes == 0) {
+		log_complete_checkpoint();
+	}
+
+#else //original
 	MONITOR_DEC(MONITOR_PENDING_CHECKPOINT_WRITE);
 
 	log_mutex_enter();
@@ -1578,6 +1708,7 @@ log_io_complete_checkpoint(void)
 	}
 
 	log_mutex_exit();
+#endif /*UNIV_NVM_LOG*/
 }
 
 /******************************************************//**
@@ -1645,6 +1776,11 @@ log_group_checkpoint(
 	       OS_FILE_LOG_BLOCK_SIZE,
 	       buf, (byte*) group + 1);
 
+#if defined(UNIV_NVM_LOG)
+			//In NVM_LOG, we don't use aio, so we need to do the post-processing here
+			ut_ad(log_mutex_own());
+			log_io_complete((static_cast<log_group_t*> ((void*)((byte*)group + 1))));
+#endif /*UNIV_NVM_LOG */
 	ut_ad(((ulint) group & 0x1UL) == 0);
 }
 
@@ -1737,7 +1873,6 @@ log_write_checkpoint_info(
 		/* Wait for the checkpoint write to complete */
 		rw_lock_s_lock(&log_sys->checkpoint_lock);
 		rw_lock_s_unlock(&log_sys->checkpoint_lock);
-
 		DEBUG_SYNC_C("checkpoint_completed");
 
 		DBUG_EXECUTE_IF(
@@ -2226,6 +2361,23 @@ loop:
 
 		goto loop;
 	}
+#if defined (UNIV_PMEMOBJ_BUF)
+#if defined (UNIV_PMEMOBJ_LSB)
+#else
+	//Wait for PMEM buf finish
+	PMEM_BUF_FREE_POOL* pfree_pool = D_RW(gb_pmw->pbuf->free_pool);
+	pending_io = pfree_pool->max_lists - pfree_pool->cur_lists;
+		if (pending_io) {
+			if (srv_print_verbose_log && count > 600) {
+				ib::info() << "Waiting for " << pending_io << " PMEM lists "
+					" to complete";
+				count = 0;
+			}
+
+			goto loop;
+		}	
+#endif //UNIV_PMEMOBJ_LSB
+#endif 
 
 	if (srv_fast_shutdown == 2) {
 		if (!srv_read_only_mode) {
@@ -2482,8 +2634,12 @@ log_shutdown(void)
 /*==============*/
 {
 	log_group_close_all();
-
+#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	//The pmem free() is done later
+	//do nothing for log_sys->buf_ptr
+#else //original
 	ut_free(log_sys->buf_ptr);
+#endif
 	log_sys->buf_ptr = NULL;
 	log_sys->buf = NULL;
 	ut_free(log_sys->checkpoint_buf_ptr);

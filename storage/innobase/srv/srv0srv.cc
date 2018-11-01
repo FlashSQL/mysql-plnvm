@@ -201,6 +201,29 @@ extern bool		trx_commit_disallowed;
 #endif /* UNIV_DEBUG */
 
 /*------------------------- LOG FILES ------------------------ */
+#if defined (UNIV_AIO_IMPROVE)
+ulong	srv_aio_n_slots_per_seg	= 256;
+#endif 
+#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_AIO_IMPROVE)
+ulong	srv_pmem_buf_bucket_size	= 256;
+#endif 
+#if defined(UNIV_PMEMOBJ_BUF_FLUSHER)
+ulong	srv_pmem_n_flush_threads	= 8;
+ulong	srv_pmem_flush_threshold	= 6;
+#endif
+#if defined (UNIV_PMEMOBJ_BUF_PARTITION)
+ulong	srv_pmem_n_space_bits	= 5;
+ulong	srv_pmem_page_per_bucket_bits	= 10;
+
+#endif
+
+#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+char*	srv_pmem_home_dir	= NULL;
+ulong	srv_pmem_pool_size	= 8 * 1024;
+ulong	srv_pmem_buf_size	= 4 * 1024;
+ulong	srv_pmem_buf_n_buckets	= 128;
+double	srv_pmem_buf_flush_pct	= 0.9;
+#endif
 char*	srv_log_group_home_dir	= NULL;
 
 ulong	srv_n_log_files		= SRV_N_LOG_FILES_MAX;
@@ -1006,7 +1029,9 @@ srv_init(void)
 		srv_buf_dump_event = os_event_create(0);
 
 		buf_flush_event = os_event_create("buf_flush_event");
-
+#if defined (UNIV_PMEMOBJ_BUF)
+		pm_buf_flush_event = os_event_create("pm_buf_flush_event");
+#endif
 		UT_LIST_INIT(srv_sys->tasks, &que_thr_t::queue);
 	}
 
@@ -1059,6 +1084,9 @@ srv_free(void)
 		os_event_destroy(srv_monitor_event);
 		os_event_destroy(srv_buf_dump_event);
 		os_event_destroy(buf_flush_event);
+#if defined (UNIV_PMEMOBJ_BUF)
+		os_event_destroy(pm_buf_flush_event);
+#endif
 	}
 
 	os_event_destroy(srv_buf_resize_event);
@@ -2134,17 +2162,17 @@ srv_master_do_active_tasks(void)
 		MONITOR_SRV_IBUF_MERGE_MICROSECOND, counter_time);
 
 	/* Flush logs if needed */
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	//We don't need to write + flush log every second
+#else //original
 	srv_main_thread_op_info = "flushing log";
 	srv_sync_log_buffer_in_background();
 	MONITOR_INC_TIME_IN_MICRO_SECS(
 		MONITOR_SRV_LOG_FLUSH_MICROSECOND, counter_time);
+#endif //UNIV_PMEMOBJ_LOG
 
 	/* Now see if various tasks that are performed at defined
 	intervals need to be performed. */
-
-	if (srv_shutdown_state > 0) {
-		return;
-	}
 
 	if (srv_shutdown_state > 0) {
 		return;
@@ -2236,9 +2264,15 @@ srv_master_do_idle_tasks(void)
 		MONITOR_SRV_DICT_LRU_MICROSECOND, counter_time);
 
 	/* Flush logs if needed */
+#if defined (UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_WAL)
+	//We skip the 1s flush log here
+	//Log will flush at log_checkpoint() and when the log buffer is nearly full
+	//See log_reserve_and_open()
+#else //original
 	srv_sync_log_buffer_in_background();
 	MONITOR_INC_TIME_IN_MICRO_SECS(
 		MONITOR_SRV_LOG_FLUSH_MICROSECOND, counter_time);
+#endif
 
 	if (srv_shutdown_state > 0) {
 		return;

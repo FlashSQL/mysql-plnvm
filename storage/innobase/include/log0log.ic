@@ -33,6 +33,12 @@ Created 12/9/1995 Heikki Tuuri
 #include "mtr0types.h"
 #endif /* UNIV_LOG_LSN_DEBUG */
 
+//#if defined(UNIV_PMEMOBJ_LOG)
+////This defined in log0log.cc
+//#include "my_pmemobj.h"
+//extern PMEM_WRAPPER* gb_pmw;
+//#endif
+
 /************************************************************//**
 Gets a log block flush bit.
 @return TRUE if this block was the first to be written in a log flush */
@@ -394,7 +400,12 @@ log_reserve_and_write_fast(
 		len += lsn_len;
 	} else
 #endif /* UNIV_LOG_LSN_DEBUG */
+
+//#if defined(UNIV_PMEMOBJ_LOG)
+//	pmemobj_memcpy_persist(gb_pmw->pop, log_sys->buf + log_sys->buf_free, str, len);
+//#else //original
 	memcpy(log_sys->buf + log_sys->buf_free, str, len);
+//#endif /*UNIV_PMEMOBJ_LOG*/
 
 	log_block_set_data_len(
                 reinterpret_cast<byte*>(ut_align_down(
@@ -407,7 +418,11 @@ log_reserve_and_write_fast(
 	ut_ad(log_sys->buf_free <= log_sys->buf_size);
 
 	log_sys->lsn += len;
-
+//#if defined(UNIV_PMEMOBJ_LOG)
+	//Update lsn and buf_free
+//	gb_pmw->plogbuf->lsn = log_sys->lsn;
+//	gb_pmw->plogbuf->buf_free = log_sys->buf_free;
+//#endif
 	MONITOR_SET(MONITOR_LSN_CHECKPOINT_AGE,
 		    log_sys->lsn - log_sys->last_checkpoint_lsn);
 

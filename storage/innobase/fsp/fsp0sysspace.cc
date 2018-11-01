@@ -570,8 +570,11 @@ SysTablespace::read_lsn_and_check_flags(lsn_t* flushed_lsn)
 
 	ut_a(it->order() == 0);
 
-
+//#if defined (UNIV_PMEMOBJ_BUF)
+	//we don't need DWB, do nothing 
+//#else //original
 	buf_dblwr_init_or_load_pages(it->handle(), it->filepath());
+//#endif
 
 	/* Check the contents of the first page of the
 	first datafile. */

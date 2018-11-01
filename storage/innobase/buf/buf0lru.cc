@@ -1349,8 +1349,12 @@ loop:
 		If we are doing for the first time we'll scan only
 		tail of the LRU list otherwise we scan the whole LRU
 		list. */
+		
+		//tdnguyen test
+		//printf("\n [start buf_LRU_scan ==> ");
 		freed = buf_LRU_scan_and_free_block(
 			buf_pool, n_iterations > 0);
+		//printf("END  buf_LRU_scan with freed is %d] ", freed);
 
 		if (!freed && n_iterations == 0) {
 			/* Tell other threads that there is no point
@@ -1419,11 +1423,14 @@ loop:
 	removing the block from page_hash and LRU_list is fairly
 	involved (particularly in case of compressed pages). We
 	can do that in a separate patch sometime in future. */
-
+	
+	//tdnguyen test
+	//printf ("\n [start buf_flush_single_page ==>");
 	if (!buf_flush_single_page_from_LRU(buf_pool)) {
 		MONITOR_INC(MONITOR_LRU_SINGLE_FLUSH_FAILURE_COUNT);
 		++flush_failures;
 	}
+	//printf ("END buf_flush_single_page ]");
 
 	srv_stats.buf_pool_wait_free.add(n_iterations, 1);
 

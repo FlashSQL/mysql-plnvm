@@ -44,6 +44,9 @@ extern my_bool		innodb_page_cleaner_disabled_debug;
 
 /** Event to synchronise with the flushing. */
 extern os_event_t	buf_flush_event;
+#if defined (UNIV_PMEMOBJ_BUF)
+extern os_event_t	pm_buf_flush_event;
+#endif
 
 class ut_stage_alter_t;
 

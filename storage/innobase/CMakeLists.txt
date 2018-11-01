@@ -16,8 +16,13 @@
 # This is the CMakeLists for InnoDB
 
 INCLUDE(innodb.cmake)
+#tdnguyen add pmem dir and files
 
 SET(INNOBASE_SOURCES
+	pmem/pmem0wrapper.cc
+	pmem/pmem0buf.cc
+	pmem/pmem0logbuf.cc
+	pmem/pmem0dbw.cc
 	api/api0api.cc
 	api/api0misc.cc
 	btr/btr0btr.cc

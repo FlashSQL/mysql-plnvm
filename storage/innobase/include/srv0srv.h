@@ -268,6 +268,27 @@ extern const ulong	srv_tmp_undo_logs;
 /** Default size of UNDO tablespace while it is created new. */
 extern const ulint	SRV_UNDO_TABLESPACE_SIZE_IN_PAGES;
 
+#if defined(UNIV_AIO_IMPROVE)
+extern ulong	srv_aio_n_slots_per_seg;
+#endif
+#if defined(UNIV_PMEMOBJ_BUF)
+extern ulong	srv_pmem_buf_bucket_size;
+#endif
+#if defined(UNIV_PMEMOBJ_BUF_FLUSHER)
+extern ulong	srv_pmem_n_flush_threads;
+extern ulong	srv_pmem_flush_threshold;
+#endif
+#if defined (UNIV_PMEMOBJ_BUF_PARTITION)
+extern ulong	srv_pmem_n_space_bits;
+extern ulong	srv_pmem_page_per_bucket_bits;
+#endif
+#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_WAL)
+extern char*	srv_pmem_home_dir;
+extern ulong	srv_pmem_pool_size;
+extern ulong	srv_pmem_buf_size;
+extern ulong	srv_pmem_buf_n_buckets;
+extern double	srv_pmem_buf_flush_pct;
+#endif 
 extern char*	srv_log_group_home_dir;
 
 #ifndef UNIV_HOTBACKUP
@@ -474,6 +495,10 @@ extern mysql_pfs_key_t	io_log_thread_key;
 extern mysql_pfs_key_t	io_read_thread_key;
 extern mysql_pfs_key_t	io_write_thread_key;
 extern mysql_pfs_key_t	page_cleaner_thread_key;
+#if defined (UNIV_PMEMOBJ_BUF)
+extern mysql_pfs_key_t	pm_list_cleaner_thread_key;
+extern mysql_pfs_key_t	pm_flusher_thread_key;
+#endif
 extern mysql_pfs_key_t	recv_writer_thread_key;
 extern mysql_pfs_key_t	srv_error_monitor_thread_key;
 extern mysql_pfs_key_t	srv_lock_timeout_thread_key;

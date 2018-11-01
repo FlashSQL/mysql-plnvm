@@ -37,6 +37,12 @@ Created 2011/12/19
 #include "page0zip.h"
 #include "trx0sys.h"
 
+#if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW)
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
+extern pfs_os_file_t gb_dbw_file;
+#endif /* UNIV_PMEMOBJ_DBW */
+
 #ifndef UNIV_HOTBACKUP
 
 /** The doublewrite buffer */
@@ -125,6 +131,10 @@ buf_dblwr_init(
 {
 	ulint	buf_size;
 
+#if defined (UNIV_PMEMOBJ_DBW)
+	dberr_t		err;
+	byte*		buf;
+#endif 
 	buf_dblwr = static_cast<buf_dblwr_t*>(
 		ut_zalloc_nokey(sizeof(buf_dblwr_t)));
 
@@ -152,13 +162,87 @@ buf_dblwr_init(
 
 	buf_dblwr->in_use = static_cast<bool*>(
 		ut_zalloc_nokey(buf_size * sizeof(bool)));
-
-	buf_dblwr->write_buf_unaligned = static_cast<byte*>(
-		ut_malloc_nokey((1 + buf_size) * UNIV_PAGE_SIZE));
-
+//#if defined (UNIV_PMEMOBJ_BUF)
+	//Allocate the buffer in pmem
+//	if (!gb_pmw->pbuf) {
+//		size_t buf_size = srv_pmem_buf_size * 1024 * 1024;
+//			printf("PMEMOBJ_INFO: allocate %zd MB of buffer in pmem\n", srv_pmem_buf_size);
+//		if ( pm_wrapper_buf_alloc(gb_pmw, buf_size, UNIV_PAGE_SIZE) == PMEM_ERROR ) {
+//			printf("PMEMOBJ_ERROR: error when allocate buffer in buf_dblwr_init()\n");
+//		}
+//	}
+//	else {
+//		printf("!!!!!!! [PMEMOBJ_INFO]: the server restart from a crash but the buffer is persist, in pmem: size = %zd free_pool has = %zd free lists\n", 
+//				gb_pmw->pbuf->size, D_RW(gb_pmw->pbuf->free_pool)->cur_lists);
+//	}
+	//[TODO] Recovery handler
+//#endif /* UNIV_PMEMOBJ_BUF */
+#if defined (UNIV_PMEMOBJ_DBW)
+	//Allocate the double write buffer on PMEM
+	if (!gb_pmw->pdbw){
+		if ( pm_wrapper_dbw_alloc(gb_pmw, (1 + buf_size) * UNIV_PAGE_SIZE)
+				== PMEM_ERROR) {
+			printf("PMEMOBJ_ERROR: error when allocate double write buffer in buf_dblwr_init()\n");
+		}    
+		
+	}    
+	else {
+		printf("!!!!!!! [PMEMOBJ_INFO]: the server restart from a crash but the double write buffer is persist, in pmem: size = %zd s_first_free = %"PRIu64" b_first_free = %"PRIu64"\n", 
+				gb_pmw->pdbw->size, gb_pmw->pdbw->b_first_free, gb_pmw->pdbw->b_first_free);
+		//Do nothing now
+	}    
+	//map the double write buffer to PMEM 
+	buf_dblwr->write_buf_unaligned = static_cast<byte*> (pm_wrapper_dbw_get_dbwdata(gb_pmw));
 	buf_dblwr->write_buf = static_cast<byte*>(
 		ut_align(buf_dblwr->write_buf_unaligned,
 			 UNIV_PAGE_SIZE));
+	//gb_pmw->pdbw->is_new is set true only in its constructor
+	if(gb_pmw->pdbw->is_new){
+		//buf_dblwr_init is called by buf_dblwr_create() or buf_dblwr_init_or_load_pages
+		//Case 1: the db is new, there are dbw pages on disk, read it to PMEM
+		//Case 2: the db is existed, but the dbw in PMEM may be deleted manually, now we should read pages from disk again
+		//Read double write buffer pages from disk
+		buf = buf_dblwr->write_buf;
+
+		IORequest	read_request(IORequest::READ);
+		read_request.disable_compression();
+
+		err = os_file_read(
+				read_request,
+				gb_dbw_file, buf, buf_dblwr->block1 * UNIV_PAGE_SIZE,
+				TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE);
+
+		if (err != DB_SUCCESS) {
+
+			ib::error()
+				<< "Failed to read the first double write buffer "
+				"extent";
+			return;
+		}
+
+		err = os_file_read(
+				read_request,
+				gb_dbw_file,
+				buf + TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE,
+				buf_dblwr->block2 * UNIV_PAGE_SIZE,
+				TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE);
+
+		if (err != DB_SUCCESS) {
+
+			ib::error()
+				<< "Failed to read the second double write buffer "
+				"extent";
+			return;
+		}
+		gb_pmw->pdbw->is_new = false;
+	}
+#else //original
+	buf_dblwr->write_buf_unaligned = static_cast<byte*>(
+		ut_malloc_nokey((1 + buf_size) * UNIV_PAGE_SIZE));
+	buf_dblwr->write_buf = static_cast<byte*>(
+		ut_align(buf_dblwr->write_buf_unaligned,
+			 UNIV_PAGE_SIZE));
+#endif /* UNIV_PMEMOBJ_DBW */
 
 	buf_dblwr->buf_block_arr = static_cast<buf_page_t**>(
 		ut_zalloc_nokey(buf_size * sizeof(void*)));
@@ -399,7 +483,9 @@ buf_dblwr_init_or_load_pages(
 	if (mach_read_from_4(doublewrite + TRX_SYS_DOUBLEWRITE_MAGIC)
 	    == TRX_SYS_DOUBLEWRITE_MAGIC_N) {
 		/* The doublewrite buffer has been created */
-
+#if defined(UNIV_PMEMOBJ_DBW)
+		gb_dbw_file = file;
+#endif 
 		buf_dblwr_init(doublewrite);
 
 		block1 = buf_dblwr->block1;
@@ -426,6 +512,10 @@ buf_dblwr_init_or_load_pages(
 	}
 
 	/* Read the pages from the doublewrite buffer to memory */
+#if defined (UNIV_PMEMOBJ_DBW)
+	//when the program reach here, the buf_dblwr_init() is called and gb_pmw->pdbw is allocated
+	goto skip_load_dbw;	
+#endif /* UNIV_PMEMOBJ_DBW */
 	err = os_file_read(
 		read_request,
 		file, buf, block1 * UNIV_PAGE_SIZE,
@@ -459,6 +549,10 @@ buf_dblwr_init_or_load_pages(
 
 		return(err);
 	}
+
+#if defined (UNIV_PMEMOBJ_DBW)
+skip_load_dbw:
+#endif /* UNIV_PMEMOBJ_DBW */
 
 	/* Check if any of these pages is half-written in data files, in the
 	intended position */
@@ -702,7 +796,11 @@ buf_dblwr_free(void)
 
 	os_event_destroy(buf_dblwr->b_event);
 	os_event_destroy(buf_dblwr->s_event);
+#if defined(UNIV_PMEMOBJ_DBW)
+	//We don't free it here, we will do that later in pm_wrapper_free()
+#else //original
 	ut_free(buf_dblwr->write_buf_unaligned);
+#endif /* UNIV_PMEMOBJ_DBW */
 	buf_dblwr->write_buf_unaligned = NULL;
 
 	ut_free(buf_dblwr->buf_block_arr);
@@ -742,14 +840,19 @@ buf_dblwr_update(
 		ut_ad(buf_dblwr->b_reserved <= buf_dblwr->first_free);
 
 		buf_dblwr->b_reserved--;
-
+#if defined (UNIV_PMEMOBJ_DBW)
+		gb_pmw->pdbw->b_first_free--;
+#endif
 		if (buf_dblwr->b_reserved == 0) {
 			mutex_exit(&buf_dblwr->mutex);
 			/* This will finish the batch. Sync data files
 			to the disk. */
+#if defined (UNIV_PMEMOBJ_DBW)
+			//We do not need this flush 
+#else //original
 			fil_flush_file_spaces(FIL_TYPE_TABLESPACE);
+#endif
 			mutex_enter(&buf_dblwr->mutex);
-
 			/* We can now reuse the doublewrite memory buffer: */
 			buf_dblwr->first_free = 0;
 			buf_dblwr->batch_running = false;
@@ -768,6 +871,9 @@ buf_dblwr_update(
 					buf_dblwr->s_reserved--;
 					buf_dblwr->buf_block_arr[i] = NULL;
 					buf_dblwr->in_use[i] = false;
+#if defined (UNIV_PMEMOBJ_DBW)
+					gb_pmw->pdbw->s_first_free--;
+#endif /* UNIV_PMEMOBJ_DBW */
 					break;
 				}
 			}
@@ -1019,7 +1125,10 @@ try_again:
 		buffer has sane LSN values. */
 		buf_dblwr_check_page_lsn(write_buf + len2);
 	}
-
+#if defined (UNIV_PMEMOBJ_DBW)
+	//We don't need below fil_io()
+	goto flush;
+#endif
 	/* Write out the first block of the doublewrite buffer */
 	len = ut_min(TRX_SYS_DOUBLEWRITE_BLOCK_SIZE,
 		     buf_dblwr->first_free) * UNIV_PAGE_SIZE;
@@ -1049,8 +1158,13 @@ flush:
 	srv_stats.dblwr_pages_written.add(buf_dblwr->first_free);
 	srv_stats.dblwr_writes.inc();
 
+#if defined (UNIV_PMEMOBJ_DBW)
+	//We don't need to fil_flush()
+	//Do nothing here	
+#else //original 
 	/* Now flush the doublewrite buffer data to disk */
 	fil_flush(TRX_SYS_SPACE);
+#endif
 
 	/* We know that the writes have been flushed to disk now
 	and in recovery we will find them in the doublewrite buffer
@@ -1121,7 +1235,25 @@ try_again:
 
 	byte*	p = buf_dblwr->write_buf
 		+ univ_page_size.physical() * buf_dblwr->first_free;
+#if defined (UNIV_PMEMOBJ_DBW)
+	//Replace memcpy with pmemobj_memcpy_persist
+	if (bpage->size.is_compressed()) {
+		UNIV_MEM_ASSERT_RW(bpage->zip.data, bpage->size.physical());
+		/* Copy the compressed page and clear the rest. */
 
+		pmemobj_memcpy_persist(gb_pmw->pop, p, bpage->zip.data, bpage->size.physical());
+
+		pmemobj_memset_persist(gb_pmw->pop, p + bpage->size.physical(), 0x0,
+		       univ_page_size.physical() - bpage->size.physical());
+	} else {
+		ut_a(buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE);
+
+		UNIV_MEM_ASSERT_RW(((buf_block_t*) bpage)->frame,
+				   bpage->size.logical());
+
+		pmemobj_memcpy_persist(gb_pmw->pop, p, ((buf_block_t*) bpage)->frame, bpage->size.logical());
+	}
+#else //original
 	if (bpage->size.is_compressed()) {
 		UNIV_MEM_ASSERT_RW(bpage->zip.data, bpage->size.physical());
 		/* Copy the compressed page and clear the rest. */
@@ -1138,12 +1270,15 @@ try_again:
 
 		memcpy(p, ((buf_block_t*) bpage)->frame, bpage->size.logical());
 	}
+#endif /* UNIV_PMEMOBJ_DBW */
 
 	buf_dblwr->buf_block_arr[buf_dblwr->first_free] = bpage;
 
 	buf_dblwr->first_free++;
 	buf_dblwr->b_reserved++;
-
+#if defined (UNIV_PMEMOBJ_DBW)
+	gb_pmw->pdbw->b_first_free++;
+#endif /* UNIV_PMEMOBJ_DBW */
 	ut_ad(!buf_dblwr->batch_running);
 	ut_ad(buf_dblwr->first_free == buf_dblwr->b_reserved);
 	ut_ad(buf_dblwr->b_reserved <= srv_doublewrite_batch_size);
@@ -1228,6 +1363,10 @@ retry:
 	buf_dblwr->s_reserved++;
 	buf_dblwr->buf_block_arr[i] = bpage;
 
+#if defined (UNIV_PMEMOBJ_DBW)
+	gb_pmw->pdbw->s_first_free++;
+#endif /* UNIV_PMEMOBJ_DBW */
+
 	/* increment the doublewrite flushed pages counter */
 	srv_stats.dblwr_pages_written.inc();
 	srv_stats.dblwr_writes.inc();
@@ -1253,7 +1392,45 @@ retry:
 	to the in-memory buffer of doublewrite before proceeding to
 	write it. This is so because we want to pad the remaining
 	bytes in the doublewrite page with zeros. */
+#if defined (UNIV_PMEMOBJ_DBW)
+	//If the double write buffer is in PMEM, we treat the compressed page and non-compressed page similar
 
+	if (bpage->size.is_compressed()) {
+		pmemobj_memcpy_persist(gb_pmw->pop,
+			   buf_dblwr->write_buf + univ_page_size.physical() * i,
+		       bpage->zip.data,
+			   bpage->size.physical());
+
+		memset(buf_dblwr->write_buf + univ_page_size.physical() * i
+		       + bpage->size.physical(), 0x0,
+		       univ_page_size.physical() - bpage->size.physical());
+	//This fil_io is not necessary
+	/*	fil_io(IORequestWrite, true,
+		       page_id_t(TRX_SYS_SPACE, offset), univ_page_size, 0,
+		       univ_page_size.physical(),
+		       (void*) (buf_dblwr->write_buf
+				+ univ_page_size.physical() * i),
+		       NULL);
+	*/
+	} else {
+		/* It is a regular does similar with compress case */
+		pmemobj_memcpy_persist(gb_pmw->pop,
+			   buf_dblwr->write_buf + univ_page_size.physical() * offset,
+		       (void*) ((buf_block_t*) bpage)->frame,
+			   bpage->size.physical());
+		//This fil_io is not necessary
+		/*
+		fil_io(IORequestWrite, true,
+		       page_id_t(TRX_SYS_SPACE, offset), univ_page_size, 0,
+		       univ_page_size.physical(),
+		       (void*) ((buf_block_t*) bpage)->frame,
+		       NULL);
+		*/
+	}
+
+	/* We don't need fil_flush */
+	//fil_flush(TRX_SYS_SPACE);
+#else //original
 	if (bpage->size.is_compressed()) {
 		memcpy(buf_dblwr->write_buf + univ_page_size.physical() * i,
 		       bpage->zip.data, bpage->size.physical());
@@ -1280,6 +1457,7 @@ retry:
 
 	/* Now flush the doublewrite buffer data to disk */
 	fil_flush(TRX_SYS_SPACE);
+#endif /* UNIV_PMEMOBJ_DBW */
 
 	/* We know that the write has been flushed to disk now
 	and during recovery we will find it in the doublewrite buffer

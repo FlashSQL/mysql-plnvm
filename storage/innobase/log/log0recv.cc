@@ -68,6 +68,11 @@ bool	recv_replay_file_ops	= true;
 #include "fut0lst.h"
 #endif /* !UNIV_HOTBACKUP */
 
+#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
+#endif
+
 /** Log records are stored in the hash table in chunks at most of this size;
 this must be less than UNIV_PAGE_SIZE as it is stored in the buffer pool */
 #define RECV_DATA_BLOCK_SIZE	(MEM_MAX_ALLOC_IN_BUF - sizeof(recv_data_t))
@@ -2654,6 +2659,8 @@ loop:
 	recv_sys->apply_batch_on = TRUE;
 
 	for (i = 0; i < hash_get_n_cells(recv_sys->addr_hash); i++) {
+		//tdnguyen test
+		//printf("i = %zu\n", i);
 
 		for (recv_addr = static_cast<recv_addr_t*>(
 				HASH_GET_FIRST(recv_sys->addr_hash, i));
@@ -4012,8 +4019,11 @@ recv_init_crash_recovery_spaces(void)
 			<< " was not found at '" << i->second.name
 			<< "', but there were no modifications either.";
 	}
-
+#if defined (UNIV_PMEMOBJ_BUF)
+	//We don't need the torn page correction process, skip this 
+#else //original
 	buf_dblwr_process();
+#endif
 
 	if (srv_force_recovery < SRV_FORCE_NO_LOG_REDO) {
 		/* Spawn the background thread to flush dirty pages
@@ -4271,7 +4281,6 @@ recv_recovery_from_checkpoint_start(
 	}
 
 	ut_memcpy(log_sys->buf, recv_sys->last_block, OS_FILE_LOG_BLOCK_SIZE);
-
 	log_sys->buf_free = (ulint) log_sys->lsn % OS_FILE_LOG_BLOCK_SIZE;
 	log_sys->buf_next_to_write = log_sys->buf_free;
 	log_sys->write_lsn = log_sys->lsn;
@@ -4288,6 +4297,40 @@ recv_recovery_from_checkpoint_start(
 		    log_sys->lsn - log_sys->last_checkpoint_lsn);
 
 	log_sys->next_checkpoint_no = checkpoint_no + 1;
+
+#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	if (	gb_pmw->plogbuf->buf_free > log_sys->buf_free &&
+			gb_pmw->plogbuf->lsn > log_sys->lsn ) {
+		uint64_t len = gb_pmw->plogbuf->buf_free - log_sys->buf_free;
+		uint64_t d_lsn = gb_pmw->plogbuf->lsn - log_sys->lsn;
+		printf("[PMEMOBJ_INFO]!!!!!!!  Migration persistent log buffer to D-RAM log buffer and make the D-RAM log buffer persist\n");
+		//If the pmem log buffer is newer than current log buffer, we have more work to do
+		byte* p_old = (byte*) pm_wrapper_logbuf_get_logdata(gb_pmw);
+		byte* p_new;
+
+		size_t size = gb_pmw->plogbuf->size;
+
+		ut_memcpy(log_sys->buf + log_sys->buf_free, p_old + log_sys->buf_free, len);
+
+		log_sys->buf_free += len;
+		log_sys->lsn += d_lsn;
+		//reallocate the log buffer in PMEM
+		pm_wrapper_logbuf_realloc(gb_pmw, size);
+		p_new = (byte*) pm_wrapper_logbuf_get_logdata(gb_pmw); 
+		//copy the log records from D-RAM heap
+		pmemobj_memcpy_persist(gb_pmw->pop, p_new, log_sys->buf_ptr, log_sys->buf_free);
+		//We free the heap from DRAM
+		ut_free(log_sys->buf_ptr);
+
+		log_sys->buf_ptr = static_cast<byte*> (pm_wrapper_logbuf_get_logdata(gb_pmw));
+		log_sys->buf = static_cast<byte*>(
+				ut_align(log_sys->buf_ptr, OS_FILE_LOG_BLOCK_SIZE));
+		
+		gb_pmw->plogbuf->lsn = log_sys->lsn;
+		gb_pmw->plogbuf->buf_free = log_sys->buf_free;
+	}
+
+#endif
 
 	mutex_enter(&recv_sys->mutex);
 

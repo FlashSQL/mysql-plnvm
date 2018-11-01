@@ -70,6 +70,9 @@ TARGET_LINK_LIBRARIES(pfs_connect_attr-t sql binlog rpl master slave sql)
 TARGET_LINK_LIBRARIES(pfs_connect_attr-t mysys mysys_ssl)
 TARGET_LINK_LIBRARIES(pfs_connect_attr-t vio ${SSL_LIBRARIES})
 TARGET_LINK_LIBRARIES(pfs_connect_attr-t strings dbug regex mysys ${ZLIB_LIBRARY})
+#tdnguyen added
+TARGET_LINK_LIBRARIES(pfs_connect_attr-t ${NVM_LIB_PMEMOBJ} ${NVM_LIB_PMEM} )
+#TARGET_LINK_LIBRARIES(pfs_connect_attr-t ${NVM_LIB_PMEM} )
 ADD_TEST(pfs_connect_attr pfs_connect_attr-t)
 
 # ADD_EXECUTABLE(pfs_benchmark-t pfs_benchmark-t.cc pfs_benchmark_helper.cc)
