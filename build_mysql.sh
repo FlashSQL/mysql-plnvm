@@ -1,5 +1,5 @@
 #!/bin/bash
-MYSQL_HOME=/home/vldb/mysql-pmem
+MYSQL_HOME=/home/vldb/mysql-plnvm
 
 #debug mode
 IS_DEBUG=0
