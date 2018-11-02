@@ -23,6 +23,7 @@ SET(INNOBASE_SOURCES
 	pmem/pmem0buf.cc
 	pmem/pmem0logbuf.cc
 	pmem/pmem0dbw.cc
+	pmem/pmem0log.cc
 	api/api0api.cc
 	api/api0misc.cc
 	btr/btr0btr.cc
