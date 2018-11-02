@@ -18,7 +18,6 @@
 
 #include "my_pmem_common.h"
 #include "my_pmemobj.h"
-#include "pmem0log.h"
 
 #include "os0file.h"
 
@@ -296,17 +295,21 @@ int trx_commit_TT(MEM_TT* tt, uint64_t tid){
 
 /*
  * write REDO log records when a transaction commits
+ * rec_arr (in): pointers to REDO log record in a same page
+ * arr_size (in): size of ther array
+ * page_id (in): page_id of the dirty page
  * */
 int
 pm_REDO_log_write(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-	   	MEM_LOG_REC*	rec
+	   	MEM_LOG_REC**	rec_arr,
+		uint64_t		arr_size,
+		page_id_t		page_id
 	   	) 
 {
 	ulint hashed;
 	ulint i;
-	page_id_t page_id(rec->pid);
 	
 	TOID(PMEM_BUF_BLOCK_LIST) hash_list;
 	PMEM_BUF_BLOCK_LIST* phashlist;
@@ -348,6 +351,7 @@ pm_REDO_log_write(
 			//Case B: add this log record to exist REDO log 
 			pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
 			//TODO: add to exist REDO log
+			add_REDO_log_arr(pop, pfree_block, rec_arr, arr_size);
 			pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 			return PMEM_SUCCESS;
 		}
@@ -370,3 +374,127 @@ pm_REDO_log_write(
 
 	return PMEM_SUCCESS;
 }
+
+/*
+ * Add the array of pointers (each point to a REDO log record) into a PMEM_BUF
+ * Important: The input log record array is sorted by lsn
+ * When insert item in log record array to pmem log list, we start from the head and remember the inserted position for the next insert
+ * */
+void 
+add_REDO_log_arr(
+		PMEMobjpool*	pop,
+		PMEM_BUF_BLOCK*	pblock,
+	   	MEM_LOG_REC**	rec_arr,
+		uint64_t		arr_size){
+		
+		ulint i;	
+		MEM_LOG_REC* memrec;
+		PMEM_LOG_REC* cur_insert;
+
+		assert(pblock);
+
+		PMEM_LOG_LIST* plog_list = D_RW(pblock->log_list);
+
+		pmemobj_rwlock_wrlock(pop, &plog_list->lock);
+
+		cur_insert = plog_list->head;
+
+		for (i = 0; i < arr_size; i++){
+			PMEM_LOG_REC* pmemrec;
+
+			memrec = rec_arr[i];
+			//(1) Allocate the pmem log record from in-mem log record
+			pmemrec = alloc_pmemrec_from_memrec(pop,
+					memrec,
+					PMEM_REDO_LOG);
+
+			// (2) Add the pmem log record to the list, start from the cur_insert
+			if (plog_list->n_items == 0){
+				//The first item
+				plog_list->head = plog_list->tail = pmemrec;
+				plog_list->n_items++;
+				cur_insert = plog_list->head;
+			}
+			else{
+				//Insert from the cur_insert
+				while(cur_insert != NULL){
+					if (cur_insert->lsn > pmemrec->lsn){
+						if(cur_insert->prev == NULL){
+							//insert in head
+							pmemrec->next = cur_insert;
+							pmemrec->prev = cur_insert->prev;
+							cur_insert->prev = pmemrec;
+							plog_list->head = pmemrec;
+						}
+						else {
+							//insert between cur_insert and its prev
+							pmemrec->next = cur_insert;
+							pmemrec->prev = cur_insert->prev;
+							cur_insert->prev->next = pmemrec;
+							cur_insert->prev = pmemrec;
+						}
+						break;
+					}
+					//next log record in the list
+					cur_insert = cur_insert->next;
+				} //end while
+				if (cur_insert == NULL){
+					//insert in tail
+					pmemrec->next = NULL;
+					pmemrec->prev = plog_list->tail;
+					plog_list->tail->next = pmemrec;
+					plog_list->tail = pmemrec;
+
+					cur_insert = plog_list->tail;
+				}
+			}
+			//next rec in the record array, we remember the cur_insert in the pmem log_list so we don't need to restart searching from the head
+		}//end for
+		pmemobj_rwlock_unlock(pop, &plog_list->lock);
+
+
+}
+/*
+ * Allocate the pmem log record from in-mem log record
+ * */
+PMEM_LOG_REC* alloc_pmemrec_from_memrec(
+		PMEMobjpool*	pop,
+		MEM_LOG_REC*	mem_rec,
+		PMEM_LOG_TYPE	type
+		)
+{
+
+	TOID(char) byte_array;
+	byte* plog_data;
+	TOID(PMEM_LOG_REC) pmem_rec;
+	PMEM_LOG_REC* ppmem_rec;
+
+	//Allocate the pmem log record
+	TX_BEGIN(pop) {
+		POBJ_ZNEW(pop, &pmem_rec, PMEM_LOG_REC);
+		ppmem_rec = D_RW(pmem_rec);
+
+		//Copy data
+		ppmem_rec->type = type;
+		ppmem_rec->pid.copy_from(mem_rec->pid);
+		ppmem_rec->lsn = mem_rec->lsn;
+		ppmem_rec->size = mem_rec->size;
+
+		POBJ_ALLOC(pop,
+			   	&byte_array,
+			   	char,
+			   	sizeof(*D_RW(byte_array)) * ppmem_rec->size,
+				NULL,
+				NULL);
+		ppmem_rec->log_data = byte_array.oid;	
+
+		plog_data = static_cast<byte*> (pmemobj_direct(ppmem_rec->log_data));
+
+		pmemobj_memcpy_persist(pop, plog_data, mem_rec->mem_addr, mem_rec->size);
+		//Add to the list
+	}TX_ONABORT {
+	}TX_END
+
+	return ppmem_rec;
+}
+

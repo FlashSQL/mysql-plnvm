@@ -163,7 +163,10 @@ int trx_commit_TT(MEM_TT* tt, uint64_t tid);
 int
 pm_REDO_log_write(
 		PMEMobjpool*	pop,
-	   	MEM_LOG_REC*	rec
+		PMEM_BUF*		buf,
+	   	MEM_LOG_REC**	rec_arr,
+		uint64_t		arr_size;
+		page_id_t		page_id;
 	   	);
 
 /////////////// INLINE, MACRO//////////////////////

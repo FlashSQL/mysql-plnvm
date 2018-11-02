@@ -20,6 +20,11 @@
 #define PMEM_SUCCESS 0
 #define PMEM_ERROR -1
 
+// Partitioned-Log
+#define MAX_DPT_ENTRIES 8192
+#define MAX_TT_ENTRIES 8192
+
+
 #define TOID_ARRAY(x) TOID(x)
 
 #define PMEMOBJ_FILE_NAME "pmemobjfile"
@@ -52,6 +57,12 @@ enum PMEM_BLOCK_STATE {
     PMEM_IN_FLUSH_BLOCK=3,
 	PMEM_PLACE_HOLDER_BLOCK=4
 };
+
+enum PMEM_LOG_TYPE {
+	PMEM_REDO_LOG = 1,
+	PMEM_UNDO_LOG = 2
+};
+
 enum pm_list_cleaner_state {
 	/** Not requested any yet.
 	Moved from FINISHED by the coordinator. */

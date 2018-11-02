@@ -535,8 +535,14 @@ pm_buf_block_init(
 	block->sync = false;
 	//block->bpage = args->bpage;
 	TOID_ASSIGN(block->list, (args->list).oid);
-	block->pmemaddr = args->pmemaddr;
 
+	block->pmemaddr = args->pmemaddr;
+	//New in PL-NVM
+	POBJ_ZNEW(pop, &block->log_list, PMEM_LOG_LIST);	
+	D_RW(block->log_list)->head = D_RW(block->log_list)->tail = NULL;
+	D_RW(block->log_list)->n_items = 0;
+
+	//////////////////////
 	pmemobj_persist(pop, &block->id, sizeof(block->id));
 	pmemobj_persist(pop, &block->size, sizeof(block->size));
 	pmemobj_persist(pop, &block->check, sizeof(block->check));
@@ -544,6 +550,8 @@ pm_buf_block_init(
 	pmemobj_persist(pop, &block->state, sizeof(block->state));
 	pmemobj_persist(pop, &block->list, sizeof(block->list));
 	pmemobj_persist(pop, &block->pmemaddr, sizeof(block->pmemaddr));
+
+	pmemobj_persist(pop, &block->log_list, sizeof(block->log_list));
 	return 0;
 }
 
