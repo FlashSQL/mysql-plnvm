@@ -49,7 +49,8 @@ enum PMEM_OBJ_TYPES {
 enum PMEM_BLOCK_STATE {
     PMEM_FREE_BLOCK = 1,
     PMEM_IN_USED_BLOCK = 2,
-    PMEM_IN_FLUSH_BLOCK=3
+    PMEM_IN_FLUSH_BLOCK=3,
+	PMEM_PLACE_HOLDER_BLOCK=4
 };
 enum pm_list_cleaner_state {
 	/** Not requested any yet.
