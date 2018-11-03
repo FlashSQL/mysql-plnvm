@@ -270,10 +270,16 @@ struct __mem_log_rec {
     uint64_t			lsn;//order of the log record in page
 	
 	//linked pointers
+	//Link to the next/prev log records in the same page
 	MEM_LOG_REC* dpt_prev;
 	MEM_LOG_REC* dpt_next;
+
+	//Link to the next/prev log records in the same transaction
 	MEM_LOG_REC* tt_prev;
 	MEM_LOG_REC* tt_next;
+	//Link to the next/prev log records in trx-page 
+	MEM_LOG_REC* trx_page_prev;
+	MEM_LOG_REC* trx_page_next;
 };
 /*
  * The nvm-resident log record wrapper, can be REDO log or UNDO log
@@ -346,8 +352,10 @@ struct __mem_TT_entry {
 	ib_mutex_t			lock; //the mutex lock protect all items
 	uint64_t			tid; //transaction id
 
-	MEM_LOG_LIST*		list; // FIFO list
+	MEM_LOG_LIST*		list; // transaction FIFO list
 
+	MEM_DPT*			local_dpt;	//local dpt for per-page scanning
+	//Link to the next transaction
 	MEM_TT_ENTRY*		next; //next entry
 };
 
@@ -361,14 +369,35 @@ struct __mem_TT {
 };
 
 MEM_DPT* init_DPT(uint64_t n);
-void add_log_to_DPT(MEM_DPT* dpt, MEM_LOG_REC* rec);
-void add_log_to_DPT_entry(MEM_DPT_ENTRY* entry, MEM_LOG_REC* rec);
 
+void add_log_to_DPT(
+		MEM_DPT* dpt,
+	   	MEM_LOG_REC* rec,
+		bool is_local_dpt);
+
+void 
+add_log_to_global_DPT_entry(
+		MEM_DPT_ENTRY* entry,
+	   	MEM_LOG_REC* rec);
+
+void 
+add_log_to_local_DPT_entry(
+		MEM_DPT_ENTRY* entry,
+	   	MEM_LOG_REC* rec);
 
 
 MEM_TT* init_TT(uint64_t n);
-void add_log_to_TT(MEM_TT* tt, MEM_LOG_REC* rec);
-void add_log_to_TT_entry(MEM_TT_ENTRY* entry, MEM_LOG_REC* rec);
+MEM_TT_ENTRY* init_TT_entry(uint64_t tid);
+
+void 
+add_log_to_TT	(MEM_TT* tt,
+				MEM_DPT* dpt,
+			   	MEM_LOG_REC* rec);
+
+void
+add_log_to_TT_entry(
+	   	MEM_TT_ENTRY* entry,
+	   	MEM_LOG_REC* rec);
 
 int trx_commit_TT(MEM_TT* tt, uint64_t tid);
 
@@ -388,7 +417,7 @@ pm_REDO_log_write(
 		page_id_t		page_id
 	   	);
 
-PMEM_LOG_REC* alloc_pmemrec_from_memrec(
+PMEM_LOG_REC* alloc_pmemrec(
 		PMEMobjpool*	pop,
 		MEM_LOG_REC*	memrec,
 		PMEM_LOG_TYPE	type
