@@ -115,6 +115,7 @@ void add_log_to_DPT(
  *Add a log record to a DPT entry (as sorted doubled linked list)
  Generate next lsn and assign rec->lsn = lsn + 1
 Output: dpt_next, dpt_prev pointers changed
+Caller: add_log_to_DPT() with is_local_dpt = false
  * */
 void
 add_log_to_global_DPT_entry(
@@ -179,6 +180,7 @@ add_log_to_global_DPT_entry(
  *Add a log record to a local DPT entry of a transaction (as sorted doubled linked list)
  Does not enerate next lsn
 Output: trx_page_next and trx_page_prev pointers changed
+Caller: add_log_to_DPT() with is_local_dpt = true
  * */
 void
 add_log_to_local_DPT_entry(
@@ -274,6 +276,10 @@ MEM_TT_ENTRY* init_TT_entry(uint64_t tid){
 
 /*
  * Add a log record into the transaction table
+ * Call this function when a transaction generate the log record in DRAM
+ * (1) Add log record rec to the global DPT, result is rec->lsn is assigned
+ * (2) Add log record rec to transaction entry, based on rec->tid, the corresponding transaction entry e is added
+ * (3) Add log record to the local DPT of e 
  * */
 void 
 add_log_to_TT	(MEM_TT* tt,
@@ -333,6 +339,7 @@ add_log_to_TT	(MEM_TT* tt,
 
 /*
  *Add a log record to a transacton entry in the transaction table
+Caller: add_log_to_TT
  * */
 void
 add_log_to_TT_entry(
