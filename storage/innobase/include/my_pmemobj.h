@@ -387,6 +387,7 @@ add_log_to_local_DPT_entry(
 
 
 MEM_TT* init_TT(uint64_t n);
+
 MEM_TT_ENTRY* init_TT_entry(uint64_t tid);
 
 void 
@@ -399,23 +400,33 @@ add_log_to_TT_entry(
 	   	MEM_TT_ENTRY* entry,
 	   	MEM_LOG_REC* rec);
 
-int trx_commit_TT(MEM_TT* tt, uint64_t tid);
-
-void 
-add_REDO_log_arr(
-		PMEMobjpool*	pop,
-		PMEM_BUF_BLOCK*	pblock,
-	   	MEM_LOG_REC**	rec_arr,
-		uint64_t		arr_size);
-
 int
-pm_REDO_log_write(
+trx_commit_TT(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-	   	MEM_LOG_REC**	rec_arr,
-		uint64_t		arr_size,
-		page_id_t		page_id
+		MEM_DPT*		dpt,
+		MEM_TT*			tt,
+	   	uint64_t		tid);
+
+int
+pm_write_REDO_logs(
+		PMEMobjpool*	pop,
+		PMEM_BUF*		buf,
+		MEM_DPT_ENTRY*	dpt_entry
 	   	);
+
+void 
+pm_merge_REDO_logs_to_placeholder(
+		PMEMobjpool*	pop,
+		PMEM_BUF_BLOCK*	pblock,
+	   	MEM_DPT_ENTRY*	dpt_entry);
+
+void
+pm_write_REDO_logs_to_pmblock(
+		PMEMobjpool*	pop,
+		PMEM_BUF_BLOCK*	pblock,
+	   	MEM_DPT_ENTRY*	dpt_entry
+	   	); 	
 
 PMEM_LOG_REC* alloc_pmemrec(
 		PMEMobjpool*	pop,
@@ -426,6 +437,17 @@ PMEM_LOG_REC* alloc_pmemrec(
 void add_log_to_pmem_list(PMEM_LOG_LIST* plog_list,
 						 PMEM_LOG_REC* rec);
 
+void 
+remove_logs_when_commit(
+		MEM_DPT*	global_dpt,
+		MEM_DPT_ENTRY*		entry);
+
+void 
+remove_TT_entry(
+		MEM_TT* tt,
+	   	MEM_TT_ENTRY* entry,
+	   	MEM_TT_ENTRY* prev_entry,
+		ulint hashed);
 ////////////////////// LOG BUFFER /////////////////////////////
 
 struct __pmem_log_buf {

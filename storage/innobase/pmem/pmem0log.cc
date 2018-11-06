@@ -258,7 +258,9 @@ MEM_TT* init_TT(uint64_t n) {
 
 	return tt;
 }
-MEM_TT_ENTRY* init_TT_entry(uint64_t tid){
+
+MEM_TT_ENTRY*
+init_TT_entry(uint64_t tid){
 
 	MEM_TT_ENTRY* new_entry = (MEM_TT_ENTRY*) malloc(sizeof(MEM_TT_ENTRY));	
 
@@ -271,9 +273,93 @@ MEM_TT_ENTRY* init_TT_entry(uint64_t tid){
 	new_entry->list->n_items = 0;
 
 	//local dpt
-	MEM_DPT* local_dpt = init_DPT(MAX_DPT_ENTRIES);
+	new_entry->local_dpt = init_DPT(MAX_DPT_ENTRIES);
+
 }
 
+/*
+ * Remove a transation entry when the correspondign transaction commit
+ * tt (in): The global transaction table
+ * entry (in): The tt entry to be removed
+ * prev_entry (in): The tt entry right before the entry
+ * hashed (in): Hashed value of the hashed line consists the entry
+ *
+ * Caller: trx_commit_TT()
+ * */
+void 
+remove_TT_entry(
+		MEM_TT* tt,
+		MEM_DPT* global_dpt,
+	   	MEM_TT_ENTRY* entry,
+	   	MEM_TT_ENTRY* prev_entry,
+		ulint hashed)
+{
+	MEM_DPT*			local_dpt;
+	MEM_DPT_ENTRY*		dpt_entry;
+	MEM_DPT_ENTRY*		prev_dpt_entry;
+	ulint				i;
+
+	local_dpt = entry->local_dpt;
+
+	//(1) Remove entry out of the hashed line
+	if (prev_entry != NULL){
+		prev_entry->next = entry->next;
+		entry->next = NULL;
+	}
+	else {
+		//entry is the first item in the hashed line
+		tt->buckets[hashed] = entry->next;
+		entry->next = NULL;
+	}
+
+	//(2) Remove the local DPT of the entry
+	//(2.1) for each hashed line in the local DPT 
+	for (i = 0; i < local_dpt->n; i++){
+		//Get a hashed line
+		dpt_entry = local_dpt->buckets[i];
+		if (dpt_entry == NULL) 
+			continue;
+		assert(dpt_entry);
+		//for each entry in the hashed line
+		while (dpt_entry != NULL){
+			/////////////////////
+			//remove log records and their pointers in this dpt_entry
+			remove_logs_when_commit(global_dpt, dpt_entry);
+			////////////////////////////////////
+			
+			//remove the dpt entry from the dpt hashed line
+			prev_dpt_entry = dpt_entry;
+			dpt_entry = dpt_entry->next;
+			//free resource
+			prev_dpt_entry->next = NULL;
+			free(prev_dpt_entry);
+			prev_dpt_entry = NULL;
+		}
+
+		//Until this point, all dpt_entry in the hashed line is removed. Now, set the hashed line to NULL
+		local_dpt->buckets[i] = NULL;
+		//next hashed line
+	}//end for each hashed line
+
+	//(2.2) Until this point, all hashed lines in the local DPT are removed.
+	free(local_dpt->buckets);	
+	local_dpt->buckets = NULL;
+	local_dpt->n = 0;
+
+	//(3) Free the tt entry
+	free(local_dpt);
+	entry->local_dpt = local_dpt = NULL;
+
+	//(4) Free the tt log list
+	entry->list->head = entry->list->tail = NULL;
+	entry->list->n_items = 0;	
+	free(entry->list);
+	entry->list = NULL;
+
+	//(5) Free the entry
+	free(entry);
+	entry = NULL;
+}
 /*
  * Add a log record into the transaction table
  * Call this function when a transaction generate the log record in DRAM
@@ -372,24 +458,46 @@ add_log_to_TT_entry(
 }
 /*
  * Handle changes in the transaction table when a transaction tid commit 
+ * pop (in): The global pop
+ * buf (in): The global buf
+ * global_dpt (in): The global dpt
+ * tt (in): The global tt
+ * tid (in): Transaction id
  * */
-int trx_commit_TT(MEM_TT* tt, uint64_t tid){
+int
+trx_commit_TT(
+		PMEMobjpool*	pop,
+		PMEM_BUF*		buf,
+		MEM_DPT*		global_dpt,
+		MEM_TT*			tt,
+	   	uint64_t		tid)
+{
 	ulint			hashed;
+	ulint			i;
 	MEM_TT_ENTRY*	bucket;
-	MEM_LOG_LIST*	list;
-	MEM_LOG_REC*	rec;
 	
-	//(1) Get the hash by transaction id
-	PMEM_LOG_HASH_KEY(hashed, rec->tid, tt->n);
+	MEM_DPT*		local_dpt;	
+	MEM_DPT_ENTRY*	dpt_entry;
+
+	//For remove
+	MEM_TT_ENTRY*	prev_bucket; // for remove
+	MEM_DPT_ENTRY*	prev_dpt_entry;
+	MEM_LOG_LIST*	log_list;
+	MEM_LOG_REC*	memrec;
+	MEM_LOG_REC*	memrec_next;
+	
+	//(1) Get transaction entry by the input tid 
+	PMEM_LOG_HASH_KEY(hashed, tid, tt->n);
 	assert (hashed < tt->n);
 
 	bucket = tt->buckets[hashed];
+	prev_bucket = NULL;
 	
-	//(2) Multiple entries can have the same hashed value, Search for the right entry in the same hashed 
 	while (bucket != NULL){
-		if (bucket->tid == rec->tid){
+		if (bucket->tid == tid){
 			break;
 		}
+		prev_bucket = bucket;
 		bucket = bucket->next;
 	}
 
@@ -397,44 +505,57 @@ int trx_commit_TT(MEM_TT* tt, uint64_t tid){
 		printf("PMEM_LOG Error, tid %zu not found in transaction table\n", tid);
 		return PMEM_ERROR;
 	}
-	//If you reach here, bucket is the pointer to the list of REDO log 
-	
-	//(2) Write REDO log records by forward scaning in the list of rec 
-	list = bucket->list;
-	rec = list->head;
-	assert(rec != NULL);
-	//forward scanning
-	while (rec != NULL){
 
-		rec = rec->tt_next;
-	}//end while (rec != NULL)
+	//(2) For each DPT entry in the local dpt, write REDO log to corresponding page	
+	local_dpt = bucket->local_dpt;
+	assert(local_dpt);
+	for (i = 0; i < local_dpt->n; i++){
+		//Get a hashed line
+		dpt_entry = local_dpt->buckets[i];
+		if (dpt_entry == NULL) 
+			continue;
+		assert(dpt_entry);
+		//for each entry in the same hashed line
+		while (dpt_entry != NULL){
+			pm_write_REDO_logs(pop, buf, dpt_entry);
+
+			dpt_entry = dpt_entry->next;
+		}
+		//next hashed line
+	}//end for each hashed line
+
+	//(3) Remove tt entry and its corresponding resources
+	remove_TT_entry (tt, global_dpt, bucket, prev_bucket, hashed);
+
+	
 }
 
 /*
- * write REDO log records when a transaction commits
- * rec_arr (in): pointers to REDO log record in a same page
- * arr_size (in): size of ther array
- * page_id (in): page_id of the dirty page
+ * write per-page REDO log records when a transaction commits
+ * pop: global pop
+ * buf: global PMEM_BUF wrapper
+ * dpt_entry (in): list of per-page REDO log record sorted by lsn 
+ *
+ * caller: trx_commit_TT() 
  * */
 int
-pm_REDO_log_write(
+pm_write_REDO_logs(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-	   	MEM_LOG_REC**	rec_arr,
-		uint64_t		arr_size,
-		page_id_t		page_id
+		MEM_DPT_ENTRY*	dpt_entry
 	   	) 
 {
 	ulint hashed;
 	ulint i;
-	
+		
 	TOID(PMEM_BUF_BLOCK_LIST) hash_list;
 	PMEM_BUF_BLOCK_LIST* phashlist;
 	PMEM_BUF_BLOCK* pblock;
 
 	TOID(PMEM_BUF_BLOCK) free_block;
 	PMEM_BUF_BLOCK* pfree_block;
-
+	
+	page_id_t page_id(dpt_entry->id);
 
 	//(1) Get the bucket that has the page
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
@@ -456,19 +577,20 @@ pm_REDO_log_write(
 		if(pfree_block->state == PMEM_IN_USED_BLOCK &&
 				pfree_block->id.equals_to(page_id)) {
 
-			//Case A: Directy apply REDO log to the page
+			//Case A: Directy apply REDO log to the page and remove duplicate UNDO log records
 			pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
 			//TODO: apply REDO log to the page
+			pm_write_REDO_logs_to_pmblock(pop, pfree_block, dpt_entry); 	
 			pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 			return PMEM_SUCCESS;
 		}
 		else if(pfree_block->state == PMEM_PLACE_HOLDER_BLOCK &&
 				pfree_block->id.equals_to(page_id)) {
 
-			//Case B: add this log record to exist REDO log 
+			//Case B: add this log record to exist REDO log			   
 			pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
 
-			add_REDO_log_arr(pop, pfree_block, rec_arr, arr_size);
+			pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
 			pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 			return PMEM_SUCCESS;
 		}
@@ -478,8 +600,7 @@ pm_REDO_log_write(
 
 			pfree_block->state = PMEM_PLACE_HOLDER_BLOCK;
 
-			add_REDO_log_arr(pop, pfree_block, rec_arr, arr_size);
-
+			pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
 			pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 			return PMEM_SUCCESS;
 		}
@@ -496,16 +617,16 @@ pm_REDO_log_write(
 }
 
 /*
- * Add the array of pointers (each point to a REDO log record) into a PMEM_BUF
- * Important: The input log record array is sorted by lsn
- * When insert item in log record array to pmem log list, we start from the head and remember the inserted position for the next insert
+ * Add REDO log records into a pmem block 
+ * Important: The input log records are sorted by lsn
+ * We start from the head and remember the inserted position for the next insert
  * */
 void 
-add_REDO_log_arr(
+pm_merge_REDO_logs_to_placeholder(
 		PMEMobjpool*	pop,
 		PMEM_BUF_BLOCK*	pblock,
-	   	MEM_LOG_REC**	rec_arr,
-		uint64_t		arr_size){
+	   	MEM_DPT_ENTRY*	dpt_entry)
+{
 		
 		ulint i;	
 		MEM_LOG_REC* memrec;
@@ -515,14 +636,12 @@ add_REDO_log_arr(
 
 		PMEM_LOG_LIST* plog_list = D_RW(pblock->log_list);
 
-		pmemobj_rwlock_wrlock(pop, &plog_list->lock);
-
 		cur_insert = plog_list->head;
 
-		for (i = 0; i < arr_size; i++){
+		memrec = dpt_entry->list->head;
+		
+		while(memrec != NULL){
 			PMEM_LOG_REC* pmemrec;
-
-			memrec = rec_arr[i];
 			//(1) Allocate the pmem log record from in-mem log record
 			pmemrec = alloc_pmemrec(pop,
 									memrec,
@@ -568,9 +687,9 @@ add_REDO_log_arr(
 					cur_insert = plog_list->tail;
 				}
 			}
-			//next rec in the record array, we remember the cur_insert in the pmem log_list so we don't need to restart searching from the head
-		}//end for
-		pmemobj_rwlock_unlock(pop, &plog_list->lock);
+			//next rec in the local dpt entry
+			memrec = memrec->trx_page_next;
+		}//end while(memrec != NULL) 
 
 
 }
@@ -617,4 +736,70 @@ PMEM_LOG_REC* alloc_pmemrec_from_memrec(
 
 	return ppmem_rec;
 }
+/*
+ * Remove log records and all of their pointers related to a local dpt entry of a transaction when it commit
+ * global_dpt (in): The global dpt, used for remove the corresponding pointers
+ * entry (in): The local dpt entry of the transaction
+ * */
+void 
+remove_logs_when_commit(
+		MEM_DPT*	global_dpt,
+		MEM_DPT_ENTRY*		entry)
+{
+	ulint hashed;
 
+	MEM_LOG_REC*	memrec;
+	MEM_LOG_REC*	next_memrec;//next log rec of memrec in the entry
+	MEM_DPT_ENTRY* global_DPT_entry;
+	MEM_DPT_ENTRY* bucket;
+
+	//(1) Get DPT entry in the global DPT
+	PMEM_LOG_HASH_KEY(hashed, entry->id.fold(), global_dpt->n);
+	global_DPT_entry = global_dpt->buckets[hashed];
+	assert(global_DPT_entry);
+
+	while (global_DPT_entry != NULL){
+		if (global_DPT_entry->id.equals_to(entry->id)){
+			break;
+		}
+		global_DPT_entry = global_DPT_entry->next;
+	}
+
+	if (global_DPT_entry == NULL){
+		printf("PMEM ERROR! Cannot find corresponding DPT entry in remove_local_DPT_entry()\n");
+		assert(0);
+	}
+	//(2) For each log record in the entry, remove pointers
+	memrec = entry->list->head;
+
+	while (memrec != NULL){
+		next_memrec = memrec->trx_page_next;
+
+		//(2.1) Remove from global DPT entry
+		if (memrec->dpt_prev == NULL){
+			//memrec is the first log record in the global DPT entry
+			global_DPT_entry->list->head = memrec->dpt_next;
+			memrec->dpt_next->dpt_prev = NULL;
+
+		}
+		else{
+			memrec->dpt_prev->dpt_next = memrec->dpt_next;
+			memrec->dpt_next->dpt_prev = memrec->dpt_prev;
+		}
+		memrec->dpt_next = NULL;
+		memrec->dpt_prev = NULL;
+
+		//(2.2) Remove pointers from TT and local DPT entry
+		memrec->tt_next = NULL;
+		memrec->tt_prev = NULL;
+		memrec->trx_page_next = NULL;
+		memrec->trx_page_prev = NULL;
+
+		//(2.3) Free log record
+		free (memrec->mem_addr);
+		memrec->mem_addr = NULL;
+		free (memrec);
+
+		memrec = next_memrec;
+	}//end while
+}
