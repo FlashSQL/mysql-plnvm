@@ -268,7 +268,7 @@ struct __mem_log_rec {
 	page_id_t			pid; //page id		
 	uint64_t			tid; //transaction id
     uint64_t			lsn;//order of the log record in page
-	
+	bool				is_in_pmem; //true if there is corresponding log record in pmem	
 	//linked pointers
 	//Link to the next/prev log records in the same page
 	MEM_LOG_REC* dpt_prev;
@@ -294,8 +294,8 @@ struct __pmem_log_rec {
 	PMEM_LOG_TYPE type; //log type
 	
 	//linked pointers
-	PMEM_LOG_REC* prev;
-	PMEM_LOG_REC* next;
+	TOID(PMEM_LOG_REC) prev;
+	TOID(PMEM_LOG_REC) next;
 };
 
 /*
@@ -312,8 +312,8 @@ struct __mem_log_list {
 struct __pmem_log_list {
 	PMEMrwlock					lock; //this lock protects remain properties
 
-	PMEM_LOG_REC*		head;
-	PMEM_LOG_REC*		tail;
+	TOID(PMEM_LOG_REC)		head;
+	TOID(PMEM_LOG_REC)		tail;
 	uint64_t			n_items;
 };
 
@@ -428,7 +428,14 @@ pm_write_REDO_logs_to_pmblock(
 	   	MEM_DPT_ENTRY*	dpt_entry
 	   	); 	
 
-PMEM_LOG_REC* alloc_pmemrec(
+void
+pm_remove_UNDO_log_from_list(
+		PMEMobjpool*	pop,
+		PMEM_LOG_LIST* list,
+		MEM_LOG_REC* memrec);
+
+
+TOID(PMEM_LOG_REC) alloc_pmemrec(
 		PMEMobjpool*	pop,
 		MEM_LOG_REC*	memrec,
 		PMEM_LOG_TYPE	type
@@ -445,9 +452,16 @@ remove_logs_when_commit(
 void 
 remove_TT_entry(
 		MEM_TT* tt,
+		MEM_DPT* global_dpt,
 	   	MEM_TT_ENTRY* entry,
 	   	MEM_TT_ENTRY* prev_entry,
 		ulint hashed);
+
+void 
+free_pmemrec(
+		PMEMobjpool*	pop,
+		TOID(PMEM_LOG_REC)	pmem_rec
+		);
 ////////////////////// LOG BUFFER /////////////////////////////
 
 struct __pmem_log_buf {

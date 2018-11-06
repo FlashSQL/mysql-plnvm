@@ -539,7 +539,8 @@ pm_buf_block_init(
 	block->pmemaddr = args->pmemaddr;
 	//New in PL-NVM
 	POBJ_ZNEW(pop, &block->log_list, PMEM_LOG_LIST);	
-	D_RW(block->log_list)->head = D_RW(block->log_list)->tail = NULL;
+	TOID_ASSIGN( D_RW(block->log_list)->head, OID_NULL);
+	TOID_ASSIGN( D_RW(block->log_list)->tail, OID_NULL);
 	D_RW(block->log_list)->n_items = 0;
 
 	//////////////////////

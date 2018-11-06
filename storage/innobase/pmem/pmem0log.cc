@@ -579,7 +579,6 @@ pm_write_REDO_logs(
 
 			//Case A: Directy apply REDO log to the page and remove duplicate UNDO log records
 			pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
-			//TODO: apply REDO log to the page
 			pm_write_REDO_logs_to_pmblock(pop, pfree_block, dpt_entry); 	
 			pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 			return PMEM_SUCCESS;
@@ -630,18 +629,19 @@ pm_merge_REDO_logs_to_placeholder(
 		
 		ulint i;	
 		MEM_LOG_REC* memrec;
-		PMEM_LOG_REC* cur_insert;
+		TOID(PMEM_LOG_REC) cur_insert;
 
 		assert(pblock);
 
 		PMEM_LOG_LIST* plog_list = D_RW(pblock->log_list);
-
+		
+		TOID_ASSIGN(cur_insert, (plog_list->head).oid);
 		cur_insert = plog_list->head;
 
 		memrec = dpt_entry->list->head;
 		
 		while(memrec != NULL){
-			PMEM_LOG_REC* pmemrec;
+			TOID(PMEM_LOG_REC) pmemrec;
 			//(1) Allocate the pmem log record from in-mem log record
 			pmemrec = alloc_pmemrec(pop,
 									memrec,
@@ -650,41 +650,59 @@ pm_merge_REDO_logs_to_placeholder(
 			// (2) Add the pmem log record to the list, start from the cur_insert
 			if (plog_list->n_items == 0){
 				//The first item
-				plog_list->head = plog_list->tail = pmemrec;
+				TOID_ASSIGN(plog_list->head, pmemrec.oid);
+				TOID_ASSIGN(plog_list->tail, pmemrec.oid);
 				plog_list->n_items++;
-				cur_insert = plog_list->head;
+				TOID_ASSIGN(cur_insert, (plog_list->head).oid);
 			}
 			else{
 				//Insert from the cur_insert
-				while(cur_insert != NULL){
-					if (cur_insert->lsn > pmemrec->lsn){
-						if(cur_insert->prev == NULL){
+				while (! TOID_IS_NULL(cur_insert)){
+					if (D_RW(cur_insert)->lsn > D_RW(pmemrec)->lsn){
+						if (TOID_IS_NULL(D_RW(cur_insert)->prev)){
 							//insert in head
-							pmemrec->next = cur_insert;
-							pmemrec->prev = cur_insert->prev;
-							cur_insert->prev = pmemrec;
-							plog_list->head = pmemrec;
+							TOID_ASSIGN( D_RW(pmemrec)->next, cur_insert.oid);
+							TOID_ASSIGN( D_RW(pmemrec)->prev, ( D_RW(cur_insert)->prev).oid);
+							TOID_ASSIGN( D_RW(cur_insert)->prev, pmemrec.oid);
+							TOID_ASSIGN( plog_list->head, pmemrec.oid);
+							
+							//pmemrec->next = cur_insert;
+							//pmemrec->prev = cur_insert->prev;
+							//cur_insert->prev = pmemrec;
+							//plog_list->head = pmemrec;
 						}
 						else {
 							//insert between cur_insert and its prev
-							pmemrec->next = cur_insert;
-							pmemrec->prev = cur_insert->prev;
-							cur_insert->prev->next = pmemrec;
-							cur_insert->prev = pmemrec;
+							TOID_ASSIGN( D_RW(pmemrec)->next, cur_insert.oid);
+							TOID_ASSIGN( D_RW(pmemrec)->prev, (D_RW(cur_insert)->prev).oid);
+							TOID_ASSIGN( D_RW(D_RW(cur_insert)->prev)->next, pmemrec.oid);
+							TOID_ASSIGN( D_RW(cur_insert)->prev, pmemrec.oid);
+							//pmemrec->next = cur_insert;
+							//pmemrec->prev = cur_insert->prev;
+							//cur_insert->prev->next = pmemrec;
+							//cur_insert->prev = pmemrec;
 						}
 						break;
 					}
 					//next log record in the list
-					cur_insert = cur_insert->next;
+					TOID_ASSIGN(cur_insert, (D_RW(cur_insert)->next).oid);
+					//cur_insert = cur_insert->next;
 				} //end while
-				if (cur_insert == NULL){
+				if (TOID_IS_NULL(cur_insert)){
 					//insert in tail
-					pmemrec->next = NULL;
-					pmemrec->prev = plog_list->tail;
-					plog_list->tail->next = pmemrec;
-					plog_list->tail = pmemrec;
+					TOID_ASSIGN( D_RW(pmemrec)->next, OID_NULL);
+					TOID_ASSIGN( D_RW(pmemrec)->prev, (plog_list->tail).oid);
+					TOID_ASSIGN( D_RW(plog_list->tail)->next, pmemrec.oid);
+					TOID_ASSIGN( plog_list->tail, pmemrec.oid);
 
-					cur_insert = plog_list->tail;
+					TOID_ASSIGN( cur_insert, (plog_list->tail).oid);
+
+					//pmemrec->next = NULL;
+					//pmemrec->prev = plog_list->tail;
+					//plog_list->tail->next = pmemrec;
+					//plog_list->tail = pmemrec;
+
+					//cur_insert = plog_list->tail;
 				}
 			}
 			//next rec in the local dpt entry
@@ -694,9 +712,90 @@ pm_merge_REDO_logs_to_placeholder(
 
 }
 /*
+ * Write REDO logs from a dpt entry into a pmem block when a transaction commit
+ * pop (in): global pop
+ * pblock (in): The pmem block
+ * dpt_entry (in): The dpt entry that consists of REDO logs
+ *
+ * */
+void
+pm_write_REDO_logs_to_pmblock(
+		PMEMobjpool*	pop,
+		PMEM_BUF_BLOCK*	pblock,
+	   	MEM_DPT_ENTRY*	dtp_entry
+	   	)
+{
+	MEM_LOG_REC* memrec;
+	PMEM_LOG_REC* pmemrec;
+	PMEM_LOG_LIST* pundo_log_list;
+	//when the pblock is a pmem page, the log_list is UNDO log
+	pundo_log_list = D_RW(pblock->log_list);
+
+	memrec = dtp_entry->list->head;
+
+	while (memrec != NULL){
+		if (memrec->is_in_pmem){
+			//remove the corresponding log record in UNDO list
+			pm_remove_UNDO_log_from_list(pop, pundo_log_list, memrec);
+		}
+		else{
+			//TODO: directly apply REDO log to the pmem page
+		}
+		//next rec in the local dpt entry
+		memrec = memrec->trx_page_next;
+	}
+
+}
+/*
+ * Remove an UNDO log record from the list
+ * Used when a transaction commit
+ * */
+void
+pm_remove_UNDO_log_from_list(
+		PMEMobjpool*	pop,
+		PMEM_LOG_LIST* list,
+		MEM_LOG_REC* memrec)
+{
+	TOID(PMEM_LOG_REC) pmemrec;
+	PMEM_LOG_REC* ppmemrec;
+
+	TOID_ASSIGN(pmemrec, list->head.oid) ;
+	ppmemrec = D_RW(pmemrec);
+
+	assert(ppmemrec);
+	assert(ppmemrec->type == PMEM_UNDO_LOG);
+
+	while (ppmemrec != NULL){
+		if (ppmemrec->lsn == memrec->lsn){
+			//found, remove pmemrec from the list
+			if ( !TOID_IS_NULL(ppmemrec->prev)) {
+				TOID_ASSIGN( D_RW(ppmemrec->prev)->next,
+						(ppmemrec->next).oid);
+				TOID_ASSIGN( D_RW(ppmemrec->next)->prev,
+						(ppmemrec->prev).oid);
+			}
+			else {
+				//pmem rec is the first UNDO Log record
+				TOID_ASSIGN(list->head, (ppmemrec->next).oid);
+				TOID_ASSIGN( D_RW(ppmemrec->next)->prev, list->head.oid);
+			}
+
+				TOID_ASSIGN(ppmemrec->next, OID_NULL);
+				TOID_ASSIGN(ppmemrec->prev, OID_NULL);
+
+				free_pmemrec(pop, pmemrec);
+			break;
+		}
+		//next pmem rec
+		TOID_ASSIGN( pmemrec, (D_RW(pmemrec)->next).oid);
+		ppmemrec = D_RW(pmemrec);
+	} //end while
+}
+
+/*
  * Allocate the pmem log record from in-mem log record
  * */
-PMEM_LOG_REC* alloc_pmemrec_from_memrec(
+TOID(PMEM_LOG_REC) alloc_pmemrec(
 		PMEMobjpool*	pop,
 		MEM_LOG_REC*	mem_rec,
 		PMEM_LOG_TYPE	type
@@ -734,8 +833,31 @@ PMEM_LOG_REC* alloc_pmemrec_from_memrec(
 	}TX_ONABORT {
 	}TX_END
 
-	return ppmem_rec;
+	return pmem_rec;
 }
+
+/*
+ * Free the pmem log record 
+ * */
+void 
+free_pmemrec(
+		PMEMobjpool*	pop,
+		TOID(PMEM_LOG_REC)	pmem_rec
+		)
+{
+
+	TX_BEGIN(pop) {
+		//free the log content
+		pmemobj_free (&(D_RW(pmem_rec)->log_data));
+		D_RW(pmem_rec)->size = 0;
+		
+		//free the whole log record	
+		POBJ_FREE(&pmem_rec);	
+
+	}TX_ONABORT {
+	}TX_END
+}
+
 /*
  * Remove log records and all of their pointers related to a local dpt entry of a transaction when it commit
  * global_dpt (in): The global dpt, used for remove the corresponding pointers
