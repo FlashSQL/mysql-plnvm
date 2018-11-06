@@ -5990,7 +5990,7 @@ pm_fil_io_batch(
 		//if (pblock->state == PMEM_FREE_BLOCK ||
 		//		pblock->state == PMEM_IN_FLUSH_BLOCK) {
 		if (pblock->state == PMEM_FREE_BLOCK) {
-			//printf("!!!!!PMEM_WARNING: in list %zu don't write a FREE BLOCK, skip to next block\n", plist->list_id);
+			//This block is swaped with the free block when pm_buf_handle_full_hashed_list() if it has REDO/UNDO logs
 			continue;
 		}
 		assert( pblock->pmemaddr < pmem_buf->size);

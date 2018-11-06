@@ -462,6 +462,17 @@ free_pmemrec(
 		PMEMobjpool*	pop,
 		TOID(PMEM_LOG_REC)	pmem_rec
 		);
+
+void
+pm_copy_logs_pmemlist(
+		PMEMobjpool*	pop,
+		PMEM_BUF*		buf,
+		PMEM_BUF_BLOCK_LIST* des, 
+		PMEM_BUF_BLOCK_LIST* src);
+void 
+pm_swap_blocks(
+		TOID(PMEM_BUF_BLOCK) a,
+		TOID(PMEM_BUF_BLOCK) b);
 ////////////////////// LOG BUFFER /////////////////////////////
 
 struct __pmem_log_buf {

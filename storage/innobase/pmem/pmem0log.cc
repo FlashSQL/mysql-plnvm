@@ -537,6 +537,7 @@ trx_commit_TT(
  * dpt_entry (in): list of per-page REDO log record sorted by lsn 
  *
  * caller: trx_commit_TT() 
+ * This function use some part of pm_buf_write_with_flusher(), but it doesn't actually write data, just create the place-holder
  * */
 int
 pm_write_REDO_logs(
@@ -564,20 +565,38 @@ pm_write_REDO_logs(
 	PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
 #endif
 
+retry:
 	TOID_ASSIGN(hash_list, (D_RW(buf->buckets)[hashed]).oid);
 
 	phashlist = D_RW(hash_list);
 	assert(phashlist);
+
+	pmemobj_rwlock_wrlock(pop, &phashlist->lock);
+	
+	// (1) If the current hash list is flushing wait and retry
+	if (phashlist->is_flush) {
+		if (buf->is_recovery	&&
+			(phashlist->cur_pages >= phashlist->max_pages * PMEM_BUF_FLUSH_PCT)) {
+			pmemobj_rwlock_unlock(pop, &phashlist->lock);
+			pm_buf_handle_full_hashed_list(pop, buf, hashed);
+			goto retry;
+		}
+		pmemobj_rwlock_unlock(pop, &phashlist->lock);
+		os_event_wait(buf->flush_events[hashed]);
+
+		goto retry;
+	}
+
 	//(2) Get the page in the bucket
 	
 	pblock = NULL;
 
-	for (i = 0; i < D_RO(hash_list)->cur_pages; i++) {
+	for (i = 0; i < D_RO(hash_list)->max_pages; i++) {
 		pfree_block = D_RW(D_RW(phashlist->arr)[i]);
 		if(pfree_block->state == PMEM_IN_USED_BLOCK &&
 				pfree_block->id.equals_to(page_id)) {
 
-			//Case A: Directy apply REDO log to the page and remove duplicate UNDO log records
+			//Case A: Directly apply REDO log to the page and remove duplicate UNDO log records
 			pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
 			pm_write_REDO_logs_to_pmblock(pop, pfree_block, dpt_entry); 	
 			pmemobj_rwlock_unlock(pop, &pfree_block->lock);
@@ -595,23 +614,71 @@ pm_write_REDO_logs(
 		}
 		else if (pfree_block->state == PMEM_FREE_BLOCK) {
 			//Case C: create the place-holder	and add the log
-			pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
-
-			pfree_block->state = PMEM_PLACE_HOLDER_BLOCK;
-
-			pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
-			pmemobj_rwlock_unlock(pop, &pfree_block->lock);
-			return PMEM_SUCCESS;
+			break;
 		}
 
 	} //end for
-	
-	if (pblock == NULL){
-		//(2.1) The dirty page is not in PB-NVM, create the place-holder
+	if ( i == phashlist->max_pages ) {
+		//ALl blocks in this hash_list are either non-fre or locked
+		//This is rarely happen but we still deal with it
+		pmemobj_rwlock_unlock(pop, &phashlist->lock);
+		os_event_wait(buf->flush_events[hashed]);
+		goto retry;
 	}
+	//Case C: create the place-holder	and add the log
+	//
+	pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
 
+	// This code for recovery	
+	fil_node_t*			node;
+	node = pm_get_node_from_space(page_id.space());
+	if (node == NULL) {
+		printf("PMEM_ERROR node from space is NULL\n");
+		assert(0);
+	}
+	strcpy(pfree_block->file_name, node->name);
+	// end code
+	// Handle similar to write to a new pmem block
+	pfree_block->id.copy_from(page_id);
 
+	assert(pfree_block->state == PMEM_FREE_BLOCK);
+	pfree_block->state = PMEM_PLACE_HOLDER_BLOCK;
 
+	pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
+	pmemobj_rwlock_unlock(pop, &pfree_block->lock);
+	
+	//Create a place-holder also increase the cur_pages
+	++(phashlist->cur_pages);
+
+// HANDLE FULL LIST ////////////////////////////////////////////////////////////
+	if (phashlist->cur_pages >= phashlist->max_pages * PMEM_BUF_FLUSH_PCT) {
+		//(3) The hashlist is (nearly) full, flush it and assign a free list 
+		phashlist->hashed_id = hashed;
+		phashlist->is_flush = true;
+		//block upcomming writes into this bucket
+		os_event_reset(buf->flush_events[hashed]);
+		
+#if defined (UNIV_PMEMOBJ_BUF_STAT)
+	++buf->bucket_stats[hashed].n_flushed_lists;
+#endif 
+
+		pmemobj_rwlock_unlock(pop, &phashlist->lock);
+#if defined(UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
+		printf("\n[1] BEGIN pm_buf_handle_full list_id %zu, hashed_id %zu\n", phashlist->list_id, hashed);
+#endif 
+		pm_buf_handle_full_hashed_list(pop, buf, hashed);
+#if defined(UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
+		printf("\n[1] END pm_buf_handle_full list_id %zu, hashed_id %zu\n", phashlist->list_id, hashed);
+#endif 
+
+		//unblock the upcomming writes on this bucket
+		os_event_set(buf->flush_events[hashed]);
+	}
+	else {
+		//unlock the hashed list
+		pmemobj_rwlock_unlock(pop, &phashlist->lock);
+		//pmemobj_rwlock_unlock(pop, &D_RW(D_RW(buf->buckets)[hashed])->lock);
+	}
 	return PMEM_SUCCESS;
 }
 
@@ -924,4 +991,59 @@ remove_logs_when_commit(
 
 		memrec = next_memrec;
 	}//end while
+}
+/*
+ *Copy blocks that has remain REDO logs or UNDO logs from a src list to des list
+ This function is called in pm_buf_handle_full_hashed_list() when propgatation to disk
+ * */
+void
+pm_copy_logs_pmemlist(
+		PMEMobjpool*	pop,
+		PMEM_BUF*		buf,
+		PMEM_BUF_BLOCK_LIST* des, 
+		PMEM_BUF_BLOCK_LIST* src)
+{
+	ulint			i;
+	ulint			count;
+
+	PMEM_BUF_BLOCK* pblock_src;	
+	PMEM_BUF_BLOCK* pblock_des;	
+
+	TOID(PMEM_BUF_BLOCK) temp;
+
+	PMEM_LOG_LIST* plog_list;
+
+
+	des->hashed_id = src->hashed_id;
+	count = 0;
+
+	for (i = 0; i < src->cur_pages; i++){
+		pblock_src = D_RW(D_RW(src->arr)[i]);
+		if (pblock_src->state == PMEM_IN_USED_BLOCK){
+			plog_list = D_RW(pblock_src->log_list);
+			if (plog_list->n_items > 0){
+				//swap oid
+				pm_swap_blocks( D_RW(src->arr)[i],
+						D_RW(des->arr)[count]);
+				des->cur_pages = count = count + 1;
+			}
+		}
+		else if(pblock_src->state == PMEM_PLACE_HOLDER_BLOCK){
+			pm_swap_blocks( D_RW(src->arr)[i],
+					D_RW(des->arr)[count]);
+
+			des->cur_pages = count = count + 1;
+		}
+	}
+}
+void 
+pm_swap_blocks(
+		TOID(PMEM_BUF_BLOCK) a,
+		TOID(PMEM_BUF_BLOCK) b)
+{
+	TOID(PMEM_BUF_BLOCK) temp;
+
+	TOID_ASSIGN(temp, a.oid);
+	TOID_ASSIGN(a, b.oid);
+	TOID_ASSIGN(b, temp.oid);
 }

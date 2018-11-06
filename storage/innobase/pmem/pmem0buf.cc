@@ -1638,6 +1638,8 @@ get_free_list:
  *	@param[in] pop		PMEMobjpool pointer
  *	@param[in] buf		PMEM_BUF pointer
  *	@param[in] plist	pointer to the list that will be flushed 
+ *
+ *	caller: pm_flusher_worker() thread in buf0flu.cc
  * */
 void
 pm_buf_flush_list(
@@ -2317,31 +2319,14 @@ pm_buf_handle_full_hashed_list(
 		PMEM_BUF*		buf,
 		ulint			hashed) {
 
-	TOID(PMEM_BUF_BLOCK_LIST) hash_list;
+	TOID(PMEM_BUF_BLOCK_LIST) hashlist;
 	PMEM_BUF_BLOCK_LIST* phashlist;
 
-	TOID_ASSIGN(hash_list, (D_RW(buf->buckets)[hashed]).oid);
-	phashlist = D_RW(hash_list);
-
-	/*(1) Handle flusher */
-#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
-	printf("\n[[1.1] BEGIN handle assign flusher list %zu hashed %zu ===> ", phashlist->list_id, hashed);
-#endif
-	pm_buf_assign_flusher(buf, phashlist);
-#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
-	printf("\n[1.1] END handle assign flusher list %zu]\n", phashlist->list_id);
-#endif
+	TOID_ASSIGN(hashlist, (D_RW(buf->buckets)[hashed]).oid);
+	phashlist = D_RW(hashlist);
 
 
-	//this assert inform that all write is async
-	if (buf->is_async_only){ 
-		if (phashlist->n_aio_pending != phashlist->cur_pages) {
-			printf("!!!! ====> PMEM_ERROR: n_aio_pending=%zu != cur_pages = %zu. They should be equal\n", phashlist->n_aio_pending, phashlist->cur_pages);
-			assert (phashlist->n_aio_pending == phashlist->cur_pages);
-		}
-	}
-
-	/*    (2) Handle free list*/
+	/*    (1) Handle free list*/
 get_free_list:
 #if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
 	printf("\n [1.2] BEGIN get_free_list to replace full list %zu ==>", phashlist->list_id);
@@ -2365,20 +2350,43 @@ get_free_list:
 	D_RW(buf->free_pool)->cur_lists--;
 	//The free_pool may empty now, wait in necessary
 	os_event_reset(buf->free_pool_event);
+	
+	//New in PL-NVM//////////////////////////////////
+	//Copy pmem blocks that have UNDO log or REDO log
+	pm_copy_logs_pmemlist(pop, buf, D_RW(first_list), D_RW(hashlist));
+
+	//End new in PL-NVM /////////////////////////////
+
 	pmemobj_rwlock_unlock(pop, &(D_RW(buf->free_pool)->lock));
 
 	assert(!TOID_IS_NULL(first_list));
 	//This ref hashed_id used for batch AIO
 	//Hashed id of old list is kept until its batch AIO is completed
 	D_RW(first_list)->hashed_id = hashed;
-	
-	//tdnguyen test
-	//printf("PMEM_INFO first_list id %zu \n", D_RW(first_list)->list_id);
 
 	//Asign linked-list refs 
 	TOID_ASSIGN(D_RW(buf->buckets)[hashed], first_list.oid);
-	TOID_ASSIGN( D_RW(first_list)->next_list, hash_list.oid);
-	TOID_ASSIGN( D_RW(hash_list)->prev_list, first_list.oid);
+	TOID_ASSIGN( D_RW(first_list)->next_list, hashlist.oid);
+	TOID_ASSIGN( D_RW(hashlist)->prev_list, first_list.oid);
+
+	/*(2) Handle flusher */
+#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
+	printf("\n[[1.1] BEGIN handle assign flusher list %zu hashed %zu ===> ", phashlist->list_id, hashed);
+#endif
+	pm_buf_assign_flusher(buf, phashlist);
+#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
+	printf("\n[1.1] END handle assign flusher list %zu]\n", phashlist->list_id);
+#endif
+
+
+	//this assert inform that all write is async
+	if (buf->is_async_only){ 
+		if (phashlist->n_aio_pending != phashlist->cur_pages) {
+			printf("!!!! ====> PMEM_ERROR: n_aio_pending=%zu != cur_pages = %zu. They should be equal\n", phashlist->n_aio_pending, phashlist->cur_pages);
+			assert (phashlist->n_aio_pending == phashlist->cur_pages);
+		}
+	}
+
 
 #if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
 	printf("\n [1.2] END get_free_list %zu to replace full list %zu, hashed %zu ==>", D_RW(first_list)->list_id, phashlist->list_id, hashed);
