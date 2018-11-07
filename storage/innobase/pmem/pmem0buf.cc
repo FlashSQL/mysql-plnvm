@@ -98,7 +98,11 @@ pm_wrapper_buf_alloc_or_open(
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION_STAT)
 	pm_filemap_init(pmw->pbuf);
 #endif
-
+	//New in PL-NVM
+	pmw->pbuf->dpt = alloc_DPT(MAX_DPT_ENTRIES);
+	pmw->pbuf->tt = alloc_TT(MAX_DPT_ENTRIES);
+	
+	//
 	//In any case (new allocation or resued, we should allocate the flush_events for buckets in DRAM
 	pmw->pbuf->flush_events = (os_event_t*) calloc(PMEM_N_BUCKETS, sizeof(os_event_t));
 
