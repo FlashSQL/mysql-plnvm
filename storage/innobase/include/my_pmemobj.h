@@ -400,6 +400,7 @@ add_log_to_TT_entry(
 	   	MEM_TT_ENTRY* entry,
 	   	MEM_LOG_REC* rec);
 
+//////////////////// COMMIT ////////////////////
 int
 trx_commit_TT(
 		PMEMobjpool*	pop,
@@ -416,10 +417,12 @@ pm_write_REDO_logs(
 	   	);
 
 void 
-pm_merge_REDO_logs_to_placeholder(
+pm_merge_logs_to_loglist(
 		PMEMobjpool*	pop,
-		PMEM_BUF_BLOCK*	pblock,
-	   	MEM_DPT_ENTRY*	dpt_entry);
+		PMEM_LOG_LIST*	plog_list,
+	   	MEM_DPT_ENTRY*	dpt_entry,
+		PMEM_LOG_TYPE	type,
+		bool			is_global_dpt);
 
 void
 pm_write_REDO_logs_to_pmblock(
@@ -434,16 +437,6 @@ pm_remove_UNDO_log_from_list(
 		PMEM_LOG_LIST* list,
 		MEM_LOG_REC* memrec);
 
-
-TOID(PMEM_LOG_REC) alloc_pmemrec(
-		PMEMobjpool*	pop,
-		MEM_LOG_REC*	memrec,
-		PMEM_LOG_TYPE	type
-		);
-
-void add_log_to_pmem_list(PMEM_LOG_LIST* plog_list,
-						 PMEM_LOG_REC* rec);
-
 void 
 remove_logs_when_commit(
 		MEM_DPT*	global_dpt,
@@ -456,6 +449,27 @@ remove_TT_entry(
 	   	MEM_TT_ENTRY* entry,
 	   	MEM_TT_ENTRY* prev_entry,
 		ulint hashed);
+////////////////////////////////////////////////
+//
+/////////////// Flush Page /////////////////////
+
+int
+write_logs_on_flush_page(
+		PMEMobjpool*		pop,
+		PMEM_BUF*			buf,
+	   	PMEM_BUF_BLOCK*		pblock);
+
+////////////////////////////////////////////////
+
+TOID(PMEM_LOG_REC) alloc_pmemrec(
+		PMEMobjpool*	pop,
+		MEM_LOG_REC*	memrec,
+		PMEM_LOG_TYPE	type
+		);
+
+void add_log_to_pmem_list(PMEM_LOG_LIST* plog_list,
+						 PMEM_LOG_REC* rec);
+
 
 void 
 free_pmemrec(
@@ -473,6 +487,22 @@ void
 pm_swap_blocks(
 		TOID(PMEM_BUF_BLOCK) a,
 		TOID(PMEM_BUF_BLOCK) b);
+
+/////////// UTILITY ////////////////////////////
+
+MEM_DPT_ENTRY*
+seek_dpt_entry(
+		MEM_DPT* dpt,
+	   	page_id_t page_id,
+		ulint*	hashed);
+
+MEM_TT_ENTRY*
+seek_tt_entry(
+		MEM_TT*		tt,
+		uint64_t	tid,
+		ulint*		hashed);
+/////////////////////////////////////////////////
+
 ////////////////////// LOG BUFFER /////////////////////////////
 
 struct __pmem_log_buf {
@@ -577,7 +607,8 @@ struct __pmem_buf_block_t{
 						  note that the size of page can be got from page
 						*/
 	//New in PL-NVM
-	TOID(PMEM_LOG_LIST)				log_list; //pointer to the UNDO/REDO log list
+	TOID(PMEM_LOG_LIST)				undolog_list; //pointer to the UNDO log list
+	TOID(PMEM_LOG_LIST)				redolog_list; //pointer to the REDO log list
 };
 
 struct __pmem_buf_block_list_t {
@@ -636,7 +667,8 @@ struct __pmem_buf {
 
 	bool is_async_only; //true if we only capture non-sync write from buffer pool
 
-	//Those varables are in DRAM
+	//Those varables are in DRAM //////////////////
+	//They suppose to be lost in the event of system crash
 	bool is_recovery;
 	os_event_t*  flush_events; //N flush events for N buckets
 	os_event_t free_pool_event; //event for free_pool
@@ -650,6 +682,12 @@ struct __pmem_buf {
 	PMEM_FLUSHER* flusher;	
 
 	PMEM_FILE_MAP* filemap;
+	//New in PL-NVM
+	MEM_TT*		tt; // the global transaction table
+	MEM_DPT*	dpt; //the global dirty page table
+	/// End new in PL-NVM
+	
+	//////End variables in DRAM///////////////////////
 };
 
 // PARTITION //////////////

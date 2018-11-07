@@ -538,10 +538,15 @@ pm_buf_block_init(
 
 	block->pmemaddr = args->pmemaddr;
 	//New in PL-NVM
-	POBJ_ZNEW(pop, &block->log_list, PMEM_LOG_LIST);	
-	TOID_ASSIGN( D_RW(block->log_list)->head, OID_NULL);
-	TOID_ASSIGN( D_RW(block->log_list)->tail, OID_NULL);
-	D_RW(block->log_list)->n_items = 0;
+	POBJ_ZNEW(pop, &block->redolog_list, PMEM_LOG_LIST);	
+	TOID_ASSIGN( D_RW(block->redolog_list)->head, OID_NULL);
+	TOID_ASSIGN( D_RW(block->redolog_list)->tail, OID_NULL);
+	D_RW(block->redolog_list)->n_items = 0;
+
+	POBJ_ZNEW(pop, &block->undolog_list, PMEM_LOG_LIST);	
+	TOID_ASSIGN( D_RW(block->undolog_list)->head, OID_NULL);
+	TOID_ASSIGN( D_RW(block->undolog_list)->tail, OID_NULL);
+	D_RW(block->undolog_list)->n_items = 0;
 
 	//////////////////////
 	pmemobj_persist(pop, &block->id, sizeof(block->id));
@@ -552,7 +557,8 @@ pm_buf_block_init(
 	pmemobj_persist(pop, &block->list, sizeof(block->list));
 	pmemobj_persist(pop, &block->pmemaddr, sizeof(block->pmemaddr));
 
-	pmemobj_persist(pop, &block->log_list, sizeof(block->log_list));
+	pmemobj_persist(pop, &block->redolog_list, sizeof(block->redolog_list));
+	pmemobj_persist(pop, &block->undolog_list, sizeof(block->undolog_list));
 	return 0;
 }
 
@@ -1201,10 +1207,6 @@ retry:
 			pm_buf_handle_full_hashed_list(pop, buf, hashed);
 			goto retry;
 		}
-#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
-//		printf("\n wait for list %zu hashed_id %zu cur_pages = %zu max_pages= %zu flushing....",
-//		phashlist->list_id, phashlist->hashed_id,  phashlist->cur_pages, phashlist->max_pages);
-#endif 
 		
 		pmemobj_rwlock_unlock(pop, &phashlist->lock);
 		os_event_wait(buf->flush_events[hashed]);
@@ -1213,14 +1215,13 @@ retry:
 	}
 	//Now the list is non-flush and I have acquired the lock. Let's do my work
 	pdata = buf->p_align;
-	//(1) search in the hashed list for a first FREE block to write on 
+	//(1) search in the hashed list for a block to write on 
 	for (i = 0; i < phashlist->max_pages; i++) {
 		pfree_block = D_RW(D_RW(phashlist->arr)[i]);
 
 		if (pfree_block->state == PMEM_FREE_BLOCK) {
-			//found!
-			//if(is_lock_free_block)
-			//pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
+			//Case A: found a free block!
+			// Write on free block may cause full block
 			break;	
 		}
 		else if(pfree_block->state == PMEM_IN_USED_BLOCK) {
@@ -1241,22 +1242,25 @@ retry:
 				pfree_block->sync = sync;
 TX_BEGIN(pop) {
 				pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
+				//New in PL-NVM
+				write_logs_on_flush_page(
+						pop,
+						buf,
+						pfree_block);
 }TX_ONABORT {
 }TX_END
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
 				++buf->bucket_stats[hashed].n_overwrites;
 #endif
-				//if(is_lock_free_block)
-				//pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 				pmemobj_rwlock_unlock(pop, &phashlist->lock);
 #if defined(UNIV_PMEMOBJ_BUF_DEBUG)
 				printf("========   PMEM_DEBUG: in pmem_buf_write, OVERWRITTEN page_id %zu space %zu size %zu hash_list id %zu \n ", page_id.page_no(), page_id.space(), size.physical(), phashlist->list_id);
 #endif	
 				return PMEM_SUCCESS;
 			}
-		}
+		}//end else
 		//next block
-	}
+	} //end for
 
 	if ( i == phashlist->max_pages ) {
 		//ALl blocks in this hash_list are either non-fre or locked

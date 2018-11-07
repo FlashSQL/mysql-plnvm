@@ -608,7 +608,15 @@ retry:
 			//Case B: add this log record to exist REDO log			   
 			pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
 
-			pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
+			//pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
+			pm_merge_logs_to_loglist(
+					pop,
+					D_RW(pfree_block->redolog_list),
+					dpt_entry,
+					PMEM_REDO_LOG,
+					false);
+
+
 			pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 			return PMEM_SUCCESS;
 		}
@@ -644,7 +652,13 @@ retry:
 	assert(pfree_block->state == PMEM_FREE_BLOCK);
 	pfree_block->state = PMEM_PLACE_HOLDER_BLOCK;
 
-	pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
+	//pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
+	pm_merge_logs_to_loglist(
+			pop,
+			D_RW(pfree_block->redolog_list),
+			dpt_entry,
+			PMEM_REDO_LOG,
+			false);
 	pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 	
 	//Create a place-holder also increase the cur_pages
@@ -681,38 +695,41 @@ retry:
 	}
 	return PMEM_SUCCESS;
 }
-
 /*
- * Add REDO log records into a pmem block 
+ * Merge REDO/UNDO log records into a pmem log list
  * Important: The input log records are sorted by lsn
  * We start from the head and remember the inserted position for the next insert
+ *
+ * case A: merge REDO log when commit
+ *		plog_list is REDO log
+ *		type: PMEM_REDO_LOG
+ *		is_global_dpt = false
+ * case B: merge UNDO log when flush
+ *		plog_list is UNDO log
+ *		type: PMEM_UNDO_LOG
+ *		is_global_dpt = true
  * */
 void 
-pm_merge_REDO_logs_to_placeholder(
+pm_merge_logs_to_loglist(
 		PMEMobjpool*	pop,
-		PMEM_BUF_BLOCK*	pblock,
-	   	MEM_DPT_ENTRY*	dpt_entry)
+		PMEM_LOG_LIST*	plog_list,
+	   	MEM_DPT_ENTRY*	dpt_entry,
+		PMEM_LOG_TYPE	type,
+		bool			is_global_dpt)
 {
-		
 		ulint i;	
 		MEM_LOG_REC* memrec;
 		TOID(PMEM_LOG_REC) cur_insert;
-
-		assert(pblock);
-
-		PMEM_LOG_LIST* plog_list = D_RW(pblock->log_list);
 		
+		assert(plog_list);
+
 		TOID_ASSIGN(cur_insert, (plog_list->head).oid);
-		cur_insert = plog_list->head;
-
 		memrec = dpt_entry->list->head;
-		
+
 		while(memrec != NULL){
 			TOID(PMEM_LOG_REC) pmemrec;
 			//(1) Allocate the pmem log record from in-mem log record
-			pmemrec = alloc_pmemrec(pop,
-									memrec,
-									PMEM_REDO_LOG);
+			pmemrec = alloc_pmemrec(pop, memrec, type);
 
 			// (2) Add the pmem log record to the list, start from the cur_insert
 			if (plog_list->n_items == 0){
@@ -771,13 +788,21 @@ pm_merge_REDO_logs_to_placeholder(
 
 					//cur_insert = plog_list->tail;
 				}
+
+			}//end else
+			
+			if (is_global_dpt){
+				//next rec in the local dpt entry
+				memrec = memrec->dpt_next;
 			}
-			//next rec in the local dpt entry
-			memrec = memrec->trx_page_next;
-		}//end while(memrec != NULL) 
+			else {
+				//next rec in the local dpt entry
+				memrec = memrec->trx_page_next;
+			}
 
-
+		}//end while
 }
+
 /*
  * Write REDO logs from a dpt entry into a pmem block when a transaction commit
  * pop (in): global pop
@@ -796,7 +821,7 @@ pm_write_REDO_logs_to_pmblock(
 	PMEM_LOG_REC* pmemrec;
 	PMEM_LOG_LIST* pundo_log_list;
 	//when the pblock is a pmem page, the log_list is UNDO log
-	pundo_log_list = D_RW(pblock->log_list);
+	pundo_log_list = D_RW(pblock->undolog_list);
 
 	memrec = dtp_entry->list->head;
 
@@ -992,6 +1017,39 @@ remove_logs_when_commit(
 		memrec = next_memrec;
 	}//end while
 }
+
+/*
+ *Write UNDO logs of a dpt entry to a pmem block when evicting a page
+ pop (in): global pop
+ buf (in): global buf
+ pblock (in): The pmem block need to be written on
+ * */
+int
+write_logs_on_flush_page(
+		PMEMobjpool*		pop,
+		PMEM_BUF*			buf,
+	   	PMEM_BUF_BLOCK*		pblock)
+{
+	MEM_DPT*			dpt;
+	MEM_DPT_ENTRY*	dpt_entry;
+	ulint			hashed;
+	assert(pblock);
+	page_id_t		page_id(pblock->id);
+
+	
+	dpt = buf->dpt;
+
+	//(1) Get the global dpt entry
+	dpt_entry = seek_dpt_entry(dpt, page_id, &hashed);
+	
+	if (dpt_entry == NULL){
+		//This is logical error, a dirty page must has corresponding dpt entry
+		printf("PMEM_ERROR, cannot find corresponding dpt entry of the dirty page\n");
+		return PMEM_ERROR;
+	}	
+
+}
+
 /*
  *Copy blocks that has remain REDO logs or UNDO logs from a src list to des list
  This function is called in pm_buf_handle_full_hashed_list() when propgatation to disk
@@ -1012,6 +1070,7 @@ pm_copy_logs_pmemlist(
 	TOID(PMEM_BUF_BLOCK) temp;
 
 	PMEM_LOG_LIST* plog_list;
+	PMEM_LOG_LIST* plog_list_temp;
 
 
 	des->hashed_id = src->hashed_id;
@@ -1020,7 +1079,13 @@ pm_copy_logs_pmemlist(
 	for (i = 0; i < src->cur_pages; i++){
 		pblock_src = D_RW(D_RW(src->arr)[i]);
 		if (pblock_src->state == PMEM_IN_USED_BLOCK){
-			plog_list = D_RW(pblock_src->log_list);
+			//Ensure the REDO log is empty
+			plog_list_temp = D_RW(pblock_src->redolog_list);
+
+			assert (plog_list_temp->n_items == 0);
+			assert ( TOID_IS_NULL(plog_list_temp->head));
+
+			plog_list = D_RW(pblock_src->undolog_list);
 			if (plog_list->n_items > 0){
 				//swap oid
 				pm_swap_blocks( D_RW(src->arr)[i],
@@ -1029,6 +1094,15 @@ pm_copy_logs_pmemlist(
 			}
 		}
 		else if(pblock_src->state == PMEM_PLACE_HOLDER_BLOCK){
+			//Ensure the UNDO log is empty
+			plog_list_temp = D_RW(pblock_src->undolog_list);
+
+			assert (plog_list_temp->n_items == 0);
+			assert ( TOID_IS_NULL(plog_list_temp->head));
+			plog_list = D_RW(pblock_src->redolog_list);
+
+			assert(plog_list->n_items > 0);
+
 			pm_swap_blocks( D_RW(src->arr)[i],
 					D_RW(des->arr)[count]);
 
@@ -1047,3 +1121,50 @@ pm_swap_blocks(
 	TOID_ASSIGN(a, b.oid);
 	TOID_ASSIGN(b, temp.oid);
 }
+
+/*
+ * Seek a dpt entry in dpt by page id
+ * */
+MEM_DPT_ENTRY*
+seek_dpt_entry(
+		MEM_DPT* dpt,
+	   	page_id_t page_id,
+		ulint*	hashed)
+{
+	ulint h_val;
+	MEM_DPT_ENTRY*	dpt_entry;
+
+	PMEM_LOG_HASH_KEY(h_val, page_id.fold(), dpt->n);
+	dpt_entry = dpt->buckets[h_val];
+
+	while (dpt_entry != NULL){
+		if (dpt_entry->id.equals_to(page_id)){
+			break;
+		}
+		dpt_entry = dpt_entry->next;
+	}
+	*hashed = h_val;
+	return dpt_entry;
+}
+
+MEM_TT_ENTRY*
+seek_tt_entry(
+		MEM_TT*		tt,
+		uint64_t	tid,
+		ulint*		hashed)
+{
+	ulint			h_val;
+	MEM_TT_ENTRY*	tt_entry;	
+	PMEM_LOG_HASH_KEY(h_val, tid, tt->n);
+	tt_entry = tt->buckets[h_val];
+
+	while (tt_entry != NULL){
+		if (tt_entry->tid == tid){
+			break;
+		}
+		tt_entry = tt_entry->next;
+	}
+	*hashed = h_val;
+	return tt_entry;
+}
+
