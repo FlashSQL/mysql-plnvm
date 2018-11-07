@@ -111,7 +111,7 @@ alloc_dpt_entry(
 void
 free_dpt_entry( MEM_DPT_ENTRY* entry)
 {
-	entry->list->head = entry->tail = NULL;
+	entry->list->head = entry->list->tail = NULL;
 	entry->list->n_items = 0;
 	free (entry->list);
 	entry->list = NULL;
@@ -143,7 +143,7 @@ void
 free_tt_entry(
 	   	MEM_TT_ENTRY* entry)
 {
-	entry->list->head = entry->tail = NULL;
+	entry->list->head = entry->list->tail = NULL;
 	entry->list->n_items = 0;
 	free (entry->list);
 	entry->list = NULL;
@@ -153,6 +153,37 @@ free_tt_entry(
 	entry = NULL;
 }
 
+MEM_LOG_REC* 
+alloc_memrec(
+		byte*				mem_addr,
+		uint64_t			size,
+		page_id_t			pid,
+		uint64_t			tid
+		)
+{
+	MEM_LOG_REC* memrec;
+
+	memrec = (MEM_LOG_REC*) malloc(sizeof(MEM_LOG_REC));
+
+	memrec->size = size;
+	memrec->pid.copy_from(pid);
+	memrec->tid = tid;
+
+	memrec->dpt_next = NULL;
+	memrec->dpt_prev = NULL;
+
+	memrec->tt_next = NULL;
+	memrec->tt_prev = NULL;
+	memrec->trx_page_next = NULL;
+	memrec->trx_page_prev = NULL;
+
+	memrec->is_in_pmem = false;
+
+	memrec->mem_addr = (byte*) calloc(size, sizeof(byte));
+	memcpy(memrec->mem_addr, mem_addr, size);
+	
+	return memrec;
+}
 void
 free_memrec(
 		MEM_LOG_REC* memrec
@@ -166,6 +197,8 @@ free_memrec(
 	memrec->tt_prev = NULL;
 	memrec->trx_page_next = NULL;
 	memrec->trx_page_prev = NULL;
+
+	memrec->is_in_pmem = false;
 
 	free (memrec->mem_addr);
 	memrec->mem_addr = NULL;
@@ -378,7 +411,7 @@ remove_dpt_entry(
 		MEM_DPT_ENTRY* prev_entry,
 		ulint hashed)
 {
-
+	//(1) remove the entry from the hashed line
 	if (prev_entry == NULL){
 		global_dpt->buckets[hashed] = entry->next;
 	}
@@ -386,8 +419,11 @@ remove_dpt_entry(
 		prev_entry->next = entry->next;
 	}
 	entry->next = NULL;
+
+	// (2) Remove dpt_next, dpt_prev pointers of each log record in the entry and change is_in_pmem to true
 	adjust_dpt_entry_on_flush(entry);
-	
+
+	// (3) Free resource of the entry	
 	free_dpt_entry(entry);	
 }
 
@@ -602,7 +638,7 @@ trx_commit_TT(
 	}
 
 	if (bucket == NULL){
-		printf("PMEM_LOG Error, tid %zu not found in transaction table\n", tid);
+		printf("PMEM_LOG Error in trx_commit_TT(), tid %zu not found in transaction table\n", tid);
 		return PMEM_ERROR;
 	}
 
@@ -628,6 +664,88 @@ trx_commit_TT(
 	remove_TT_entry (tt, global_dpt, bucket, prev_bucket, hashed);
 
 	
+}
+
+/*
+ * Handle changes in the transaction table when a transaction tid abort
+ * pop (in): The global pop
+ * buf (in): The global buf
+ * global_dpt (in): The global dpt
+ * tt (in): The global tt
+ * tid (in): Transaction id
+ * */
+int
+trx_abort_TT(
+		PMEMobjpool*	pop,
+		PMEM_BUF*		buf,
+		MEM_DPT*		global_dpt,
+		MEM_TT*			tt,
+	   	uint64_t		tid)
+{
+	ulint			hashed;
+	ulint			i;
+	MEM_TT_ENTRY*	bucket;
+	
+	MEM_DPT*		local_dpt;	
+	MEM_DPT_ENTRY*	dpt_entry;
+
+	//For remove
+	MEM_TT_ENTRY*	prev_bucket; // for remove
+	MEM_DPT_ENTRY*	prev_dpt_entry;
+	MEM_LOG_LIST*	log_list;
+	MEM_LOG_REC*	memrec;
+	MEM_LOG_REC*	memrec_next;
+	
+	//(1) Get transaction entry by the input tid 
+	PMEM_LOG_HASH_KEY(hashed, tid, tt->n);
+	assert (hashed < tt->n);
+
+	bucket = tt->buckets[hashed];
+	prev_bucket = NULL;
+	
+	while (bucket != NULL){
+		if (bucket->tid == tid){
+			break;
+		}
+		prev_bucket = bucket;
+		bucket = bucket->next;
+	}
+
+	if (bucket == NULL){
+		printf("PMEM_LOG Error in trx_abort_TT(), tid %zu not found in transaction table\n", tid);
+		return PMEM_ERROR;
+	}
+
+	//(2) For each DPT entry in the local dpt, UNDOing to corresponding page
+	
+	local_dpt = bucket->local_dpt;
+	assert(local_dpt);
+	for (i = 0; i < local_dpt->n; i++){
+		//Get a hashed line
+		dpt_entry = local_dpt->buckets[i];
+		if (dpt_entry == NULL) 
+			continue;
+		assert(dpt_entry);
+		//for each entry in the same hashed line
+		while (dpt_entry != NULL){
+			MEM_LOG_REC* first_memrec;
+			first_memrec = dpt_entry->list->head;
+			assert(first_memrec);
+
+			if(first_memrec->is_in_pmem){
+				//TODO: UNDOing a page in NVM
+			}
+			else{
+				//TODO: UNDOing a page in DRAM
+			}
+
+			dpt_entry = dpt_entry->next;
+		}
+		//next hashed line
+	}//end for each hashed line
+	//(3) Remove tt entry and its corresponding resources
+	remove_TT_entry (tt, global_dpt, bucket, prev_bucket, hashed);
+
 }
 
 /*
@@ -1164,37 +1282,6 @@ remove_logs_when_commit(
 	}//end while
 }
 
-/*
- *Write UNDO logs of a dpt entry to a pmem block when evicting a page
- pop (in): global pop
- buf (in): global buf
- pblock (in): The pmem block need to be written on
- * */
-int
-write_logs_on_flush_page(
-		PMEMobjpool*		pop,
-		PMEM_BUF*			buf,
-	   	PMEM_BUF_BLOCK*		pblock)
-{
-	MEM_DPT*			dpt;
-	MEM_DPT_ENTRY*	dpt_entry;
-	ulint			hashed;
-	assert(pblock);
-	page_id_t		page_id(pblock->id);
-
-	
-	dpt = buf->dpt;
-
-	//(1) Get the global dpt entry
-	dpt_entry = seek_dpt_entry(dpt, page_id, &hashed);
-	
-	if (dpt_entry == NULL){
-		//This is logical error, a dirty page must has corresponding dpt entry
-		printf("PMEM_ERROR, cannot find corresponding dpt entry of the dirty page\n");
-		return PMEM_ERROR;
-	}	
-
-}
 /*
  * Remove pointers and adjust status of each log record in a global dpt entry
  * (dpt_next, dpt_prev)

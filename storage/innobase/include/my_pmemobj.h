@@ -393,7 +393,7 @@ free_dpt_entry(
 
 MEM_TT_ENTRY*
 alloc_tt_entry(
-		uint64_t tid,
+		uint64_t tid
 		);
 
 void
@@ -403,6 +403,10 @@ free_tt_entry(
 
 MEM_LOG_REC* 
 alloc_memrec(
+		byte*				mem_addr,
+		uint64_t			size,
+		page_id_t			pid,
+		uint64_t			tid
 		);
 
 void
@@ -485,6 +489,13 @@ trx_commit_TT(
 		MEM_DPT*		dpt,
 		MEM_TT*			tt,
 	   	uint64_t		tid);
+int
+trx_abort_TT(
+		PMEMobjpool*	pop,
+		PMEM_BUF*		buf,
+		MEM_DPT*		dpt,
+		MEM_TT*			tt,
+	   	uint64_t		tid);
 
 int
 pm_write_REDO_logs(
@@ -518,17 +529,6 @@ void
 pm_remove_REDO_log_list_when_flush(
 		PMEMobjpool*	pop,
 		PMEM_LOG_LIST* list);
-
-
-////////////////////////////////////////////////
-//
-/////////////// Flush Page /////////////////////
-
-int
-write_logs_on_flush_page(
-		PMEMobjpool*		pop,
-		PMEM_BUF*			buf,
-	   	PMEM_BUF_BLOCK*		pblock);
 
 		
 ////////////////////////////////////////////////

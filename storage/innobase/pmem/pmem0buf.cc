@@ -1280,19 +1280,10 @@ for (i = 0; i < phashlist->max_pages; i++) {
 							PMEM_UNDO_LOG,
 							true);
 						//Remove the dpt entry from the cache line
-						if (prev_dpt_entry == NULL){
-							//dpt_entry is the first entry in the cache line
-							buf->dpt->buckets[log_hashed] = dpt_entry->next;
-						}
-						else {
-							prev_dpt_entry->next = dpt_entry->next;
-
-						}
-
-						dpt_entry->next = NULL;
-						// Remove global dpt pointers and change state of each log records  
-						adjust_dpt_entry_on_flush(dpt_entry);
-
+						remove_dpt_entry(buf->dpt,
+								dpt_entry,
+								prev_dpt_entry,
+								log_hashed);
 					}
 
 				}TX_ONABORT {
@@ -1364,6 +1355,10 @@ for (i = 0; i < phashlist->max_pages; i++) {
 					dpt_entry,
 					PMEM_UNDO_LOG,
 					true);
+			remove_dpt_entry(buf->dpt,
+					dpt_entry,
+					prev_dpt_entry,
+					log_hashed);
 		}
 	}TX_ONABORT {
 	}TX_END
