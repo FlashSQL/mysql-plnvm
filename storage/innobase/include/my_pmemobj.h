@@ -437,6 +437,14 @@ pm_remove_UNDO_log_from_list(
 		PMEM_LOG_LIST* list,
 		MEM_LOG_REC* memrec);
 
+void
+pm_remove_REDO_log_list_when_flush(
+		PMEMobjpool*	pop,
+		PMEM_LOG_LIST* list);
+
+
+//remove log records and their pointers in this dpt_entry
+//The pointers are removed from: (1) local dpt, (2) global dpt, and (3) tt entry
 void 
 remove_logs_when_commit(
 		MEM_DPT*	global_dpt,

@@ -1054,19 +1054,23 @@ pm_buf_write_with_flusher(
 
 	//bool is_lock_free_block = false;
 	//bool is_lock_free_list = false;
-	bool is_safe_check = false;
+	bool is_safe_check =	false;
 
-	ulint hashed;
-	ulint i;
+	ulint					hashed;
+	ulint					log_hashed;
+	ulint					i;
 
 	TOID(PMEM_BUF_BLOCK_LIST) hash_list;
-	PMEM_BUF_BLOCK_LIST* phashlist;
+	PMEM_BUF_BLOCK_LIST*	phashlist;
 
-	TOID(PMEM_BUF_BLOCK) free_block;
-	PMEM_BUF_BLOCK* pfree_block;
-	byte* pdata;
+	TOID(PMEM_BUF_BLOCK)	free_block;
+	PMEM_BUF_BLOCK*			pfree_block;
+	byte*					pdata;
 	//page_id_t page_id;
-	size_t page_size;
+	size_t					page_size;
+	//New in PL-NVM
+	PMEM_LOG_LIST*			plog_list;
+	MEM_DPT_ENTRY*			dpt_entry;
 
 	//Does some checks 
 	if (buf->is_async_only)
@@ -1224,7 +1228,8 @@ retry:
 			// Write on free block may cause full block
 			break;	
 		}
-		else if(pfree_block->state == PMEM_IN_USED_BLOCK) {
+		else if(pfree_block->state == PMEM_IN_USED_BLOCK ||
+				pfree_block->state == PMEM_PLACE_HOLDER_BLOCK) {
 			if (pfree_block->id.equals_to(page_id)) {
 				//overwrite the old page
 				//if(is_lock_free_block)
@@ -1240,15 +1245,36 @@ retry:
 					}
 				}
 				pfree_block->sync = sync;
-TX_BEGIN(pop) {
-				pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
-				//New in PL-NVM
-				write_logs_on_flush_page(
-						pop,
-						buf,
-						pfree_block);
-}TX_ONABORT {
-}TX_END
+				TX_BEGIN(pop) {
+					//Copy page data
+					pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
+					//New in PL-NVM
+					if (pfree_block->state == PMEM_PLACE_HOLDER_BLOCK){
+						//Remove REDO log	
+						pm_remove_REDO_log_list_when_flush(
+								pop,
+								D_RW(pfree_block->redolog_list));
+						pfree_block->state = PMEM_IN_USED_BLOCK;
+
+					}
+
+					plog_list = D_RW(pfree_block->undolog_list);
+					//seek the corresponding dpt_entry on the global dpt
+					dpt_entry = seek_dpt_entry(buf->dpt, pfree_block->id, &log_hashed);
+					if (dpt_entry == NULL){
+						//Logical error
+						printf ("PMEM_ERROR, cannot find corresponding dpt entry space_no %zu page_no %zu\n", pfree_block->id.space(), pfree_block->id.page_no());
+						assert(0);
+					}
+
+					pm_merge_logs_to_loglist(
+							pop,
+							plog_list,
+							dpt_entry,
+							PMEM_UNDO_LOG,
+							true);
+				}TX_ONABORT {
+				}TX_END
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
 				++buf->bucket_stats[hashed].n_overwrites;
 #endif
@@ -1304,10 +1330,28 @@ TX_BEGIN(pop) {
 	assert(pfree_block->state == PMEM_FREE_BLOCK);
 	pfree_block->state = PMEM_IN_USED_BLOCK;
 
-	pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
+	TX_BEGIN(pop) {
+		pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 
-	//if(is_lock_free_block)
-	//pmemobj_rwlock_unlock(pop, &pfree_block->lock);
+		//New in PL-NVM
+		plog_list = D_RW(pfree_block->undolog_list);
+		//seek the corresponding dpt_entry on the global dpt
+		dpt_entry = seek_dpt_entry(buf->dpt, pfree_block->id, &log_hashed);
+		if (dpt_entry == NULL){
+			//Logical error
+			printf ("PMEM_ERROR, cannot find corresponding dpt entry space_no %zu page_no %zu\n", pfree_block->id.space(), pfree_block->id.page_no());
+			assert(0);
+		}
+
+		pm_merge_logs_to_loglist(
+				pop,
+				plog_list,
+				dpt_entry,
+				PMEM_UNDO_LOG,
+				true);
+	}TX_ONABORT {
+	}TX_END
+
 
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
 	++buf->bucket_stats[hashed].n_writes;
