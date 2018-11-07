@@ -1055,7 +1055,8 @@ pm_buf_write_with_flusher(
 	//bool is_lock_free_block = false;
 	//bool is_lock_free_list = false;
 	bool is_safe_check =	false;
-
+	
+	bool					is_need_undo;
 	ulint					hashed;
 	ulint					log_hashed;
 	ulint					i;
@@ -1071,6 +1072,7 @@ pm_buf_write_with_flusher(
 	//New in PL-NVM
 	PMEM_LOG_LIST*			plog_list;
 	MEM_DPT_ENTRY*			dpt_entry;
+	MEM_DPT_ENTRY*			prev_dpt_entry;
 
 	//Does some checks 
 	if (buf->is_async_only)
@@ -1198,55 +1200,67 @@ retry:
 	if (phashlist->is_flush) {
 		//When I was blocked (due to mutex) this list is non-flush. When I acquire the lock, it becomes flushing
 
-/* NOTE for recovery 
- *
- * Don't call pm_buf_handle_full_hashed_list before  innodb apply log records that re load spaces (MLOG_FILE_NAME)
- * Hence, we call pm_buf_handle_full_hashed_list only inside pm_buf_write and after the 
- * recv_recovery_from_checkpoint_finish() (through pm_buf_resume_flushing)
- * */
+		/* NOTE for recovery 
+		 *
+		 * Don't call pm_buf_handle_full_hashed_list before  innodb apply log records that re load spaces (MLOG_FILE_NAME)
+		 * Hence, we call pm_buf_handle_full_hashed_list only inside pm_buf_write and after the 
+		 * recv_recovery_from_checkpoint_finish() (through pm_buf_resume_flushing)
+		 * */
 		if (buf->is_recovery	&&
-			(phashlist->cur_pages >= phashlist->max_pages * PMEM_BUF_FLUSH_PCT)) {
+				(phashlist->cur_pages >= phashlist->max_pages * PMEM_BUF_FLUSH_PCT)) {
 			pmemobj_rwlock_unlock(pop, &phashlist->lock);
 			//printf("PMEM_INFO: call pm_buf_handle_full_hashed_list during recovering, hashed = %zu list_id = %zu, cur_pages= %zu, is_flush = %d...\n", hashed, phashlist->list_id, phashlist->cur_pages, phashlist->is_flush);
 			pm_buf_handle_full_hashed_list(pop, buf, hashed);
 			goto retry;
 		}
-		
+
 		pmemobj_rwlock_unlock(pop, &phashlist->lock);
 		os_event_wait(buf->flush_events[hashed]);
 
 		goto retry;
 	}
 	//Now the list is non-flush and I have acquired the lock. Let's do my work
-	pdata = buf->p_align;
-	//(1) search in the hashed list for a block to write on 
-	for (i = 0; i < phashlist->max_pages; i++) {
-		pfree_block = D_RW(D_RW(phashlist->arr)[i]);
+	// (1) Remove the dpt entry in the global DPT
+	is_need_undo = true;
+	dpt_entry = seek_dpt_entry(buf->dpt, page_id, prev_dpt_entry, &log_hashed);
+	if (dpt_entry == NULL){
+		//The dirty page doesn't have any log records of uncommited transaction
+		is_need_undo = false;
+	}
+	else {
 
-		if (pfree_block->state == PMEM_FREE_BLOCK) {
-			//Case A: found a free block!
-			// Write on free block may cause full block
-			break;	
-		}
-		else if(pfree_block->state == PMEM_IN_USED_BLOCK ||
-				pfree_block->state == PMEM_PLACE_HOLDER_BLOCK) {
-			if (pfree_block->id.equals_to(page_id)) {
-				//overwrite the old page
-				//if(is_lock_free_block)
-				//pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
-				if (pfree_block->sync != sync) {
-					if (sync == false) {
-						++phashlist->n_aio_pending;
-						--phashlist->n_sio_pending;
-					}
-					else {
-						--phashlist->n_aio_pending;
-						++phashlist->n_sio_pending;
-					}
+	}
+
+
+pdata = buf->p_align;
+//(2) search in the hashed list for a block to write on 
+for (i = 0; i < phashlist->max_pages; i++) {
+	pfree_block = D_RW(D_RW(phashlist->arr)[i]);
+
+	if (pfree_block->state == PMEM_FREE_BLOCK) {
+		//Case A: found a free block!
+		// Write on free block may cause full block
+		break;	
+	}
+	else if(pfree_block->state == PMEM_IN_USED_BLOCK ||
+			pfree_block->state == PMEM_PLACE_HOLDER_BLOCK) {
+		if (pfree_block->id.equals_to(page_id)) {
+			//overwrite the old page
+			//if(is_lock_free_block)
+			//pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
+			if (pfree_block->sync != sync) {
+				if (sync == false) {
+					++phashlist->n_aio_pending;
+					--phashlist->n_sio_pending;
 				}
-				pfree_block->sync = sync;
-				TX_BEGIN(pop) {
-					//Copy page data
+				else {
+					--phashlist->n_aio_pending;
+					++phashlist->n_sio_pending;
+				}
+			}
+			pfree_block->sync = sync;
+			TX_BEGIN(pop) {
+				//Copy page data
 					pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 					//New in PL-NVM
 					if (pfree_block->state == PMEM_PLACE_HOLDER_BLOCK){
@@ -1257,22 +1271,30 @@ retry:
 						pfree_block->state = PMEM_IN_USED_BLOCK;
 
 					}
-
-					plog_list = D_RW(pfree_block->undolog_list);
-					//seek the corresponding dpt_entry on the global dpt
-					dpt_entry = seek_dpt_entry(buf->dpt, pfree_block->id, &log_hashed);
-					if (dpt_entry == NULL){
-						//Logical error
-						printf ("PMEM_ERROR, cannot find corresponding dpt entry space_no %zu page_no %zu\n", pfree_block->id.space(), pfree_block->id.page_no());
-						assert(0);
-					}
-
-					pm_merge_logs_to_loglist(
+					if (is_need_undo){
+						plog_list = D_RW(pfree_block->undolog_list);
+						pm_merge_logs_to_loglist(
 							pop,
 							plog_list,
 							dpt_entry,
 							PMEM_UNDO_LOG,
 							true);
+						//Remove the dpt entry from the cache line
+						if (prev_dpt_entry == NULL){
+							//dpt_entry is the first entry in the cache line
+							buf->dpt->buckets[log_hashed] = dpt_entry->next;
+						}
+						else {
+							prev_dpt_entry->next = dpt_entry->next;
+
+						}
+
+						dpt_entry->next = NULL;
+						// Remove global dpt pointers and change state of each log records  
+						adjust_dpt_entry_on_flush(dpt_entry);
+
+					}
+
 				}TX_ONABORT {
 				}TX_END
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
@@ -1334,21 +1356,15 @@ retry:
 		pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 
 		//New in PL-NVM
-		plog_list = D_RW(pfree_block->undolog_list);
-		//seek the corresponding dpt_entry on the global dpt
-		dpt_entry = seek_dpt_entry(buf->dpt, pfree_block->id, &log_hashed);
-		if (dpt_entry == NULL){
-			//Logical error
-			printf ("PMEM_ERROR, cannot find corresponding dpt entry space_no %zu page_no %zu\n", pfree_block->id.space(), pfree_block->id.page_no());
-			assert(0);
+		if (is_need_undo){
+			plog_list = D_RW(pfree_block->undolog_list);
+			pm_merge_logs_to_loglist(
+					pop,
+					plog_list,
+					dpt_entry,
+					PMEM_UNDO_LOG,
+					true);
 		}
-
-		pm_merge_logs_to_loglist(
-				pop,
-				plog_list,
-				dpt_entry,
-				PMEM_UNDO_LOG,
-				true);
 	}TX_ONABORT {
 	}TX_END
 

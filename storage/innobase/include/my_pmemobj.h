@@ -368,8 +368,62 @@ struct __mem_TT {
 	MEM_TT_ENTRY**		buckets;
 };
 
-MEM_DPT* init_DPT(uint64_t n);
+/////////////// ALLOC / FREE //////////////////////////
+MEM_DPT*
+alloc_DPT(uint64_t n);
 
+void
+free_DPT(MEM_DPT* dpt);
+
+
+MEM_TT*
+alloc_TT(uint64_t n);
+
+void
+free_TT(MEM_TT* tt);
+
+MEM_DPT_ENTRY*
+alloc_dpt_entry(
+		page_id_t pid,
+		uint64_t start_lsn);
+
+void
+free_dpt_entry(
+	   	MEM_DPT_ENTRY* entry);
+
+MEM_TT_ENTRY*
+alloc_tt_entry(
+		uint64_t tid,
+		);
+
+void
+free_tt_entry(
+	   	MEM_TT_ENTRY* entry);
+
+
+MEM_LOG_REC* 
+alloc_memrec(
+		);
+
+void
+free_memrec(
+		MEM_LOG_REC* memrec
+		);
+
+TOID(PMEM_LOG_REC) alloc_pmemrec(
+		PMEMobjpool*	pop,
+		MEM_LOG_REC*	memrec,
+		PMEM_LOG_TYPE	type
+		);
+void 
+free_pmemrec(
+		PMEMobjpool*	pop,
+		TOID(PMEM_LOG_REC)	pmem_rec
+		);
+
+/////////////////////////////////////////////////////
+
+////////////////////// ADD / REMOVE//////////////////
 void add_log_to_DPT(
 		MEM_DPT* dpt,
 	   	MEM_LOG_REC* rec,
@@ -386,9 +440,7 @@ add_log_to_local_DPT_entry(
 	   	MEM_LOG_REC* rec);
 
 
-MEM_TT* init_TT(uint64_t n);
 
-MEM_TT_ENTRY* init_TT_entry(uint64_t tid);
 
 void 
 add_log_to_TT	(MEM_TT* tt,
@@ -400,6 +452,31 @@ add_log_to_TT_entry(
 	   	MEM_TT_ENTRY* entry,
 	   	MEM_LOG_REC* rec);
 
+//remove log records and their pointers in this dpt_entry
+//The pointers are removed from: (1) local dpt, (2) global dpt, and (3) tt entry
+void 
+remove_logs_when_commit(
+		MEM_DPT*	global_dpt,
+		MEM_DPT_ENTRY*		entry);
+
+void adjust_dpt_entry_on_flush(
+		MEM_DPT_ENTRY*		dpt_entry
+		);
+void
+remove_dpt_entry(
+		MEM_DPT* global_dpt,
+		MEM_DPT_ENTRY* entry,
+		MEM_DPT_ENTRY* prev_entry,
+		ulint hashed);
+
+void 
+remove_TT_entry(
+		MEM_TT* tt,
+		MEM_DPT* global_dpt,
+	   	MEM_TT_ENTRY* entry,
+	   	MEM_TT_ENTRY* prev_entry,
+		ulint hashed);
+/////////////////////// END ADD / REMOVE/////////
 //////////////////// COMMIT ////////////////////
 int
 trx_commit_TT(
@@ -443,20 +520,6 @@ pm_remove_REDO_log_list_when_flush(
 		PMEM_LOG_LIST* list);
 
 
-//remove log records and their pointers in this dpt_entry
-//The pointers are removed from: (1) local dpt, (2) global dpt, and (3) tt entry
-void 
-remove_logs_when_commit(
-		MEM_DPT*	global_dpt,
-		MEM_DPT_ENTRY*		entry);
-
-void 
-remove_TT_entry(
-		MEM_TT* tt,
-		MEM_DPT* global_dpt,
-	   	MEM_TT_ENTRY* entry,
-	   	MEM_TT_ENTRY* prev_entry,
-		ulint hashed);
 ////////////////////////////////////////////////
 //
 /////////////// Flush Page /////////////////////
@@ -467,23 +530,14 @@ write_logs_on_flush_page(
 		PMEM_BUF*			buf,
 	   	PMEM_BUF_BLOCK*		pblock);
 
+		
 ////////////////////////////////////////////////
 
-TOID(PMEM_LOG_REC) alloc_pmemrec(
-		PMEMobjpool*	pop,
-		MEM_LOG_REC*	memrec,
-		PMEM_LOG_TYPE	type
-		);
 
 void add_log_to_pmem_list(PMEM_LOG_LIST* plog_list,
 						 PMEM_LOG_REC* rec);
 
 
-void 
-free_pmemrec(
-		PMEMobjpool*	pop,
-		TOID(PMEM_LOG_REC)	pmem_rec
-		);
 
 void
 pm_copy_logs_pmemlist(
@@ -498,16 +552,19 @@ pm_swap_blocks(
 
 /////////// UTILITY ////////////////////////////
 
+
 MEM_DPT_ENTRY*
 seek_dpt_entry(
 		MEM_DPT* dpt,
 	   	page_id_t page_id,
+		MEM_DPT_ENTRY* prev_dpt_entry,
 		ulint*	hashed);
 
 MEM_TT_ENTRY*
 seek_tt_entry(
 		MEM_TT*		tt,
 		uint64_t	tid,
+		MEM_TT_ENTRY* prev_tt_entry,
 		ulint*		hashed);
 /////////////////////////////////////////////////
 

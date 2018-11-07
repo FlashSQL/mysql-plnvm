@@ -21,11 +21,11 @@
 
 #include "os0file.h"
 
-//////////////////// Dirty Page Table functions//////////
+///////////////////////// ALLOC / FREE ///////////////
 /*
  * Init the Dirty Page Table as the hashtable with n buckets
  * */
-MEM_DPT* init_DPT(uint64_t n) {
+MEM_DPT* alloc_DPT(uint64_t n) {
 	MEM_DPT* dpt;
 	int i;
 
@@ -40,6 +40,140 @@ MEM_DPT* init_DPT(uint64_t n) {
 
 	return dpt;
 }
+
+void
+free_DPT(MEM_DPT* dpt) 
+{
+	ulint i;
+
+	for (i = 0; i < dpt->n; i++) {
+		dpt->buckets[i] = NULL;
+	}
+	free (dpt->buckets);
+	dpt->buckets = NULL;
+
+	dpt->n = 0;
+	free (dpt);
+	dpt = NULL;
+}
+/*
+ * Init the Transaction Table as the hashtable with n buckets
+ * */
+MEM_TT* alloc_TT(uint64_t n) {
+	ulint i;
+	MEM_TT* tt;
+
+	tt = (MEM_TT*) malloc(sizeof(MEM_TT));
+	tt->n = n;
+	tt->buckets = (MEM_TT_ENTRY**) calloc(
+			n, sizeof(MEM_TT_ENTRY*));
+	for (i = 0; i < n; i++)
+		tt->buckets[i] = NULL;
+
+	return tt;
+}
+void
+free_TT(MEM_TT* tt)
+{
+
+	ulint i;
+	for (i = 0; i < tt->n; i++)
+		tt->buckets[i] = NULL;
+	free(tt->buckets);
+
+	tt->n = 0;
+	free (tt);
+	tt = NULL;
+}
+
+/*
+ * Allocate a dpt_entry
+ * */
+MEM_DPT_ENTRY*
+alloc_dpt_entry(
+		page_id_t pid,
+		uint64_t start_lsn){
+
+		MEM_DPT_ENTRY* new_entry = (MEM_DPT_ENTRY*) malloc(sizeof(MEM_DPT_ENTRY));	
+
+		new_entry->id.copy_from(pid);
+		new_entry->curLSN = start_lsn;
+		new_entry->next = NULL;
+
+		//new list and add the rec as the first item
+		new_entry->list = (MEM_LOG_LIST*) malloc(sizeof(MEM_LOG_LIST));
+		new_entry->list->head = new_entry->list->tail = NULL;
+		new_entry->list->n_items = 0;
+
+		return new_entry;
+}
+
+void
+free_dpt_entry( MEM_DPT_ENTRY* entry)
+{
+	entry->list->head = entry->tail = NULL;
+	entry->list->n_items = 0;
+	free (entry->list);
+	entry->list = NULL;
+
+	entry->next = NULL;
+	free (entry);
+	entry = NULL;
+}
+
+MEM_TT_ENTRY*
+alloc_tt_entry(uint64_t tid){
+
+	MEM_TT_ENTRY* new_entry = (MEM_TT_ENTRY*) malloc(sizeof(MEM_TT_ENTRY));	
+
+	new_entry->tid = tid;
+	new_entry->next = NULL;
+
+	//new list
+	new_entry->list = (MEM_LOG_LIST*) malloc(sizeof(MEM_LOG_LIST));
+	new_entry->list->head = new_entry->list->tail = NULL;
+	new_entry->list->n_items = 0;
+
+	//local dpt
+	new_entry->local_dpt = alloc_DPT(MAX_DPT_ENTRIES);
+
+}
+
+void
+free_tt_entry(
+	   	MEM_TT_ENTRY* entry)
+{
+	entry->list->head = entry->tail = NULL;
+	entry->list->n_items = 0;
+	free (entry->list);
+	entry->list = NULL;
+
+	entry->next = NULL;
+	free (entry);
+	entry = NULL;
+}
+
+void
+free_memrec(
+		MEM_LOG_REC* memrec
+		)
+{
+	assert(memrec);
+	memrec->dpt_next = NULL;
+	memrec->dpt_prev = NULL;
+
+	memrec->tt_next = NULL;
+	memrec->tt_prev = NULL;
+	memrec->trx_page_next = NULL;
+	memrec->trx_page_prev = NULL;
+
+	free (memrec->mem_addr);
+	memrec->mem_addr = NULL;
+	free (memrec);
+
+}
+// ////////////////// END ALLOC / FREE ///////////////
+//////////////////// Dirty Page Table functions//////////
 
 /*
  * Add a log record into the dirty page table.
@@ -81,16 +215,7 @@ void add_log_to_DPT(
 	// (2.2) the dirty page is not exist
 	if (bucket == NULL){
 		//(2.2.1) new bucket 
-		MEM_DPT_ENTRY* new_entry = (MEM_DPT_ENTRY*) malloc(sizeof(MEM_DPT_ENTRY));	
-
-		new_entry->id.copy_from(rec->pid);
-		new_entry->curLSN = 0;
-		new_entry->next = NULL;
-
-		//new list and add the rec as the first item
-		new_entry->list = (MEM_LOG_LIST*) malloc(sizeof(MEM_LOG_LIST));
-		new_entry->list->head = new_entry->list->tail = NULL;
-		new_entry->list->n_items = 0;
+		MEM_DPT_ENTRY* new_entry = alloc_dpt_entry(rec->pid, 0);
 
 		if (is_local_dpt)
 			add_log_to_global_DPT_entry(new_entry, rec); 
@@ -98,7 +223,7 @@ void add_log_to_DPT(
 			add_log_to_local_DPT_entry(new_entry, rec);
 
 
-		//link the new bucket
+		//append the new_entry in the hashed line
 		if (prev_bucket == NULL){
 			//this is the first bucket
 			dpt->buckets[hashed] = new_entry;
@@ -243,38 +368,27 @@ add_log_to_local_DPT_entry(
 
 //////////////////// Transaction Table functions//////////
 /*
- * Init the Transaction Table as the hashtable with n buckets
+ * Remove a DPT entry from the global DPT
+ * Call this function when flush a page
  * */
-MEM_TT* init_TT(uint64_t n) {
-	ulint i;
-	MEM_TT* tt;
+void
+remove_dpt_entry(
+		MEM_DPT* global_dpt,
+		MEM_DPT_ENTRY* entry,
+		MEM_DPT_ENTRY* prev_entry,
+		ulint hashed)
+{
 
-	tt = (MEM_TT*) malloc(sizeof(MEM_TT));
-	tt->n = n;
-	tt->buckets = (MEM_TT_ENTRY**) calloc(
-			n, sizeof(MEM_TT_ENTRY*));
-	for (i = 0; i < n; i++)
-		tt->buckets[i] = NULL;
-
-	return tt;
-}
-
-MEM_TT_ENTRY*
-init_TT_entry(uint64_t tid){
-
-	MEM_TT_ENTRY* new_entry = (MEM_TT_ENTRY*) malloc(sizeof(MEM_TT_ENTRY));	
-
-	new_entry->tid = tid;
-	new_entry->next = NULL;
-
-	//new list
-	new_entry->list = (MEM_LOG_LIST*) malloc(sizeof(MEM_LOG_LIST));
-	new_entry->list->head = new_entry->list->tail = NULL;
-	new_entry->list->n_items = 0;
-
-	//local dpt
-	new_entry->local_dpt = init_DPT(MAX_DPT_ENTRIES);
-
+	if (prev_entry == NULL){
+		global_dpt->buckets[hashed] = entry->next;
+	}
+	else{
+		prev_entry->next = entry->next;
+	}
+	entry->next = NULL;
+	adjust_dpt_entry_on_flush(entry);
+	
+	free_dpt_entry(entry);	
 }
 
 /*
@@ -332,9 +446,7 @@ remove_TT_entry(
 			prev_dpt_entry = dpt_entry;
 			dpt_entry = dpt_entry->next;
 			//free resource
-			prev_dpt_entry->next = NULL;
-			free(prev_dpt_entry);
-			prev_dpt_entry = NULL;
+			free_dpt_entry(prev_dpt_entry);
 		}
 
 		//Until this point, all dpt_entry in the hashed line is removed. Now, set the hashed line to NULL
@@ -343,23 +455,10 @@ remove_TT_entry(
 	}//end for each hashed line
 
 	//(2.2) Until this point, all hashed lines in the local DPT are removed.
-	free(local_dpt->buckets);	
-	local_dpt->buckets = NULL;
-	local_dpt->n = 0;
-
-	//(3) Free the tt entry
-	free(local_dpt);
-	entry->local_dpt = local_dpt = NULL;
+	free_DPT(entry->local_dpt);
 
 	//(4) Free the tt log list
-	entry->list->head = entry->list->tail = NULL;
-	entry->list->n_items = 0;	
-	free(entry->list);
-	entry->list = NULL;
-
-	//(5) Free the entry
-	free(entry);
-	entry = NULL;
+	free_tt_entry(entry);	
 }
 /*
  * Add a log record into the transaction table
@@ -405,7 +504,7 @@ add_log_to_TT	(MEM_TT* tt,
 	// (2.2) the transaction entry (bucket) is not exist
 	if (bucket == NULL){
 		// new bucket 
-		MEM_TT_ENTRY* new_entry = init_TT_entry(rec->tid);	
+		MEM_TT_ENTRY* new_entry = alloc_tt_entry(rec->tid);	
 		add_log_to_TT_entry(new_entry, rec); 
 		// (3) Add log record to the local DPT of trx entry
 		add_log_to_DPT(new_entry->local_dpt, rec, true);
@@ -1038,7 +1137,7 @@ remove_logs_when_commit(
 		printf("PMEM ERROR! Cannot find corresponding DPT entry in remove_local_DPT_entry()\n");
 		assert(0);
 	}
-	//(2) For each log record in the entry, remove pointers
+	//(2) For each log record in the local dpt entry, remove pointers
 	memrec = entry->list->head;
 
 	while (memrec != NULL){
@@ -1055,20 +1154,9 @@ remove_logs_when_commit(
 			memrec->dpt_prev->dpt_next = memrec->dpt_next;
 			memrec->dpt_next->dpt_prev = memrec->dpt_prev;
 		}
-		memrec->dpt_next = NULL;
-		memrec->dpt_prev = NULL;
 
-		//(2.2) Remove pointers from TT and local DPT entry
-		memrec->tt_next = NULL;
-		memrec->tt_prev = NULL;
-		memrec->trx_page_next = NULL;
-		memrec->trx_page_prev = NULL;
+		free_memrec(memrec);
 
-		//(2.3) Free log record
-		free (memrec->mem_addr);
-		memrec->mem_addr = NULL;
-		free (memrec);
-		
 		global_DPT_entry->list->n_items--;
 		entry->list->n_items--;
 
@@ -1105,6 +1193,38 @@ write_logs_on_flush_page(
 		printf("PMEM_ERROR, cannot find corresponding dpt entry of the dirty page\n");
 		return PMEM_ERROR;
 	}	
+
+}
+/*
+ * Remove pointers and adjust status of each log record in a global dpt entry
+ * (dpt_next, dpt_prev)
+ * */
+void adjust_dpt_entry_on_flush(
+		MEM_DPT_ENTRY*		dpt_entry
+		)
+{
+	MEM_LOG_REC*		memrec;
+	MEM_LOG_REC*		next_memrec;
+	MEM_LOG_LIST*		list;
+
+	list = dpt_entry->list;
+	if (list->n_items == 0){
+		// Nothing to do
+		return;
+	}
+	memrec = list->head;
+
+	while (memrec != NULL){
+		next_memrec = memrec->dpt_next;
+		memrec->is_in_pmem = true;
+		memrec->dpt_prev = NULL;
+		memrec->dpt_next = NULL;
+		
+		list->n_items--;
+		memrec = next_memrec;
+	} //end while
+	
+	assert(list->n_items == 0);
 
 }
 
@@ -1182,11 +1302,16 @@ pm_swap_blocks(
 
 /*
  * Seek a dpt entry in dpt by page id
+ * dpt (in): The global dpt
+ * page_id (in): The seek key
+ * prev_dpt_entry (out): The previous entry of the seeked entry in the hashed line
+ * hashed (out): The hashed value of the hashed line
  * */
 MEM_DPT_ENTRY*
 seek_dpt_entry(
 		MEM_DPT* dpt,
 	   	page_id_t page_id,
+		MEM_DPT_ENTRY* prev_dpt_entry,
 		ulint*	hashed)
 {
 	ulint h_val;
@@ -1194,11 +1319,13 @@ seek_dpt_entry(
 
 	PMEM_LOG_HASH_KEY(h_val, page_id.fold(), dpt->n);
 	dpt_entry = dpt->buckets[h_val];
+	prev_dpt_entry = NULL;
 
 	while (dpt_entry != NULL){
 		if (dpt_entry->id.equals_to(page_id)){
 			break;
 		}
+		prev_dpt_entry = dpt_entry;
 		dpt_entry = dpt_entry->next;
 	}
 	*hashed = h_val;
@@ -1209,17 +1336,20 @@ MEM_TT_ENTRY*
 seek_tt_entry(
 		MEM_TT*		tt,
 		uint64_t	tid,
+		MEM_TT_ENTRY* prev_tt_entry,
 		ulint*		hashed)
 {
 	ulint			h_val;
 	MEM_TT_ENTRY*	tt_entry;	
 	PMEM_LOG_HASH_KEY(h_val, tid, tt->n);
 	tt_entry = tt->buckets[h_val];
+	prev_tt_entry = NULL;
 
 	while (tt_entry != NULL){
 		if (tt_entry->tid == tid){
 			break;
 		}
+		prev_tt_entry = tt_entry;
 		tt_entry = tt_entry->next;
 	}
 	*hashed = h_val;
