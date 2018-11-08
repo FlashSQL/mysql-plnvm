@@ -451,7 +451,7 @@ add_log_to_local_DPT_entry(
 
 
 void 
-add_log_to_TT	(MEM_TT* tt,
+pmemlog_add_log_to_TT	(MEM_TT* tt,
 				MEM_DPT* dpt,
 			   	MEM_LOG_REC* rec);
 

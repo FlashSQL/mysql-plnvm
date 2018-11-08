@@ -511,7 +511,7 @@ remove_TT_entry(
  * (3) Add log record to the local DPT of e 
  * */
 void 
-add_log_to_TT	(MEM_TT* tt,
+pmemlog_add_log_to_TT	(MEM_TT* tt,
 				MEM_DPT* dpt,
 			   	MEM_LOG_REC* rec){
 
@@ -519,7 +519,7 @@ add_log_to_TT	(MEM_TT* tt,
 	MEM_TT_ENTRY* bucket;
 	MEM_TT_ENTRY* prev_bucket;
 
-	//(1) Add log record to the global DPT
+	//(1) Add log record to the global DPT, after the function completed, rec->lsn is assinged to next lsn in page
 	add_log_to_DPT(dpt, rec, false);
 
 	//(2) Add log record to transaction entry

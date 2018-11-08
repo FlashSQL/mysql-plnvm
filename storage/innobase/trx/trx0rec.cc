@@ -48,6 +48,7 @@ Created 3/26/1996 Heikki Tuuri
 
 #if defined (UNIV_PMEMOBJ_PL)
 #include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
 #endif
 
 /*=========== UNDO LOG RECORD CREATION AND DECODING ====================*/
@@ -1403,6 +1404,14 @@ trx_undo_page_report_modify(
 
 	MEM_LOG_REC* memrec =	pmemlog_alloc_memrec(
 			undorec_ptr, undorec_size, page_id, trx_id);
+
+	assert(memrec);
+
+	pmemlog_add_log_to_TT(
+			gb_pmw->pbuf->tt, 
+			gb_pmw->pbuf->dpt,
+			memrec);
+				
 
 #endif //UNIV_PMEMOBJ_PL
 	/* Write to the REDO log about this change in the UNDO log */
