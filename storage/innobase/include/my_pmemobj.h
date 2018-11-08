@@ -402,7 +402,7 @@ free_tt_entry(
 
 
 MEM_LOG_REC* 
-alloc_memrec(
+pmemlog_alloc_memrec(
 		byte*				mem_addr,
 		uint64_t			size,
 		page_id_t			pid,
@@ -426,6 +426,10 @@ free_pmemrec(
 		);
 
 /////////////////////////////////////////////////////
+//////////////////////// CONNECT WITH InnoDB//////////
+
+/////////////// END CONNECT WITH InnoDB /////////////
+
 
 ////////////////////// ADD / REMOVE//////////////////
 void add_log_to_DPT(

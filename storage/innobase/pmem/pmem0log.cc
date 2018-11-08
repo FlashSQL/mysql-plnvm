@@ -154,7 +154,7 @@ free_tt_entry(
 }
 
 MEM_LOG_REC* 
-alloc_memrec(
+pmemlog_alloc_memrec(
 		byte*				mem_addr,
 		uint64_t			size,
 		page_id_t			pid,
@@ -206,6 +206,13 @@ free_memrec(
 
 }
 // ////////////////// END ALLOC / FREE ///////////////
+//
+
+//////////////////////// CONNECT WITH InnoDB//////////
+
+/////////////// END CONNECT WITH InnoDB /////////////
+
+
 //////////////////// Dirty Page Table functions//////////
 
 /*
