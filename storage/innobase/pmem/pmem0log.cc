@@ -777,7 +777,7 @@ pm_write_REDO_logs(
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
 	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
-	PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
+	PMEM_HASH_KEY(hashed, page_id.fold(), buf->PMEM_N_BUCKETS);
 #endif
 
 retry:
@@ -791,7 +791,7 @@ retry:
 	// (1) If the current hash list is flushing wait and retry
 	if (phashlist->is_flush) {
 		if (buf->is_recovery	&&
-			(phashlist->cur_pages >= phashlist->max_pages * PMEM_BUF_FLUSH_PCT)) {
+			(phashlist->cur_pages >= phashlist->max_pages * buf->PMEM_BUF_FLUSH_PCT)) {
 			pmemobj_rwlock_unlock(pop, &phashlist->lock);
 			pm_buf_handle_full_hashed_list(pop, buf, hashed);
 			goto retry;
@@ -880,7 +880,7 @@ retry:
 	++(phashlist->cur_pages);
 
 // HANDLE FULL LIST ////////////////////////////////////////////////////////////
-	if (phashlist->cur_pages >= phashlist->max_pages * PMEM_BUF_FLUSH_PCT) {
+	if (phashlist->cur_pages >= phashlist->max_pages * buf->PMEM_BUF_FLUSH_PCT) {
 		//(3) The hashlist is (nearly) full, flush it and assign a free list 
 		phashlist->hashed_id = hashed;
 		phashlist->is_flush = true;
