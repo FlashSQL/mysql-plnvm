@@ -1410,6 +1410,12 @@ sync_latch_meta_init()
 	LATCH_ADD_MUTEX(PM_FLUSHER, SYNC_PM_FLUSHER,
 			pm_flusher_mutex_key);
 #endif
+#if defined (UNIV_PMEMOBJ_PL)
+	LATCH_ADD_MUTEX(PL_DPT_ENTRY, SYNC_PL_DPT_ENTRY,
+			pl_dpt_entry_mutex_key);
+	LATCH_ADD_MUTEX(PL_TT_ENTRY, SYNC_PL_TT_ENTRY,
+			pl_tt_entry_mutex_key);
+#endif
 
 	LATCH_ADD_MUTEX(PURGE_SYS_PQ, SYNC_PURGE_QUEUE,
 			purge_sys_pq_mutex_key);

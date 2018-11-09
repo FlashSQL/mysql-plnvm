@@ -404,6 +404,10 @@ static PSI_mutex_info all_innodb_mutexes[] = {
 	PSI_KEY(pm_list_cleaner_mutex),
 	PSI_KEY(pm_flusher_mutex),
 #endif
+#if defined (UNIV_PMEMOBJ_PL)
+	PSI_KEY(pl_dpt_entry_mutex),
+	PSI_KEY(pl_tt_entry_mutex),
+#endif
 	PSI_KEY(page_zip_stat_per_index_mutex),
 	PSI_KEY(purge_sys_pq_mutex),
 	PSI_KEY(recv_sys_mutex),

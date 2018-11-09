@@ -897,6 +897,14 @@ pm_buf_write_with_flusher(
 		   	byte*			src_data,
 		   	bool			sync);
 int
+pm_buf_write_page_zero(
+			PMEMobjpool*	pop,
+		   	PMEM_BUF*		buf,
+		   	page_id_t		page_id,
+		   	page_size_t		size,
+		   	byte*			src_data,
+		   	bool			sync);
+int
 pm_buf_write_with_flusher_append(
 			PMEMobjpool*	pop,
 		   	PMEM_BUF*		buf,

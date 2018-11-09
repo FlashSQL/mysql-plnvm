@@ -949,40 +949,6 @@ mtr_t::Command::release_blocks()
 
 /** Write the redo log record, add dirty pages to the flush list and release
 the resources. */
-#if defined (UNIV_PMEMOBJ_PL)
-void
-mtr_t::Command::execute()
-{
-	ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);
-	/*
-	 *(1) replace prepare_write()
-	 we don't call log_mutex_enter()
-	 * */
-	ulint	len	= m_impl->m_log.size();
-	//See what has changed in finish_write()
-	if (len){
-		finish_write(len);
-	}
-	//We still need this lock for add dirty pages to the flush list
-	if (m_impl->m_made_dirty) {
-		log_flush_order_mutex_enter();
-	}
-	
-	//log_mutex_exit();
-
-	m_impl->m_mtr->m_commit_lsn = m_end_lsn;
-
-	release_blocks();
-
-	if (m_impl->m_made_dirty) {
-		log_flush_order_mutex_exit();
-	}
-
-	release_latches();
-
-	release_resources();
-}
-#else //original
 void
 mtr_t::Command::execute()
 {
@@ -1013,7 +979,6 @@ mtr_t::Command::execute()
 
 	release_resources();
 }
-#endif //UNIV_PMEMOBJ_PL
 
 /** Release the free extents that was reserved using
 fsp_reserve_free_extents().  This is equivalent to calling

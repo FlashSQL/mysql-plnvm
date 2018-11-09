@@ -1092,90 +1092,9 @@ pm_buf_write_with_flusher(
 #if defined(UNIV_PMEMOBJ_BUF_RECOVERY)
 //page 0 is put in the special list
 	if (page_id.page_no() == 0) {
-		PMEM_BUF_BLOCK_LIST* pspec_list;
-		PMEM_BUF_BLOCK*		pspec_block;
-		fil_node_t*			node;
+		return pm_buf_write_page_zero(
+				pop,buf, page_id, size, src_data, sync);
 
-		node = pm_get_node_from_space(page_id.space());
-		if (node == NULL) {
-			printf("PMEM_ERROR node from space is NULL\n");
-			assert(0);
-		}
-
-		pspec_list = D_RW(buf->spec_list); 
-
-		pmemobj_rwlock_wrlock(pop, &pspec_list->lock);
-
-		pdata = buf->p_align;
-		//scan in the special list
-		for (i = 0; i < pspec_list->cur_pages; i++){
-			pspec_block = D_RW(D_RW(pspec_list->arr)[i]);
-
-			if (pspec_block->state == PMEM_FREE_BLOCK){
-				break;
-			}	
-			else if (pspec_block->state == PMEM_IN_USED_BLOCK) {
-				if (pspec_block->id.equals_to(page_id) ||
-						strstr(pspec_block->file_name, node->name) != 0) {
-					//overwrite this spec block
-					pspec_block->sync = sync;
-
-TX_BEGIN(pop) {
-					pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
-}TX_ONABORT {
-}TX_END
-					//update the file_name, page_id in case of tmp space
-					strcpy(pspec_block->file_name, node->name);
-					pspec_block->id.copy_from(page_id);
-
-					pmemobj_rwlock_unlock(pop, &pspec_list->lock);
-
-					return PMEM_SUCCESS;
-				}
-				//else: just skip this block
-			}
-			//next block
-		}//end for
-		
-		if (i < pspec_list->cur_pages) {
-			printf("PMEM_BUF Logical error when handle the special list\n");
-			assert(0);
-		}
-		if (i == pspec_list->cur_pages) {
-			pspec_block = D_RW(D_RW(pspec_list->arr)[i]);
-			//add new block to the spec list
-			pspec_block->sync = sync;
-
-			pspec_block->id.copy_from(page_id);
-			pspec_block->state = PMEM_IN_USED_BLOCK;
-			//get file handle
-			//[Note] is it safe without acquire fil_system->mutex?
-			node = pm_get_node_from_space(page_id.space());
-			if (node == NULL) {
-				printf("PMEM_ERROR node from space is NULL\n");
-				assert(0);
-			}
-
-			//printf ("PMEM_INFO add file %s fd %d\n", node->name, node->handle.m_file);
-			//pspec_block->file_handle = node->handle;
-			strcpy(pspec_block->file_name, node->name);
-
-TX_BEGIN(pop) {
-			pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
-}TX_ONABORT {
-}TX_END
-			++(pspec_list->cur_pages);
-
-			printf("Add new block to the spec list, space_no %zu,file %s cur_pages %zu \n", page_id.space(),node->name,  pspec_list->cur_pages);
-
-			//We do not handle flushing the spec list here
-			if (pspec_list->cur_pages >= pspec_list->max_pages * PMEM_BUF_FLUSH_PCT) {
-				printf("We do not handle flushing spec list in this version, adjust the input params to get larger size of spec list\n");
-				assert(0);
-			}
-		}
-		pmemobj_rwlock_unlock(pop, &pspec_list->lock);
-		return PMEM_SUCCESS;
 	} // end if page_no == 0
 #endif //UNIV_PMEMOBJ_BUF_RECOVERY
 
@@ -1415,6 +1334,104 @@ for (i = 0; i < phashlist->max_pages; i++) {
 	return PMEM_SUCCESS;
 }
 
+int
+pm_buf_write_page_zero(
+		PMEMobjpool*	pop,
+		PMEM_BUF*		buf,
+		page_id_t		page_id,
+		page_size_t		size,
+		byte*			src_data,
+		bool			sync) 
+{
+	ulint					i;
+	byte*					pdata;
+	PMEM_BUF_BLOCK_LIST*	pspec_list;
+	PMEM_BUF_BLOCK*			pspec_block;
+	fil_node_t*				node;
+	size_t					page_size;
+
+	node = pm_get_node_from_space(page_id.space());
+	if (node == NULL) {
+		printf("PMEM_ERROR node from space is NULL\n");
+		assert(0);
+	}
+
+	pspec_list = D_RW(buf->spec_list); 
+
+	pmemobj_rwlock_wrlock(pop, &pspec_list->lock);
+
+	pdata = buf->p_align;
+	//scan in the special list
+	for (i = 0; i < pspec_list->cur_pages; i++){
+		pspec_block = D_RW(D_RW(pspec_list->arr)[i]);
+
+		if (pspec_block->state == PMEM_FREE_BLOCK){
+			break;
+		}	
+		else if (pspec_block->state == PMEM_IN_USED_BLOCK) {
+			if (pspec_block->id.equals_to(page_id) ||
+					strstr(pspec_block->file_name, node->name) != 0) {
+				//overwrite this spec block
+				pspec_block->sync = sync;
+
+				TX_BEGIN(pop) {
+					pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
+				}TX_ONABORT {
+				}TX_END
+				//update the file_name, page_id in case of tmp space
+				strcpy(pspec_block->file_name, node->name);
+				pspec_block->id.copy_from(page_id);
+
+				pmemobj_rwlock_unlock(pop, &pspec_list->lock);
+
+				return PMEM_SUCCESS;
+			}
+			//else: just skip this block
+		}
+		//next block
+	}//end for
+
+	if (i < pspec_list->cur_pages) {
+		printf("PMEM_BUF Logical error when handle the special list\n");
+		assert(0);
+	}
+	if (i == pspec_list->cur_pages) {
+		pspec_block = D_RW(D_RW(pspec_list->arr)[i]);
+		//add new block to the spec list
+		pspec_block->sync = sync;
+
+		pspec_block->id.copy_from(page_id);
+		pspec_block->state = PMEM_IN_USED_BLOCK;
+		//get file handle
+		//[Note] is it safe without acquire fil_system->mutex?
+		node = pm_get_node_from_space(page_id.space());
+		if (node == NULL) {
+			printf("PMEM_ERROR node from space is NULL\n");
+			assert(0);
+		}
+
+		//printf ("PMEM_INFO add file %s fd %d\n", node->name, node->handle.m_file);
+		//pspec_block->file_handle = node->handle;
+		strcpy(pspec_block->file_name, node->name);
+
+		TX_BEGIN(pop) {
+			pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
+		}TX_ONABORT {
+		}TX_END
+		++(pspec_list->cur_pages);
+
+		printf("Add new block to the spec list, space_no %zu,file %s cur_pages %zu \n", page_id.space(),node->name,  pspec_list->cur_pages);
+
+		//We do not handle flushing the spec list here
+		if (pspec_list->cur_pages >= pspec_list->max_pages * PMEM_BUF_FLUSH_PCT) {
+			printf("We do not handle flushing spec list in this version, adjust the input params to get larger size of spec list\n");
+			assert(0);
+		}
+	}
+	pmemobj_rwlock_unlock(pop, &pspec_list->lock);
+	return PMEM_SUCCESS;
+
+}
 /*
  * VERSION 4
  * Similar with pm_buf_write_with_flusher but write in append mode

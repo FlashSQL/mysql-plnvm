@@ -100,6 +100,8 @@ alloc_dpt_entry(
 		new_entry->curLSN = start_lsn;
 		new_entry->next = NULL;
 
+		mutex_create(LATCH_ID_PL_DPT_ENTRY, &new_entry->lock);
+
 		//new list and add the rec as the first item
 		new_entry->list = (MEM_LOG_LIST*) malloc(sizeof(MEM_LOG_LIST));
 		new_entry->list->head = new_entry->list->tail = NULL;
@@ -115,6 +117,8 @@ free_dpt_entry( MEM_DPT_ENTRY* entry)
 	entry->list->n_items = 0;
 	free (entry->list);
 	entry->list = NULL;
+	
+	mutex_destroy(&entry->lock);
 
 	entry->next = NULL;
 	free (entry);
@@ -128,6 +132,8 @@ alloc_tt_entry(uint64_t tid){
 
 	new_entry->tid = tid;
 	new_entry->next = NULL;
+
+	mutex_create(LATCH_ID_PL_TT_ENTRY, &new_entry->lock);
 
 	//new list
 	new_entry->list = (MEM_LOG_LIST*) malloc(sizeof(MEM_LOG_LIST));
@@ -148,6 +154,8 @@ free_tt_entry(
 	free (entry->list);
 	entry->list = NULL;
 
+	mutex_destroy(&entry->lock);
+
 	entry->next = NULL;
 	free (entry);
 	entry = NULL;
@@ -161,6 +169,9 @@ pmemlog_alloc_memrec(
 		uint64_t			tid
 		)
 {
+#if defined (UNIV_PMEMOBJ_PL)
+	printf("PMEMLOG ====> alloc memrec size %zu space_no %zu page_no %zu trx_id %zu", size, pid.space(), pid.page_no(), tid);
+#endif
 	MEM_LOG_REC* memrec;
 
 	memrec = (MEM_LOG_REC*) malloc(sizeof(MEM_LOG_REC));
@@ -258,9 +269,9 @@ void add_log_to_DPT(
 		MEM_DPT_ENTRY* new_entry = alloc_dpt_entry(rec->pid, 0);
 
 		if (is_local_dpt)
-			add_log_to_global_DPT_entry(new_entry, rec); 
+			add_log_to_local_DPT_entry(new_entry, rec); 
 		else 
-			add_log_to_local_DPT_entry(new_entry, rec);
+			add_log_to_global_DPT_entry(new_entry, rec);
 
 
 		//append the new_entry in the hashed line
