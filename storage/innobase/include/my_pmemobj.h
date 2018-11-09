@@ -326,6 +326,7 @@ struct __pmem_log_list {
  * */
 struct __mem_DPT_entry {
 	ib_mutex_t			lock; //the mutex lock protect all items
+	PMEMrwlock			pmem_lock; //this lock protects remain properties
 	page_id_t			id;
 	uint64_t			curLSN; //used to generate the next LSN inside its list
 	MEM_LOG_LIST*		list; //sorted list by lsn
@@ -433,17 +434,20 @@ free_pmemrec(
 
 ////////////////////// ADD / REMOVE//////////////////
 void add_log_to_DPT(
+		PMEMobjpool*	pop,
 		MEM_DPT* dpt,
 	   	MEM_LOG_REC* rec,
 		bool is_local_dpt);
 
 void 
 add_log_to_global_DPT_entry(
+		PMEMobjpool*	pop,
 		MEM_DPT_ENTRY* entry,
 	   	MEM_LOG_REC* rec);
 
 void 
 add_log_to_local_DPT_entry(
+		PMEMobjpool*	pop,
 		MEM_DPT_ENTRY* entry,
 	   	MEM_LOG_REC* rec);
 
@@ -451,7 +455,9 @@ add_log_to_local_DPT_entry(
 
 
 void 
-pmemlog_add_log_to_TT	(MEM_TT* tt,
+pmemlog_add_log_to_TT	(
+				PMEMobjpool*	pop,
+				MEM_TT* tt,
 				MEM_DPT* dpt,
 			   	MEM_LOG_REC* rec);
 
@@ -733,6 +739,11 @@ struct __pmem_buf {
 	bool is_async_only; //true if we only capture non-sync write from buffer pool
 
 	//Those varables are in DRAM //////////////////
+	uint64_t PMEM_N_BUCKETS;
+	uint64_t PMEM_BUCKET_SIZE;
+	double PMEM_BUF_FLUSH_PCT;
+
+	uint64_t PMEM_N_FLUSH_THREADS;
 	//They suppose to be lost in the event of system crash
 	bool is_recovery;
 	os_event_t*  flush_events; //N flush events for N buckets

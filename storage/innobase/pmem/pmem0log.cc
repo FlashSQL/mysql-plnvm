@@ -233,6 +233,7 @@ free_memrec(
  * false: insert log recrod into the global dpt
  * */
 void add_log_to_DPT(
+		PMEMobjpool*	pop,
 		MEM_DPT* dpt,
 	   	MEM_LOG_REC* rec,
 		bool is_local_dpt){
@@ -252,9 +253,9 @@ void add_log_to_DPT(
 		if (bucket->id.equals_to(rec->pid)){
 			//(2.1) insert the log record into this bucket
 			if (is_local_dpt)
-				add_log_to_global_DPT_entry(bucket, rec); 
+				add_log_to_local_DPT_entry(pop, bucket, rec); 
 			else 
-				add_log_to_local_DPT_entry(bucket, rec);
+				add_log_to_global_DPT_entry(pop, bucket, rec);
 			return;
 		}
 		prev_bucket = bucket;
@@ -266,9 +267,9 @@ void add_log_to_DPT(
 		MEM_DPT_ENTRY* new_entry = alloc_dpt_entry(rec->pid, 0);
 
 		if (is_local_dpt)
-			add_log_to_local_DPT_entry(new_entry, rec); 
+			add_log_to_local_DPT_entry(pop, new_entry, rec); 
 		else 
-			add_log_to_global_DPT_entry(new_entry, rec);
+			add_log_to_global_DPT_entry(pop, new_entry, rec);
 
 
 		//append the new_entry in the hashed line
@@ -292,62 +293,45 @@ Caller: add_log_to_DPT() with is_local_dpt = false
  * */
 void
 add_log_to_global_DPT_entry(
+		PMEMobjpool*	pop,
 		MEM_DPT_ENTRY* entry,
 	   	MEM_LOG_REC* rec)
 {
 	MEM_LOG_REC*	it;
-	MEM_LOG_LIST*	list;
-	uint64_t		lsn;
 	
 	assert(entry);
 	assert(rec);
 
 	mutex_enter(&entry->lock);
+	//pmemobj_rwlock_wrlock(pop, &entry->pmem_lock);
 	// (1) Generate the LSN
-	lsn = entry->curLSN = entry->curLSN	+ 1;
-	rec->lsn = lsn;
+	rec->lsn = entry->curLSN + 1;
+	entry->curLSN = rec->lsn;
 
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+//	printf("+++ add log to global dpt_entry page_no %zu space_no %zu tid %zu curLSN %zu rec->lsn %zu list->n_items %zu\n",
+//			rec->pid.page_no(), rec->pid.space(), rec->tid, entry->curLSN, rec->lsn, entry->list->n_items );
+#endif
 	// (2) insert the log record to the list
-	list = entry->list;
-	if (list->n_items == 0){
-		list->head = list->tail = rec;
-		list->n_items++;
+	if (entry->list->n_items == 0){
+		entry->list->head = entry->list->tail = rec;
+		++entry->list->n_items;
 
 		mutex_exit(&entry->lock);
+		//pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 
 		return;
 	}
+	//since the last rec always has max lsn, we only append on the list
+	assert(rec->lsn > entry->list->tail->lsn);
+	entry->list->tail->dpt_next = rec;
+	rec->dpt_prev = entry->list->tail;
+	entry->list->tail = rec;
+	rec->dpt_next = NULL;
 
-	it = list->head;
-	while(it != NULL){
-		if (it->lsn > rec->lsn){
-			//insert the log right before it
-			if(it->dpt_prev == NULL){
-				rec->dpt_next = it;
-				rec->dpt_prev = it->dpt_prev;
-				it->dpt_prev = rec;
-				list->head = rec;
-			}
-			else {
-				rec->dpt_next = it;
-				rec->dpt_prev = it->dpt_prev;
-				it->dpt_prev->dpt_next = rec;
-				it->dpt_prev = rec;
-			}
-			break;
-		}
-		it = it->dpt_next;
-	}
-	if (it == NULL){
-		//insert to the tail
-		rec->dpt_next = NULL;
-		rec->dpt_prev = list->tail;
-		list->tail->dpt_next = rec;
-		list->tail = rec;
-	}
-
-	list->n_items++;
+	entry->list->n_items++;
 	mutex_exit(&entry->lock);
+	//pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 }
 /*
  *Add a log record to a local DPT entry of a transaction (as sorted doubled linked list)
@@ -357,59 +341,38 @@ Caller: add_log_to_DPT() with is_local_dpt = true
  * */
 void
 add_log_to_local_DPT_entry(
+		PMEMobjpool*	pop,
 		MEM_DPT_ENTRY* entry,
 	   	MEM_LOG_REC* rec)
 {
 	MEM_LOG_REC*	it;
-	MEM_LOG_LIST*	list;
 	uint64_t		lsn;
 	
 	assert(entry);
 	assert(rec);
 
 	mutex_enter(&entry->lock);
+	//pmemobj_rwlock_wrlock(pop, &entry->pmem_lock);
 
 	// (1) insert the log record to the list
-	list = entry->list;
-	if (list->n_items == 0){
-		list->head = list->tail = rec;
-		list->n_items++;
+	if (entry->list->n_items == 0){
+		entry->list->head = entry->list->tail = rec;
+		entry->list->n_items++;
 
 		mutex_exit(&entry->lock);
+		//pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 
 		return;
 	}
+	//append
+	entry->list->tail->trx_page_next = rec;
+	rec->trx_page_prev = entry->list->tail;
+	entry->list->tail = rec;
+	rec->trx_page_next = NULL;
 
-	it = list->head;
-	while(it != NULL){
-		if (it->lsn > rec->lsn){
-			//insert the log right before it
-			if(it->trx_page_prev == NULL){
-				rec->trx_page_next = it;
-				rec->trx_page_prev = it->trx_page_prev;
-				it->trx_page_prev = rec;
-				list->head = rec;
-			}
-			else {
-				rec->trx_page_next = it;
-				rec->trx_page_prev = it->trx_page_prev;
-				it->trx_page_prev->trx_page_next = rec;
-				it->trx_page_prev = rec;
-			}
-			break;
-		}
-		it = it->trx_page_next;
-	}
-	if (it == NULL){
-		//insert to the tail
-		rec->trx_page_next = NULL;
-		rec->trx_page_prev = list->tail;
-		list->tail->trx_page_next = rec;
-		list->tail = rec;
-	}
-
-	list->n_items++;
+	entry->list->n_items++;
 	mutex_exit(&entry->lock);
+	//pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 }
 //////////////////// End Dirty Page Table functions//////////
 
@@ -519,7 +482,9 @@ remove_TT_entry(
  * (3) Add log record to the local DPT of e 
  * */
 void 
-pmemlog_add_log_to_TT	(MEM_TT* tt,
+pmemlog_add_log_to_TT	(
+				PMEMobjpool*	pop,
+				MEM_TT* tt,
 				MEM_DPT* dpt,
 			   	MEM_LOG_REC* rec){
 
@@ -528,7 +493,7 @@ pmemlog_add_log_to_TT	(MEM_TT* tt,
 	MEM_TT_ENTRY* prev_bucket;
 
 	//(1) Add log record to the global DPT, after the function completed, rec->lsn is assinged to next lsn in page
-	add_log_to_DPT(dpt, rec, false);
+	add_log_to_DPT(pop, dpt, rec, false);
 
 	//(2) Add log record to transaction entry
 	//Get the hash by transaction id
@@ -542,11 +507,14 @@ pmemlog_add_log_to_TT	(MEM_TT* tt,
 	//Multiple entries can have the same hashed value, Search for the right entry in the same hashed 
 	while (bucket != NULL){
 		if (bucket->tid == rec->tid){
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+		printf("++0 add rec to existed TT entry tid %zu n_items %zu\n", rec->tid, bucket->list->n_items);
+#endif
 			//(2.1) insert the log record into this bucket
 			add_log_to_TT_entry(bucket, rec); 
 
 			// (3) Add log record to the local DPT of trx entry
-			add_log_to_DPT(bucket->local_dpt, rec, true);
+			add_log_to_DPT(pop, bucket->local_dpt, rec, true);
 			return;
 		}
 		prev_bucket = bucket;
@@ -556,12 +524,12 @@ pmemlog_add_log_to_TT	(MEM_TT* tt,
 	if (bucket == NULL){
 		// new bucket 
 		MEM_TT_ENTRY* new_entry = alloc_tt_entry(rec->tid);	
-#if defined (UNIV_PMEMOBJ_PL)
-		printf("+++ add new TT entry tid %zu \n", rec->tid);
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+		printf("+++ add rec to new TT entry tid %zu \n", rec->tid);
 #endif
 		add_log_to_TT_entry(new_entry, rec); 
 		// (3) Add log record to the local DPT of trx entry
-		add_log_to_DPT(new_entry->local_dpt, rec, true);
+		add_log_to_DPT(pop, new_entry->local_dpt, rec, true);
 
 		//link the new bucket
 		if (prev_bucket == NULL){
@@ -591,7 +559,7 @@ add_log_to_TT_entry(
 	assert(entry);
 	assert(rec);
 	//we don't need to acquire the lock because only this transaction can touch the entry
-	//mutex_enter(&entry->lock);
+	mutex_enter(&entry->lock);
 	//(1) Insert the log record at the tail of the list
 	list = entry->list;
 	//If the list is empty
@@ -599,15 +567,17 @@ add_log_to_TT_entry(
 		list->head = list->tail = rec;
 		rec->tt_next = rec->tt_prev = NULL;
 		list->n_items++;
+		mutex_exit(&entry->lock);
 		return;
 	}
 	
-	rec->tt_next = NULL;
-	rec->tt_prev = list->tail;
 	list->tail->tt_next = rec;
+	rec->tt_prev = list->tail;
 	list->tail = rec;
+	rec->tt_next = NULL;
 
 	list->n_items++;
+	mutex_exit(&entry->lock);
 	return;
 }
 /*
@@ -641,9 +611,6 @@ pmemlog_trx_commit(
 	MEM_DPT*		global_dpt = buf->dpt;
 	MEM_TT*			tt = buf->tt;
 
-#if defined (UNIV_PMEMOBJ_PL_DEBUG)
-	printf("COMMIT ===> tid %zu commit\n", tid);
-#endif
 	//(1) Get transaction entry by the input tid 
 	PMEM_LOG_HASH_KEY(hashed, tid, tt->n);
 	assert (hashed < tt->n);
@@ -660,9 +627,13 @@ pmemlog_trx_commit(
 	}
 
 	if (bucket == NULL){
-		printf("PMEM_LOG Error in trx_commit_TT(), tid %zu not found in transaction table\n", tid);
+		//printf("PMEM_LOG Error in trx_commit_TT(), tid %zu not found in transaction table\n", tid);
 		return PMEM_ERROR;
 	}
+
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+	printf("COMMIT ===> tid %zu commit\n", tid);
+#endif
 
 	//(2) For each DPT entry in the local dpt, write REDO log to corresponding page	
 	local_dpt = bucket->local_dpt;
@@ -1022,10 +993,10 @@ pm_merge_logs_to_loglist(
 				} //end while
 				if (TOID_IS_NULL(cur_insert)){
 					//insert in tail
-					TOID_ASSIGN( D_RW(pmemrec)->next, OID_NULL);
-					TOID_ASSIGN( D_RW(pmemrec)->prev, (plog_list->tail).oid);
 					TOID_ASSIGN( D_RW(plog_list->tail)->next, pmemrec.oid);
+					TOID_ASSIGN( D_RW(pmemrec)->prev, (plog_list->tail).oid);
 					TOID_ASSIGN( plog_list->tail, pmemrec.oid);
+					TOID_ASSIGN( D_RW(pmemrec)->next, OID_NULL);
 
 					TOID_ASSIGN( cur_insert, (plog_list->tail).oid);
 
@@ -1053,7 +1024,7 @@ pm_merge_logs_to_loglist(
 		}//end while
 		
 		if (count != dpt_entry->list->n_items){
-			printf("PMEM_ERROR, count = %zu differs from nitems %zu\n", count, dpt_entry->list->n_items);
+			printf("PMEM_ERROR, pm_merges count = %zu differs from nitems %zu\n", count, dpt_entry->list->n_items);
 			assert(0);
 		}
 		//plog_list->n_items = plog_list->n_items + count;
@@ -1356,14 +1327,12 @@ void adjust_dpt_entry_on_flush(
 {
 	MEM_LOG_REC*		memrec;
 	MEM_LOG_REC*		next_memrec;
-	MEM_LOG_LIST*		list;
 
-	list = dpt_entry->list;
-	if (list->n_items == 0){
+	if (dpt_entry->list->n_items == 0){
 		// Nothing to do
 		return;
 	}
-	memrec = list->head;
+	memrec = dpt_entry->list->head;
 
 	while (memrec != NULL){
 		next_memrec = memrec->dpt_next;
@@ -1371,11 +1340,11 @@ void adjust_dpt_entry_on_flush(
 		memrec->dpt_prev = NULL;
 		memrec->dpt_next = NULL;
 		
-		list->n_items--;
+		dpt_entry->list->n_items--;
 		memrec = next_memrec;
 	} //end while
 	
-	assert(list->n_items == 0);
+	assert(dpt_entry->list->n_items == 0);
 
 }
 

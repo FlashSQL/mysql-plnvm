@@ -84,6 +84,10 @@ pm_wrapper_buf_alloc_or_open(
 		assert(p);
 		pmw->pbuf->p_align = static_cast<byte*> (ut_align(p, page_size));
 	}
+	pmw->pbuf->PMEM_N_BUCKETS = PMEM_N_BUCKETS;
+	pmw->pbuf->PMEM_BUCKET_SIZE = PMEM_BUCKET_SIZE;
+	pmw->pbuf->PMEM_BUF_FLUSH_PCT = PMEM_BUF_FLUSH_PCT;
+	pmw->pbuf->PMEM_N_FLUSH_THREADS =  PMEM_N_FLUSH_THREADS;
 	////////////////////////////////////////////////////
 	// Part 2: D-RAM structures and open file(s)
 	// ///////////////////////////////////////////////////

@@ -1408,6 +1408,7 @@ trx_undo_page_report_modify(
 	assert(memrec);
 
 	pmemlog_add_log_to_TT(
+			gb_pmw->pop,
 			gb_pmw->pbuf->tt, 
 			gb_pmw->pbuf->dpt,
 			memrec);
