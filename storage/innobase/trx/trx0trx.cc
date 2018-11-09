@@ -2205,12 +2205,8 @@ trx_commit(
 	}
 
 #if defined (UNIV_PMEMOBJ_PL)
-	uint64_t tid_copy = trx->id; //we need tid_copy because trx->id is reset to 0 soon
-#if defined (UNIV_PMEMOBJ_PL_DEBUG)
-			//printf("in innodbase_commit tid = %zu tid_copy=%zu\n",trx->id, tid_copy);
-#endif
-			if( tid_copy != 0){
-				pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, tid_copy);
+			if( trx->id > 0 && !trx->read_only){
+				pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx->id);
 			}
 #endif //UNIV_PMEMOBJ_PL
 	trx_commit_low(trx, mtr);

@@ -508,7 +508,7 @@ pmemlog_add_log_to_TT	(
 	while (bucket != NULL){
 		if (bucket->tid == rec->tid){
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
-		printf("++0 add rec to existed TT entry tid %zu n_items %zu\n", rec->tid, bucket->list->n_items);
+		//printf("++0 add rec to existed TT entry tid %zu n_items %zu\n", rec->tid, bucket->list->n_items);
 #endif
 			//(2.1) insert the log record into this bucket
 			add_log_to_TT_entry(bucket, rec); 
@@ -627,7 +627,7 @@ pmemlog_trx_commit(
 	}
 
 	if (bucket == NULL){
-		//printf("PMEM_LOG Error in trx_commit_TT(), tid %zu not found in transaction table\n", tid);
+		printf("PMEM_LOG Error in trx_commit_TT(), tid %zu not found in transaction table\n", tid);
 		return PMEM_ERROR;
 	}
 

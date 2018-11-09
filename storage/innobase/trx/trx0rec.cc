@@ -1394,6 +1394,10 @@ trx_undo_page_report_modify(
 			ptr - undo_page);
 
 #if defined (UNIV_PMEMOBJ_PL)
+	//does some checks before capture the log record
+	assert (trx->id > 0);
+	assert (!trx->read_only);
+
 	byte* undorec_ptr = undo_page + first_free;
 	ulint undorec_size = (ptr - undo_page - first_free); 
 	//get the pointer to the page contains the rec
