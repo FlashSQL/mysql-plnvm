@@ -169,9 +169,6 @@ pmemlog_alloc_memrec(
 		uint64_t			tid
 		)
 {
-#if defined (UNIV_PMEMOBJ_PL)
-	printf("PMEMLOG ====> alloc memrec size %zu space_no %zu page_no %zu trx_id %zu", size, pid.space(), pid.page_no(), tid);
-#endif
 	MEM_LOG_REC* memrec;
 
 	memrec = (MEM_LOG_REC*) malloc(sizeof(MEM_LOG_REC));
@@ -619,11 +616,9 @@ add_log_to_TT_entry(
  * tid (in): Transaction id
  * */
 int
-trx_commit_TT(
+pmemlog_trx_commit(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-		MEM_DPT*		global_dpt,
-		MEM_TT*			tt,
 	   	uint64_t		tid)
 {
 	ulint			hashed;
@@ -639,7 +634,9 @@ trx_commit_TT(
 	MEM_LOG_LIST*	log_list;
 	MEM_LOG_REC*	memrec;
 	MEM_LOG_REC*	memrec_next;
-	
+
+	MEM_DPT*		global_dpt = buf->dpt;
+	MEM_TT*			tt = buf->tt;
 	//(1) Get transaction entry by the input tid 
 	PMEM_LOG_HASH_KEY(hashed, tid, tt->n);
 	assert (hashed < tt->n);
@@ -693,11 +690,9 @@ trx_commit_TT(
  * tid (in): Transaction id
  * */
 int
-trx_abort_TT(
+pmemlog_trx_abort(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-		MEM_DPT*		global_dpt,
-		MEM_TT*			tt,
 	   	uint64_t		tid)
 {
 	ulint			hashed;
@@ -714,6 +709,9 @@ trx_abort_TT(
 	MEM_LOG_REC*	memrec;
 	MEM_LOG_REC*	memrec_next;
 	
+	MEM_DPT*		global_dpt = buf->dpt;
+	MEM_TT*			tt = buf->tt;
+
 	//(1) Get transaction entry by the input tid 
 	PMEM_LOG_HASH_KEY(hashed, tid, tt->n);
 	assert (hashed < tt->n);
@@ -1040,8 +1038,11 @@ pm_merge_logs_to_loglist(
 			}
 
 		}//end while
-
-		assert(count == dpt_entry->list->n_items);
+		
+		if (count != dpt_entry->list->n_items){
+			printf("PMEM_ERROR, count = %zu differs from nitems %zu\n", count, dpt_entry->list->n_items);
+			assert(0);
+		}
 		plog_list->n_items = plog_list->n_items + count;
 }
 

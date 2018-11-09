@@ -487,18 +487,14 @@ remove_TT_entry(
 /////////////////////// END ADD / REMOVE/////////
 //////////////////// COMMIT ////////////////////
 int
-trx_commit_TT(
+pmemlog_trx_commit(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-		MEM_DPT*		dpt,
-		MEM_TT*			tt,
 	   	uint64_t		tid);
 int
-trx_abort_TT(
+pmemlog_trx_abort(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-		MEM_DPT*		dpt,
-		MEM_TT*			tt,
 	   	uint64_t		tid);
 
 int
