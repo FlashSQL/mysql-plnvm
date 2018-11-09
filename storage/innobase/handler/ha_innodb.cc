@@ -4363,6 +4363,9 @@ innobase_commit(
 
 	if (trx_in_innodb.is_aborted()) {
 
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+	printf("in innobase_commit tid = %zu ABORT\n", trx->id);
+#endif 
 		innobase_rollback(hton, thd, commit_trx);
 
 		DBUG_RETURN(convert_error_code_to_mysql(
@@ -4470,9 +4473,7 @@ innobase_commit(
 			//Do nothing now
 #else //original
 
-#if defined (UNIV_PMEMOBJ_PL)
-			pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx->id);
-#endif //UNIV_PMEMOBJ_PL
+
 			trx_commit_complete_for_mysql(trx);
 #endif /*UNIV_PMEMOBJ_LOG */
 		}

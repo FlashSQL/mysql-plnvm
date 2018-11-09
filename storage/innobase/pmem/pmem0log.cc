@@ -460,7 +460,7 @@ remove_TT_entry(
 		ulint hashed)
 {
 	MEM_DPT*			local_dpt;
-	MEM_DPT_ENTRY*		dpt_entry;
+	MEM_DPT_ENTRY*		local_dpt_entry;
 	MEM_DPT_ENTRY*		prev_dpt_entry;
 	ulint				i;
 
@@ -481,21 +481,21 @@ remove_TT_entry(
 	//(2.1) for each hashed line in the local DPT 
 	for (i = 0; i < local_dpt->n; i++){
 		//Get a hashed line
-		dpt_entry = local_dpt->buckets[i];
-		if (dpt_entry == NULL) 
+		local_dpt_entry = local_dpt->buckets[i];
+		if (local_dpt_entry == NULL) 
 			continue;
-		assert(dpt_entry);
+		assert(local_dpt_entry);
 		//for each entry in the hashed line
-		while (dpt_entry != NULL){
+		while (local_dpt_entry != NULL){
 			/////////////////////
 			//remove log records and their pointers in this dpt_entry
 			//The pointers are removed from: (1) local dpt, (2) global dpt, and (3) tt entry
-			remove_logs_when_commit(global_dpt, dpt_entry);
+			remove_logs_on_remove_local_dpt_entry(global_dpt, local_dpt_entry);
 			////////////////////////////////////
 			
 			//remove the dpt entry from the dpt hashed line
-			prev_dpt_entry = dpt_entry;
-			dpt_entry = dpt_entry->next;
+			prev_dpt_entry = local_dpt_entry;
+			local_dpt_entry = local_dpt_entry->next;
 			//free resource
 			free_dpt_entry(prev_dpt_entry);
 		}
@@ -556,6 +556,9 @@ pmemlog_add_log_to_TT	(MEM_TT* tt,
 	if (bucket == NULL){
 		// new bucket 
 		MEM_TT_ENTRY* new_entry = alloc_tt_entry(rec->tid);	
+#if defined (UNIV_PMEMOBJ_PL)
+		printf("+++ add new TT entry tid %zu \n", rec->tid);
+#endif
 		add_log_to_TT_entry(new_entry, rec); 
 		// (3) Add log record to the local DPT of trx entry
 		add_log_to_DPT(new_entry->local_dpt, rec, true);
@@ -626,7 +629,7 @@ pmemlog_trx_commit(
 	MEM_TT_ENTRY*	bucket;
 	
 	MEM_DPT*		local_dpt;	
-	MEM_DPT_ENTRY*	dpt_entry;
+	MEM_DPT_ENTRY*	local_dpt_entry;
 
 	//For remove
 	MEM_TT_ENTRY*	prev_bucket; // for remove
@@ -637,6 +640,10 @@ pmemlog_trx_commit(
 
 	MEM_DPT*		global_dpt = buf->dpt;
 	MEM_TT*			tt = buf->tt;
+
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+	printf("COMMIT ===> tid %zu commit\n", tid);
+#endif
 	//(1) Get transaction entry by the input tid 
 	PMEM_LOG_HASH_KEY(hashed, tid, tt->n);
 	assert (hashed < tt->n);
@@ -662,15 +669,15 @@ pmemlog_trx_commit(
 	assert(local_dpt);
 	for (i = 0; i < local_dpt->n; i++){
 		//Get a hashed line
-		dpt_entry = local_dpt->buckets[i];
-		if (dpt_entry == NULL) 
+		local_dpt_entry = local_dpt->buckets[i];
+		if (local_dpt_entry == NULL) 
 			continue;
-		assert(dpt_entry);
+		assert(local_dpt_entry);
 		//for each entry in the same hashed line
-		while (dpt_entry != NULL){
-			pm_write_REDO_logs(pop, buf, dpt_entry);
+		while (local_dpt_entry != NULL){
+			pm_write_REDO_logs(pop, buf, local_dpt_entry);
 
-			dpt_entry = dpt_entry->next;
+			local_dpt_entry = local_dpt_entry->next;
 		}
 		//next hashed line
 	}//end for each hashed line
@@ -712,6 +719,9 @@ pmemlog_trx_abort(
 	MEM_DPT*		global_dpt = buf->dpt;
 	MEM_TT*			tt = buf->tt;
 
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+	printf("ABORT ===> pmemlog_trx_abort tid %zu abort \n", tid);
+#endif 
 	//(1) Get transaction entry by the input tid 
 	PMEM_LOG_HASH_KEY(hashed, tid, tt->n);
 	assert (hashed < tt->n);
@@ -768,7 +778,7 @@ pmemlog_trx_abort(
  * write per-page REDO log records when a transaction commits
  * pop: global pop
  * buf: global PMEM_BUF wrapper
- * dpt_entry (in): list of per-page REDO log record sorted by lsn 
+ * dpt_entry (in): local dpt_entry of the commited transaction
  *
  * caller: trx_commit_TT() 
  * This function use some part of pm_buf_write_with_flusher(), but it doesn't actually write data, just create the place-holder
@@ -957,6 +967,8 @@ pm_merge_logs_to_loglist(
 		TOID(PMEM_LOG_REC) cur_insert;
 		
 		assert(plog_list);
+		
+		mutex_enter(&dpt_entry->lock);
 
 		TOID_ASSIGN(cur_insert, (plog_list->head).oid);
 		memrec = dpt_entry->list->head;
@@ -1026,6 +1038,7 @@ pm_merge_logs_to_loglist(
 				}
 
 			}//end else
+			plog_list->n_items++;
 			count++;	
 
 			if (is_global_dpt){
@@ -1043,7 +1056,9 @@ pm_merge_logs_to_loglist(
 			printf("PMEM_ERROR, count = %zu differs from nitems %zu\n", count, dpt_entry->list->n_items);
 			assert(0);
 		}
-		plog_list->n_items = plog_list->n_items + count;
+		//plog_list->n_items = plog_list->n_items + count;
+
+		mutex_exit(&dpt_entry->lock);
 }
 
 /*
@@ -1108,13 +1123,15 @@ pm_remove_UNDO_log_from_list(
 			if ( !TOID_IS_NULL(ppmemrec->prev)) {
 				TOID_ASSIGN( D_RW(ppmemrec->prev)->next,
 						(ppmemrec->next).oid);
-				TOID_ASSIGN( D_RW(ppmemrec->next)->prev,
+				if (! TOID_IS_NULL(ppmemrec->next))
+					TOID_ASSIGN( D_RW(ppmemrec->next)->prev,
 						(ppmemrec->prev).oid);
 			}
 			else {
 				//pmem rec is the first UNDO Log record
 				TOID_ASSIGN(list->head, (ppmemrec->next).oid);
-				TOID_ASSIGN( D_RW(ppmemrec->next)->prev, list->head.oid);
+				if (! TOID_IS_NULL(ppmemrec->next))
+				TOID_ASSIGN( D_RW(ppmemrec->next)->prev, OID_NULL);
 			}
 
 			TOID_ASSIGN(ppmemrec->next, OID_NULL);
@@ -1247,11 +1264,12 @@ free_pmemrec(
  * entry (in): The local dpt entry of the transaction
  * */
 void 
-remove_logs_when_commit(
+remove_logs_on_remove_local_dpt_entry(
 		MEM_DPT*	global_dpt,
 		MEM_DPT_ENTRY*		entry)
 {
 	ulint hashed;
+	ulint count;
 
 	MEM_LOG_REC*	memrec;
 	MEM_LOG_REC*	next_memrec;//next log rec of memrec in the entry
@@ -1275,6 +1293,15 @@ remove_logs_when_commit(
 		assert(0);
 	}
 	//(2) For each log record in the local dpt entry, remove pointers
+	mutex_enter(&global_DPT_entry->lock);
+	count = 0;
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+	if (entry->list->head != NULL)
+	printf("remove_logs_on_remove_local_dpt_entry before remove local nitems %zu global nitems %zu count %zu\n",
+		entry->list->n_items,
+		global_DPT_entry->list->n_items,
+		count);
+#endif 
 	memrec = entry->list->head;
 
 	while (memrec != NULL){
@@ -1284,21 +1311,39 @@ remove_logs_when_commit(
 		if (memrec->dpt_prev == NULL){
 			//memrec is the first log record in the global DPT entry
 			global_DPT_entry->list->head = memrec->dpt_next;
-			memrec->dpt_next->dpt_prev = NULL;
-
 		}
 		else{
 			memrec->dpt_prev->dpt_next = memrec->dpt_next;
+		}
+
+		if (memrec->dpt_next != NULL){
 			memrec->dpt_next->dpt_prev = memrec->dpt_prev;
 		}
 
 		free_memrec(memrec);
+		count++;
 
-		global_DPT_entry->list->n_items--;
-		entry->list->n_items--;
+		//global_DPT_entry->list->n_items--;
+		//entry->list->n_items--;
 
 		memrec = next_memrec;
 	}//end while
+	assert (count <= global_DPT_entry->list->n_items);
+	assert (count <= entry->list->n_items);
+	
+	global_DPT_entry->list->n_items -= count;
+	entry->list->n_items -= count;
+
+
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+	if (entry->list->head != NULL)
+	printf("After remove local nitems %zu global nitems %zu count %zu\n",
+		entry->list->n_items,
+		global_DPT_entry->list->n_items,
+		count);
+#endif 
+
+	mutex_exit(&global_DPT_entry->lock);
 }
 
 /*

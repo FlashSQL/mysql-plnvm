@@ -1145,6 +1145,8 @@ retry:
 	//Now the list is non-flush and I have acquired the lock. Let's do my work
 	// (1) Remove the dpt entry in the global DPT
 	is_need_undo = true;
+	prev_dpt_entry = NULL;
+
 	dpt_entry = seek_dpt_entry(buf->dpt, page_id, prev_dpt_entry, &log_hashed);
 	if (dpt_entry == NULL){
 		//The dirty page doesn't have any log records of uncommited transaction

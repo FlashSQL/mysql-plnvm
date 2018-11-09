@@ -463,7 +463,7 @@ add_log_to_TT_entry(
 //remove log records and their pointers in this dpt_entry
 //The pointers are removed from: (1) local dpt, (2) global dpt, and (3) tt entry
 void 
-remove_logs_when_commit(
+remove_logs_on_remove_local_dpt_entry(
 		MEM_DPT*	global_dpt,
 		MEM_DPT_ENTRY*		entry);
 
