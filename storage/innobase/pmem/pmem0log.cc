@@ -634,7 +634,7 @@ pmemlog_trx_commit(
 	}
 
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
-	printf("COMMIT ===> tid %zu commit\n", tid);
+	printf("BEGIN COMMIT ===> tid %zu commit\n", tid);
 #endif
 
 	//(2) For each DPT entry in the local dpt, write REDO log to corresponding page	
@@ -648,7 +648,11 @@ pmemlog_trx_commit(
 		assert(local_dpt_entry);
 		//for each entry in the same hashed line
 		while (local_dpt_entry != NULL){
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+			printf("\t BEGIN on commit trx %zu, write REDO logs of local_dpt_entry space %zu page %zu\n", tid, local_dpt_entry->id.space(), local_dpt_entry->id.page_no());
+#endif
 			pm_write_REDO_logs(pop, buf, local_dpt_entry);
+			printf("\t END on commit trx %zu, write REDO logs of local_dpt_entry space %zu page %zu\n", tid, local_dpt_entry->id.space(), local_dpt_entry->id.page_no());
 
 			local_dpt_entry = local_dpt_entry->next;
 		}
@@ -658,6 +662,9 @@ pmemlog_trx_commit(
 	//(3) Remove tt entry and its corresponding resources
 	remove_TT_entry (tt, global_dpt, bucket, prev_bucket, hashed);
 
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+	printf("END COMMIT ===> tid %zu commit\n", tid);
+#endif
 	
 }
 
@@ -825,7 +832,6 @@ retry:
 			//Case B: add this log record to exist REDO log			   
 			pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
 
-			//pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
 			pm_merge_logs_to_loglist(
 					pop,
 					D_RW(pfree_block->redolog_list),
@@ -869,7 +875,6 @@ retry:
 	assert(pfree_block->state == PMEM_FREE_BLOCK);
 	pfree_block->state = PMEM_PLACE_HOLDER_BLOCK;
 
-	//pm_merge_REDO_logs_to_placeholder(pop, pfree_block, dpt_entry);
 	pm_merge_logs_to_loglist(
 			pop,
 			D_RW(pfree_block->redolog_list),
@@ -1235,6 +1240,10 @@ free_pmemrec(
  * Remove log records and all of their pointers related to a local dpt entry of a transaction when it commit
  * global_dpt (in): The global dpt, used for remove the corresponding pointers
  * entry (in): The local dpt entry of the transaction
+ *
+ * For each logrec on the local dpt_entry:
+ * (1) Remove corresponding logrec on the global dpt_entry
+ * (2) Free the logrec
  * */
 void 
 remove_logs_on_remove_local_dpt_entry(
