@@ -651,7 +651,7 @@ pmemlog_trx_commit(
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
 			printf("\t BEGIN on commit trx %zu, write REDO logs of local_dpt_entry space %zu page %zu\n", tid, local_dpt_entry->id.space(), local_dpt_entry->id.page_no());
 #endif
-			pm_write_REDO_logs(pop, buf, local_dpt_entry);
+			//pm_write_REDO_logs(pop, buf, local_dpt_entry);
 			printf("\t END on commit trx %zu, write REDO logs of local_dpt_entry space %zu page %zu\n", tid, local_dpt_entry->id.space(), local_dpt_entry->id.page_no());
 
 			local_dpt_entry = local_dpt_entry->next;
@@ -1279,7 +1279,7 @@ remove_logs_on_remove_local_dpt_entry(
 	count = 0;
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
 	if (entry->list->head != NULL)
-	printf("remove_logs_on_remove_local_dpt_entry before remove local nitems %zu global nitems %zu count %zu\n",
+	printf("BEGIN remove_logs_on_remove_local_dpt_entry remove local nitems %zu global nitems %zu count %zu\n",
 		entry->list->n_items,
 		global_DPT_entry->list->n_items,
 		count);
@@ -1289,7 +1289,7 @@ remove_logs_on_remove_local_dpt_entry(
 	while (memrec != NULL){
 		next_memrec = memrec->trx_page_next;
 
-		//(2.1) Remove from global DPT entry
+		//(2.1) Remove corresponding memrec from global DPT entry
 		if (memrec->dpt_prev == NULL){
 			//memrec is the first log record in the global DPT entry
 			global_DPT_entry->list->head = memrec->dpt_next;
@@ -1298,7 +1298,11 @@ remove_logs_on_remove_local_dpt_entry(
 			memrec->dpt_prev->dpt_next = memrec->dpt_next;
 		}
 
-		if (memrec->dpt_next != NULL){
+		if (memrec->dpt_next == NULL){
+			//memrec is the last log record in the global DPT entry
+			global_DPT_entry->list->tail = memrec->dpt_prev;
+		}
+		else{
 			memrec->dpt_next->dpt_prev = memrec->dpt_prev;
 		}
 
