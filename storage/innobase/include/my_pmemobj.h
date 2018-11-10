@@ -30,6 +30,7 @@
 #include "ut0dbg.h"
 #include "ut0new.h"
 
+#include "trx0trx.h"
 //#include "pmem_log.h"
 #include <libpmemobj.h>
 #include "my_pmem_common.h"
@@ -496,7 +497,7 @@ int
 pmemlog_trx_commit(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-	   	uint64_t		tid);
+	   	trx_t*			trx);
 int
 pmemlog_trx_abort(
 		PMEMobjpool*	pop,

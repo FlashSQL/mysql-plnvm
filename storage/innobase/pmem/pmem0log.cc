@@ -592,7 +592,7 @@ int
 pmemlog_trx_commit(
 		PMEMobjpool*	pop,
 		PMEM_BUF*		buf,
-	   	uint64_t		tid)
+	   	trx_t*			trx)
 {
 	ulint			hashed;
 	ulint			i;
@@ -610,7 +610,8 @@ pmemlog_trx_commit(
 
 	MEM_DPT*		global_dpt = buf->dpt;
 	MEM_TT*			tt = buf->tt;
-
+	
+	ulint			tid = trx->id;
 	//(1) Get transaction entry by the input tid 
 	PMEM_LOG_HASH_KEY(hashed, tid, tt->n);
 	assert (hashed < tt->n);
