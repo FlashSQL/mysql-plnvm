@@ -1253,35 +1253,50 @@ remove_logs_on_remove_local_dpt_entry(
 	ulint hashed;
 	ulint count;
 
+	MEM_LOG_REC*	first_memrec;
 	MEM_LOG_REC*	memrec;
 	MEM_LOG_REC*	next_memrec;//next log rec of memrec in the entry
 	MEM_DPT_ENTRY* global_DPT_entry;
 	MEM_DPT_ENTRY* bucket;
+	bool is_page_in_pmem = false;
 
-	//(1) Get DPT entry in the global DPT
-	PMEM_LOG_HASH_KEY(hashed, entry->id.fold(), global_dpt->n);
-	global_DPT_entry = global_dpt->buckets[hashed];
-	assert(global_DPT_entry);
+	//(1) Check whether the corresponding page is flush in nvm or not
+	// Get the first memrec in the entry
+	assert (entry->list->n_items > 0);
+	first_memrec = entry->list->head;
+	assert(first_memrec);
+	is_page_in_pmem = first_memrec->is_in_pmem;
+	
+	if (!is_page_in_pmem){
+		//(2) Get DPT entry in the global DPT
+		PMEM_LOG_HASH_KEY(hashed, entry->id.fold(), global_dpt->n);
+		global_DPT_entry = global_dpt->buckets[hashed];
+		assert(global_DPT_entry);
 
-	while (global_DPT_entry != NULL){
-		if (global_DPT_entry->id.equals_to(entry->id)){
-			break;
+		while (global_DPT_entry != NULL){
+			if (global_DPT_entry->id.equals_to(entry->id)){
+				break;
+			}
+			global_DPT_entry = global_DPT_entry->next;
 		}
-		global_DPT_entry = global_DPT_entry->next;
-	}
 
-	if (global_DPT_entry == NULL){
-		printf("PMEM ERROR! Cannot find corresponding DPT entry in remove_local_DPT_entry()\n");
-		assert(0);
+		if (global_DPT_entry == NULL){
+			printf("PMEM ERROR! Cannot find corresponding DPT entry in remove_local_DPT_entry()\n");
+			assert(0);
+		}
 	}
-	//(2) For each log record in the local dpt entry, remove pointers
-	mutex_enter(&global_DPT_entry->lock);
+	//else we don't have the corresponding global dpt entry
+	//(3) For each log record in the local dpt entry, remove pointers
+	
+	if (!is_page_in_pmem){
+		mutex_enter(&global_DPT_entry->lock);
+	}
 	count = 0;
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
 	if (entry->list->head != NULL)
 	printf("BEGIN remove_logs_on_remove_local_dpt_entry remove local nitems %zu global nitems %zu count %zu\n",
 		entry->list->n_items,
-		global_DPT_entry->list->n_items,
+		is_page_in_pmem ? 0 : global_DPT_entry->list->n_items,
 		count);
 #endif 
 	memrec = entry->list->head;
@@ -1289,23 +1304,24 @@ remove_logs_on_remove_local_dpt_entry(
 	while (memrec != NULL){
 		next_memrec = memrec->trx_page_next;
 
-		//(2.1) Remove corresponding memrec from global DPT entry
-		if (memrec->dpt_prev == NULL){
-			//memrec is the first log record in the global DPT entry
-			global_DPT_entry->list->head = memrec->dpt_next;
-		}
-		else{
-			memrec->dpt_prev->dpt_next = memrec->dpt_next;
-		}
+		if (!is_page_in_pmem){
+			//(2.1) Remove corresponding memrec from global DPT entry
+			if (memrec->dpt_prev == NULL){
+				//memrec is the first log record in the global DPT entry
+				global_DPT_entry->list->head = memrec->dpt_next;
+			}
+			else{
+				memrec->dpt_prev->dpt_next = memrec->dpt_next;
+			}
 
-		if (memrec->dpt_next == NULL){
-			//memrec is the last log record in the global DPT entry
-			global_DPT_entry->list->tail = memrec->dpt_prev;
-		}
-		else{
-			memrec->dpt_next->dpt_prev = memrec->dpt_prev;
-		}
-
+			if (memrec->dpt_next == NULL){
+				//memrec is the last log record in the global DPT entry
+				global_DPT_entry->list->tail = memrec->dpt_prev;
+			}
+			else{
+				memrec->dpt_next->dpt_prev = memrec->dpt_prev;
+			}
+		}// end if (is_page_in_pmem)
 		free_memrec(memrec);
 		count++;
 
@@ -1314,10 +1330,14 @@ remove_logs_on_remove_local_dpt_entry(
 
 		memrec = next_memrec;
 	}//end while
-	assert (count <= global_DPT_entry->list->n_items);
+
+	if (!is_page_in_pmem){
+		assert (count <= global_DPT_entry->list->n_items);
+		global_DPT_entry->list->n_items -= count;
+		mutex_exit(&global_DPT_entry->lock);
+	}
+
 	assert (count <= entry->list->n_items);
-	
-	global_DPT_entry->list->n_items -= count;
 	entry->list->n_items -= count;
 
 
@@ -1325,11 +1345,10 @@ remove_logs_on_remove_local_dpt_entry(
 	if (entry->list->head != NULL)
 	printf("After remove local nitems %zu global nitems %zu count %zu\n",
 		entry->list->n_items,
-		global_DPT_entry->list->n_items,
+		is_page_in_pmem ? 0 : global_DPT_entry->list->n_items,
 		count);
 #endif 
 
-	mutex_exit(&global_DPT_entry->lock);
 }
 
 /*
