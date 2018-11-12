@@ -1052,10 +1052,6 @@ page_cur_insert_rec_write_log(
 	space_no = mach_read_from_4(page_temp + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
 	page_no = mach_read_from_4(page_temp + FIL_PAGE_OFFSET);
 	page_id_t page_id(space_no, page_no);
-	//retrieve the parent trx
-	//We set it in btr_cur_optimistic_insert() 
-	trx = mtr->pmemlog_get_parent_trx();
-	assert(trx != NULL);
 	//Now let's the InnoDB write REDO log to mrx buffer
 #endif //UNIV_PMEMOBJ_PL
 
@@ -1172,15 +1168,24 @@ need_extra_info:
 	}
 
 #if defined (UNIV_PMEMOBJ_PL)
-	//save the start of log_ptr
-	log_size = log_ptr - start_log_ptr;
-	assert(log_size > 0);
-	//Alloc memrec
-	MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
-			start_log_ptr, log_size, page_id, trx->id);
-	assert(memrec);
-	//Add memrec to the global TT
-	pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
+	//retrieve the parent trx
+	//We set it in btr_cur_optimistic_insert() 
+	trx = mtr->pmemlog_get_parent_trx();
+	//Note that trx could be NULL
+	if (trx != NULL) {
+		//save the start of log_ptr
+		log_size = log_ptr - start_log_ptr;
+		assert(log_size > 0);
+		//Alloc memrec
+		MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
+				start_log_ptr, log_size, page_id, trx->id);
+		assert(memrec);
+		//Add memrec to the global TT
+		pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
+	}
+	else {
+		printf("PMEM_WARN: ===>in  page_cur_insert_rec_write_log(), REDO log of space %zu page %zu has NULL trx\n", page_id.space(), page_id.page_no() );
+	}
 #endif //UNIV_PMEMOBJ_PL
 
 }

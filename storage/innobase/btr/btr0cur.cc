@@ -3204,10 +3204,7 @@ fail_err:
 	/* Now, try the insert */
 	{
 #if defined (UNIV_PMEMOBJ_PL)
-		//save the pointer to the transaction
-		//We need it later in page_cur_insert_rec_log() 
-		trx_t* trx_p = thr_get_trx(thr);
-		mtr->pmemlog_set_parent_trx(trx_p);
+		mtr->pmemlog_set_parent_trx(NULL);
 #endif //UNIV_PMEMOBJ_PL
 		const rec_t*	page_cursor_rec = page_cur_get_rec(page_cursor);
 
@@ -3222,6 +3219,12 @@ fail_err:
 			if specified */
 			err = btr_cur_ins_lock_and_undo(flags, cursor, entry,
 							thr, mtr, &inherit);
+#if defined (UNIV_PMEMOBJ_PL)
+		//save the pointer to the transaction
+		//We need it later in page_cur_insert_rec_log() 
+		trx_t* trx_p = thr_get_trx(thr);
+		mtr->pmemlog_set_parent_trx(trx_p);
+#endif //UNIV_PMEMOBJ_PL
 
 			if (err != DB_SUCCESS) {
 				goto fail_err;
@@ -4711,10 +4714,6 @@ btr_cur_del_mark_set_clust_rec_log(
 {
 	byte*	log_ptr;
 
-#if defined (UNIV_PMEMOBJ_PL)
-	byte* start_log_ptr = log_ptr; //save the start position
-	uint64_t log_size; //size of the REDO log
-#endif //UNIV_PMEMOBJ_PL
 
 	ut_ad(!!page_rec_is_comp(rec) == dict_table_is_comp(index->table));
 	ut_ad(mtr->is_named_space(index->space));
@@ -4730,6 +4729,11 @@ btr_cur_del_mark_set_clust_rec_log(
 		/* Logging in mtr is switched off during crash recovery */
 		return;
 	}
+
+#if defined (UNIV_PMEMOBJ_PL)
+	byte* start_log_ptr = log_ptr; //save the start position
+	uint64_t log_size; //size of the REDO log
+#endif //UNIV_PMEMOBJ_PL
 
 	*log_ptr++ = 0;
 	*log_ptr++ = 1;
