@@ -3203,6 +3203,12 @@ fail_err:
 
 	/* Now, try the insert */
 	{
+#if defined (UNIV_PMEMOBJ_PL)
+		//save the pointer to the transaction
+		//We need it later in page_cur_insert_rec_log() 
+		trx_t* trx_p = thr_get_trx(thr);
+		mtr->pmemlog_set_parent_trx(trx_p);
+#endif //UNIV_PMEMOBJ_PL
 		const rec_t*	page_cursor_rec = page_cur_get_rec(page_cursor);
 
 		if (dict_table_is_intrinsic(index->table)) {
