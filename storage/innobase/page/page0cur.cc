@@ -1184,7 +1184,7 @@ need_extra_info:
 		pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
 	}
 	else {
-		printf("PMEM_WARN: ===>in  page_cur_insert_rec_write_log(), REDO log of space %zu page %zu has NULL trx\n", page_id.space(), page_id.page_no() );
+		//printf("PMEM_WARN: ===>in  page_cur_insert_rec_write_log(), REDO log of space %zu page %zu has NULL trx\n", page_id.space(), page_id.page_no() );
 	}
 #endif //UNIV_PMEMOBJ_PL
 

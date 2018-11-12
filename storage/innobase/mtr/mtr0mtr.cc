@@ -522,7 +522,9 @@ mtr_t::start(bool sync, bool read_only)
 	m_impl.m_undo_space = NULL;
 	m_impl.m_sys_space = NULL;
 	m_impl.m_flush_observer = NULL;
-
+#if defined (UNIV_PMEMOBJ_PL)
+	m_impl.m_parent_trx = NULL;
+#endif //UNIV_PMEMOBJ_PL
 	ut_d(m_impl.m_magic_n = MTR_MAGIC_N);
 }
 
