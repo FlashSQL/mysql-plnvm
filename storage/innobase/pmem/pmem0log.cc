@@ -235,9 +235,10 @@ free_memrec(
  * */
 void add_log_to_DPT(
 		PMEMobjpool*	pop,
-		MEM_DPT* dpt,
-	   	MEM_LOG_REC* rec,
-		bool is_local_dpt){
+		MEM_DPT*		dpt,
+	   	MEM_LOG_REC*	rec,
+		bool			is_local_dpt)
+{
 	ulint hashed;
 	MEM_DPT_ENTRY* bucket;
 	MEM_DPT_ENTRY* prev_bucket;
@@ -266,14 +267,22 @@ void add_log_to_DPT(
 	if (bucket == NULL){
 		//(2.2.1) new bucket 
 		MEM_DPT_ENTRY* new_entry = alloc_dpt_entry(rec->pid, 0);
-
+		
+		//(2.2.2) Add memrec to new entry
 		if (is_local_dpt)
+		{
 			add_log_to_local_DPT_entry(pop, new_entry, rec); 
+		}
 		else 
+		{
 			add_log_to_global_DPT_entry(pop, new_entry, rec);
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+		printf("PMEM_INFO: CREATE GLOBAL dpt_entry space %zu page %zu at hashed %zu\n", rec->pid.space(), rec->pid.page_no(), hashed );
+#endif
+		}
 
 
-		//append the new_entry in the hashed line
+		//(2.2.3) append the new_entry in the hashed line
 		if (prev_bucket == NULL){
 			//this is the first bucket
 			dpt->buckets[hashed] = new_entry;
@@ -649,10 +658,11 @@ pmemlog_trx_commit(
 		//for each entry in the same hashed line
 		while (local_dpt_entry != NULL){
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
-			printf("\t BEGIN on commit trx %zu, write REDO logs of local_dpt_entry space %zu page %zu\n", tid, local_dpt_entry->id.space(), local_dpt_entry->id.page_no());
+			//printf("\t BEGIN on commit trx %zu, write REDO logs of local_dpt_entry space %zu page %zu\n", tid, local_dpt_entry->id.space(), local_dpt_entry->id.page_no());
 #endif
+			// TODO: Skip pm_write_REDO_logs() for debugging
 			//pm_write_REDO_logs(pop, buf, local_dpt_entry);
-			printf("\t END on commit trx %zu, write REDO logs of local_dpt_entry space %zu page %zu\n", tid, local_dpt_entry->id.space(), local_dpt_entry->id.page_no());
+			//printf("\t END on commit trx %zu, write REDO logs of local_dpt_entry space %zu page %zu\n", tid, local_dpt_entry->id.space(), local_dpt_entry->id.page_no());
 
 			local_dpt_entry = local_dpt_entry->next;
 		}
@@ -1257,6 +1267,7 @@ remove_logs_on_remove_local_dpt_entry(
 	MEM_LOG_REC*	memrec;
 	MEM_LOG_REC*	next_memrec;//next log rec of memrec in the entry
 	MEM_DPT_ENTRY* global_DPT_entry;
+	MEM_DPT_ENTRY* prev_global_DPT_entry;
 	MEM_DPT_ENTRY* bucket;
 	bool is_page_in_pmem = false;
 
@@ -1271,12 +1282,14 @@ remove_logs_on_remove_local_dpt_entry(
 		//(2) Get DPT entry in the global DPT
 		PMEM_LOG_HASH_KEY(hashed, entry->id.fold(), global_dpt->n);
 		global_DPT_entry = global_dpt->buckets[hashed];
+		prev_global_DPT_entry = NULL;
 		assert(global_DPT_entry);
 
 		while (global_DPT_entry != NULL){
 			if (global_DPT_entry->id.equals_to(entry->id)){
 				break;
 			}
+			prev_global_DPT_entry = global_DPT_entry;
 			global_DPT_entry = global_DPT_entry->next;
 		}
 
@@ -1293,34 +1306,49 @@ remove_logs_on_remove_local_dpt_entry(
 	}
 	count = 0;
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
-	if (entry->list->head != NULL)
-	printf("BEGIN remove_logs_on_remove_local_dpt_entry remove local nitems %zu global nitems %zu count %zu\n",
-		entry->list->n_items,
-		is_page_in_pmem ? 0 : global_DPT_entry->list->n_items,
-		count);
+//	if (entry->list->head != NULL)
+//	printf("BEGIN remove_logs_on_remove_local_dpt_entry remove local nitems %zu global nitems %zu count %zu\n",
+//		entry->list->n_items,
+//		is_page_in_pmem ? 0 : global_DPT_entry->list->n_items,
+//		count);
 #endif 
 	memrec = entry->list->head;
-
+	//for each memrec in the local dpt_entry
 	while (memrec != NULL){
 		next_memrec = memrec->trx_page_next;
 
 		if (!is_page_in_pmem){
 			//(2.1) Remove corresponding memrec from global DPT entry
-			if (memrec->dpt_prev == NULL){
-				//memrec is the first log record in the global DPT entry
-				global_DPT_entry->list->head = memrec->dpt_next;
+			assert (global_DPT_entry->list->n_items > 0);
+			if (global_DPT_entry->list->n_items == 1){
+				//Special case: memrec is the last one in the global dpt_entry
+				global_DPT_entry->list->head = NULL;
+				global_DPT_entry->list->tail = NULL;
 			}
-			else{
-				memrec->dpt_prev->dpt_next = memrec->dpt_next;
-			}
+			else {
+				if (memrec->dpt_prev == NULL){
+					//Case A: memrec is the first log record in the global DPT entry
+					global_DPT_entry->list->head = memrec->dpt_next;
+					assert(memrec->dpt_next != NULL);
+					memrec->dpt_next->dpt_prev = NULL;
+				}
+				else{
+					if (memrec->dpt_next == NULL){
+						//Case B: memrec is the last log record in the global DPT entry
+						global_DPT_entry->list->tail = memrec->dpt_prev;
+						assert(memrec->dpt_prev != NULL);
+						memrec->dpt_prev->dpt_next = NULL;
+					}
+					else {
+						//Case C: memrec is the normal log record in the global DTP entry
+						memrec->dpt_prev->dpt_next = memrec->dpt_next;
+						memrec->dpt_next->dpt_prev = memrec->dpt_prev;
+						memrec->dpt_prev = NULL;
+						memrec->dpt_next = NULL;
+					}
+				}
 
-			if (memrec->dpt_next == NULL){
-				//memrec is the last log record in the global DPT entry
-				global_DPT_entry->list->tail = memrec->dpt_prev;
-			}
-			else{
-				memrec->dpt_next->dpt_prev = memrec->dpt_prev;
-			}
+			}//end else n_times >= 2
 		}// end if (is_page_in_pmem)
 		free_memrec(memrec);
 		count++;
@@ -1334,6 +1362,13 @@ remove_logs_on_remove_local_dpt_entry(
 	if (!is_page_in_pmem){
 		assert (count <= global_DPT_entry->list->n_items);
 		global_DPT_entry->list->n_items -= count;
+		if (global_DPT_entry->list->n_items == 0){
+			global_DPT_entry->list->head = NULL;
+			global_DPT_entry->list->tail = NULL;
+#if defined (UNIV_PMEMOBJ_PL_DEBUG)
+			printf("PMEM_INFO EMPTY GLOBAL dpt entry space %zu page %zu hashed %zu\n", global_DPT_entry->id.space(), global_DPT_entry->id.page_no(), hashed);
+#endif
+		}
 		mutex_exit(&global_DPT_entry->lock);
 	}
 
@@ -1342,11 +1377,11 @@ remove_logs_on_remove_local_dpt_entry(
 
 
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
-	if (entry->list->head != NULL)
-	printf("After remove local nitems %zu global nitems %zu count %zu\n",
-		entry->list->n_items,
-		is_page_in_pmem ? 0 : global_DPT_entry->list->n_items,
-		count);
+//	if (entry->list->head != NULL)
+//	printf("After remove local nitems %zu global nitems %zu count %zu\n",
+//		entry->list->n_items,
+//		is_page_in_pmem ? 0 : global_DPT_entry->list->n_items,
+//		count);
 #endif 
 
 }
