@@ -205,6 +205,9 @@ free_memrec(
 	memrec->tt_prev = NULL;
 	memrec->trx_page_next = NULL;
 	memrec->trx_page_prev = NULL;
+	
+	memrec->tid = 0;
+	memrec->size = 0;
 
 	memrec->is_in_pmem = false;
 
@@ -288,7 +291,9 @@ void add_log_to_DPT(
 			dpt->buckets[hashed] = new_entry;
 		}	
 		else{
+			mutex_enter(&prev_bucket->lock);
 			prev_bucket->next = new_entry;
+			mutex_exit(&prev_bucket->lock);
 		}
 
 	} //end if (bucket == NULL)
@@ -1349,6 +1354,7 @@ remove_logs_on_remove_local_dpt_entry(
 				}
 
 			}//end else n_times >= 2
+			--global_DPT_entry->list->n_items;
 		}// end if (is_page_in_pmem)
 		free_memrec(memrec);
 		count++;
@@ -1360,8 +1366,6 @@ remove_logs_on_remove_local_dpt_entry(
 	}//end while
 
 	if (!is_page_in_pmem){
-		assert (count <= global_DPT_entry->list->n_items);
-		global_DPT_entry->list->n_items -= count;
 		if (global_DPT_entry->list->n_items == 0){
 			global_DPT_entry->list->head = NULL;
 			global_DPT_entry->list->tail = NULL;
