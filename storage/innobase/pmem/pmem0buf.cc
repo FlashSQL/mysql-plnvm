@@ -1209,7 +1209,8 @@ for (i = 0; i < phashlist->max_pages; i++) {
 							PMEM_UNDO_LOG,
 							true);
 						//Remove the dpt entry from the cache line
-						remove_dpt_entry(buf->dpt,
+						remove_dpt_entry(pop,
+								buf->dpt,
 								dpt_entry,
 								prev_dpt_entry,
 								log_hashed);
@@ -1284,7 +1285,8 @@ for (i = 0; i < phashlist->max_pages; i++) {
 					dpt_entry,
 					PMEM_UNDO_LOG,
 					true);
-			remove_dpt_entry(buf->dpt,
+			remove_dpt_entry(pop,
+					buf->dpt,
 					dpt_entry,
 					prev_dpt_entry,
 					log_hashed);

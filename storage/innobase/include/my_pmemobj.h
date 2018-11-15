@@ -340,8 +340,11 @@ struct __mem_DPT_entry {
  * */
 struct __mem_DPT {
 
-	uint64_t			n;
-	MEM_DPT_ENTRY**	buckets;	
+	uint64_t			n; //n hashed line
+	MEM_DPT_ENTRY**	buckets;//head of each hashed line
+	MEM_DPT_ENTRY** tails; //tail of each hashed line
+	ib_mutex_t*		hl_locks; //the hashed line mutex lock 
+	PMEMrwlock*			pmem_locks; //this lock protects remain properties
 };
 
 /*
@@ -368,6 +371,8 @@ struct __mem_TT_entry {
 struct __mem_TT {
 	uint64_t			n;
 	MEM_TT_ENTRY**		buckets;
+	MEM_TT_ENTRY**		tails;
+	PMEMrwlock*			pmem_locks; //this lock protects remain properties
 };
 
 /////////////// ALLOC / FREE //////////////////////////
@@ -479,18 +484,20 @@ void adjust_dpt_entry_on_flush(
 		);
 void
 remove_dpt_entry(
-		MEM_DPT* global_dpt,
-		MEM_DPT_ENTRY* entry,
-		MEM_DPT_ENTRY* prev_entry,
-		ulint hashed);
+		PMEMobjpool*		pop,
+		MEM_DPT*			global_dpt,
+		MEM_DPT_ENTRY*		entry,
+		MEM_DPT_ENTRY*		prev_entry,
+		ulint				hashed);
 
 void 
-remove_TT_entry(
-		MEM_TT* tt,
-		MEM_DPT* global_dpt,
-	   	MEM_TT_ENTRY* entry,
-	   	MEM_TT_ENTRY* prev_entry,
-		ulint hashed);
+remove_tt_entry(
+		PMEMobjpool*	pop,
+		MEM_TT*			tt,
+		MEM_DPT*		global_dpt,
+	   	MEM_TT_ENTRY*	entry,
+	   	MEM_TT_ENTRY*	prev_entry,
+		ulint			hashed);
 /////////////////////// END ADD / REMOVE/////////
 //////////////////// COMMIT ////////////////////
 int
