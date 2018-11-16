@@ -951,6 +951,24 @@ mtr_t::Command::release_blocks()
 
 /** Write the redo log record, add dirty pages to the flush list and release
 the resources. */
+#if defined (UNIV_PMEMOBJ_PL)
+// In PL-NVM, we keep log records in our data structure
+// This function just release the resourc without writing any logs
+// We save the overhead of locking and writing 
+void
+mtr_t::Command::execute()
+{
+	ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);
+
+	//TODO: what-if we ommit release_blocks(), 
+	// buf_flush_note_modification() will not called, and the page oldest_lsn and newest_lsn are not set
+	//release_blocks();
+
+	release_latches();
+
+	release_resources();
+}
+#else //original
 void
 mtr_t::Command::execute()
 {
@@ -981,6 +999,7 @@ mtr_t::Command::execute()
 
 	release_resources();
 }
+#endif // UNIV_PMEMOBJ_PL
 
 /** Release the free extents that was reserved using
 fsp_reserve_free_extents().  This is equivalent to calling
