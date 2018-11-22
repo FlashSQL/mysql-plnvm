@@ -154,7 +154,7 @@ free_dpt_entry( MEM_DPT_ENTRY* entry)
 MEM_TT_ENTRY*
 alloc_tt_entry(uint64_t tid){
 
-	MEM_TT_ENTRY* new_entry = (MEM_TT_ENTRY*) malloc(sizeof(MEM_TT_ENTRY));	
+	MEM_TT_ENTRY* new_entry = (MEM_TT_ENTRY*) malloc(sizeof(MEM_TT_ENTRY));
 
 	new_entry->tid = tid;
 	new_entry->next = NULL;
@@ -168,7 +168,8 @@ alloc_tt_entry(uint64_t tid){
 
 	//local dpt
 	new_entry->local_dpt = alloc_DPT(MAX_DPT_ENTRIES);
-
+	
+	return new_entry;
 }
 
 void
