@@ -953,15 +953,17 @@ mtr_t::Command::release_blocks()
 the resources. */
 #if defined (UNIV_PMEMOBJ_PL)
 // In PL-NVM, we keep log records in our data structure
-// This function just release the resourc without writing any logs
-// We save the overhead of locking and writing 
+// This function just release the resource without writing any logs
+// We save the overhead of : (1) log_mutex_enter(), 
+// (2) log_flush_order_mutex(), and (3) log memcpy()
 void
 mtr_t::Command::execute()
 {
 	ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);
 
 	//TODO: what-if we ommit release_blocks(), 
-	// buf_flush_note_modification() will not called, and the page oldest_lsn and newest_lsn are not set
+	// buf_flush_note_modification() will not called, and 
+	// The page oldest_lsn and newest_lsn are not set
 	//release_blocks();
 
 	release_latches();

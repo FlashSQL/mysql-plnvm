@@ -126,7 +126,7 @@ alloc_dpt_entry(
 		new_entry->curLSN = start_lsn;
 		new_entry->next = NULL;
 
-		mutex_create(LATCH_ID_PL_DPT_ENTRY, &new_entry->lock);
+		//mutex_create(LATCH_ID_PL_DPT_ENTRY, &new_entry->lock);
 
 		//new list and add the rec as the first item
 		new_entry->list = (MEM_LOG_LIST*) malloc(sizeof(MEM_LOG_LIST));
@@ -144,7 +144,7 @@ free_dpt_entry( MEM_DPT_ENTRY* entry)
 	free (entry->list);
 	entry->list = NULL;
 	
-	mutex_destroy(&entry->lock);
+	//mutex_destroy(&entry->lock);
 
 	entry->next = NULL;
 	free (entry);
@@ -159,7 +159,7 @@ alloc_tt_entry(uint64_t tid){
 	new_entry->tid = tid;
 	new_entry->next = NULL;
 
-	mutex_create(LATCH_ID_PL_TT_ENTRY, &new_entry->lock);
+	//mutex_create(LATCH_ID_PL_TT_ENTRY, &new_entry->lock);
 
 	//new list
 	new_entry->list = (MEM_LOG_LIST*) malloc(sizeof(MEM_LOG_LIST));
@@ -180,7 +180,7 @@ free_tt_entry(
 	free (entry->list);
 	entry->list = NULL;
 
-	mutex_destroy(&entry->lock);
+	//mutex_destroy(&entry->lock);
 
 	entry->next = NULL;
 	free (entry);
@@ -345,8 +345,8 @@ add_log_to_global_DPT_entry(
 	assert(entry);
 	assert(rec);
 
-	mutex_enter(&entry->lock);
-	//pmemobj_rwlock_wrlock(pop, &entry->pmem_lock);
+	//mutex_enter(&entry->lock);
+	pmemobj_rwlock_wrlock(pop, &entry->pmem_lock);
 	// (1) Generate the LSN
 	rec->lsn = entry->curLSN + 1;
 	entry->curLSN = rec->lsn;
@@ -360,8 +360,8 @@ add_log_to_global_DPT_entry(
 	printf("+++ add log to GLOBAL dpt_entry space %zu page %zu tid %zu curLSN %zu rec->lsn %zu list->n_items %zu\n",
 			rec->pid.space(), rec->pid.page_no(),rec->tid, entry->curLSN, rec->lsn, entry->list->n_items );
 #endif
-		mutex_exit(&entry->lock);
-		//pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
+		//mutex_exit(&entry->lock);
+		pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 
 		return;
 	}
@@ -378,8 +378,8 @@ add_log_to_global_DPT_entry(
 	printf("+++ add log to GLOBAL dpt_entry space %zu page %zu tid %zu curLSN %zu rec->lsn %zu list->n_items %zu\n",
 			rec->pid.space(), rec->pid.page_no(),rec->tid, entry->curLSN, rec->lsn, entry->list->n_items );
 #endif
-	mutex_exit(&entry->lock);
-	//pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
+	//mutex_exit(&entry->lock);
+	pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 }
 /*
  *Add a log record to a local DPT entry of a transaction (as sorted doubled linked list)
@@ -399,8 +399,8 @@ add_log_to_local_DPT_entry(
 	assert(entry);
 	assert(rec);
 
-	mutex_enter(&entry->lock);
-	//pmemobj_rwlock_wrlock(pop, &entry->pmem_lock);
+	//mutex_enter(&entry->lock);
+	pmemobj_rwlock_wrlock(pop, &entry->pmem_lock);
 
 	// (1) insert the log record to the list
 	if (entry->list->n_items == 0){
@@ -414,8 +414,8 @@ add_log_to_local_DPT_entry(
 			rec->pid.space(), rec->pid.page_no(),rec->tid, entry->curLSN, rec->lsn, entry->list->n_items );
 #endif
 
-		mutex_exit(&entry->lock);
-		//pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
+		//mutex_exit(&entry->lock);
+		pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 
 		return;
 	}
@@ -432,8 +432,8 @@ add_log_to_local_DPT_entry(
 	printf("+++ add log to LOCAL dpt_entry space %zu page %zu tid %zu curLSN %zu rec->lsn %zu list->n_items %zu\n",
 			rec->pid.space(), rec->pid.page_no(),rec->tid, entry->curLSN, rec->lsn, entry->list->n_items );
 #endif
-	mutex_exit(&entry->lock);
-	//pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
+	//mutex_exit(&entry->lock);
+	pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 }
 //////////////////// End Dirty Page Table functions//////////
 
@@ -482,7 +482,8 @@ remove_dpt_entry(
 
 
 	// (2) Remove dpt_next, dpt_prev pointers of each log record in the entry and change is_in_pmem to true
-	mutex_enter(&entry->lock);
+	//mutex_enter(&entry->lock);
+	pmemobj_rwlock_wrlock(pop, &entry->pmem_lock);
 	adjust_dpt_entry_on_flush(entry);
 
 	//Approach 2: Just EMPTY the entry without remove and free it
@@ -490,7 +491,8 @@ remove_dpt_entry(
 	entry->list->tail = NULL;
 	entry->list->n_items = 0;
 	//Do not reset id, curLSN, next
-	mutex_exit(&entry->lock);
+	//mutex_exit(&entry->lock);
+	pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 
 
 	//Approach 1: Physical remove the entry and free the entry
@@ -556,7 +558,7 @@ remove_tt_entry(
 			/////////////////////
 			//remove log records and their pointers in this dpt_entry
 			//The pointers are removed from: (1) local dpt, (2) global dpt, and (3) tt entry
-			remove_logs_on_remove_local_dpt_entry(global_dpt, local_dpt_entry);
+			remove_logs_on_remove_local_dpt_entry(pop, global_dpt, local_dpt_entry);
 			////////////////////////////////////
 			
 			//remove the dpt entry from the dpt hashed line
@@ -612,7 +614,7 @@ pmemlog_add_log_to_TT	(
 		//printf("++0 add rec to existed TT entry tid %zu n_items %zu\n", rec->tid, bucket->list->n_items);
 #endif
 			//(2.1) insert the log record into this bucket
-			add_log_to_TT_entry(bucket, rec); 
+			add_log_to_TT_entry(pop, bucket, rec); 
 
 			// (3) Add log record to the local DPT of trx entry
 			add_log_to_DPT(pop, bucket->local_dpt, rec, true);
@@ -627,7 +629,7 @@ pmemlog_add_log_to_TT	(
 #if defined (UNIV_PMEMOBJ_PL_DEBUG)
 		printf("+++ add rec to new TT entry tid %zu \n", rec->tid);
 #endif
-		add_log_to_TT_entry(new_entry, rec); 
+		add_log_to_TT_entry(pop, new_entry, rec); 
 		// (3) Add log record to the local DPT of trx entry
 		add_log_to_DPT(pop, new_entry->local_dpt, rec, true);
 		pmemobj_rwlock_wrlock(pop, &tt->pmem_locks[hashed]);
@@ -654,6 +656,7 @@ Caller: add_log_to_TT
  * */
 void
 add_log_to_TT_entry(
+		PMEMobjpool*	pop,
 	   	MEM_TT_ENTRY* entry,
 	   	MEM_LOG_REC* rec){
 
@@ -662,7 +665,8 @@ add_log_to_TT_entry(
 	assert(entry);
 	assert(rec);
 	//we don't need to acquire the lock because only this transaction can touch the entry
-	mutex_enter(&entry->lock);
+	//mutex_enter(&entry->lock);
+	pmemobj_rwlock_wrlock(pop, &entry->pmem_lock);
 	//(1) Insert the log record at the tail of the list
 	list = entry->list;
 	//If the list is empty
@@ -670,7 +674,8 @@ add_log_to_TT_entry(
 		list->head = list->tail = rec;
 		rec->tt_next = rec->tt_prev = NULL;
 		list->n_items++;
-		mutex_exit(&entry->lock);
+		//mutex_exit(&entry->lock);
+		pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 		return;
 	}
 	
@@ -680,7 +685,8 @@ add_log_to_TT_entry(
 	rec->tt_next = NULL;
 
 	list->n_items++;
-	mutex_exit(&entry->lock);
+	//mutex_exit(&entry->lock);
+	pmemobj_rwlock_unlock(pop, &entry->pmem_lock);
 	return;
 }
 /*
@@ -1053,7 +1059,8 @@ pm_merge_logs_to_loglist(
 		
 		assert(plog_list);
 		
-		mutex_enter(&dpt_entry->lock);
+		//mutex_enter(&dpt_entry->lock);
+		pmemobj_rwlock_wrlock(pop, &dpt_entry->pmem_lock);
 
 		TOID_ASSIGN(cur_insert, (plog_list->head).oid);
 		memrec = dpt_entry->list->head;
@@ -1143,7 +1150,8 @@ pm_merge_logs_to_loglist(
 		}
 		//plog_list->n_items = plog_list->n_items + count;
 
-		mutex_exit(&dpt_entry->lock);
+		//mutex_exit(&dpt_entry->lock);
+		pmemobj_rwlock_wrlock(pop, &dpt_entry->pmem_lock);
 }
 
 /*
@@ -1354,6 +1362,7 @@ free_pmemrec(
  * */
 void 
 remove_logs_on_remove_local_dpt_entry(
+		PMEMobjpool*	pop,
 		MEM_DPT*	global_dpt,
 		MEM_DPT_ENTRY*		entry)
 {
@@ -1396,7 +1405,8 @@ remove_logs_on_remove_local_dpt_entry(
 
 	//(3) For each log record in the local dpt entry, remove pointers
 	
-	mutex_enter(&global_DPT_entry->lock);
+	//mutex_enter(&global_DPT_entry->lock);
+	pmemobj_rwlock_wrlock(pop, &global_DPT_entry->pmem_lock);
 	//if (!is_page_in_pmem){
 	//	mutex_enter(&global_DPT_entry->lock);
 	//}
@@ -1480,7 +1490,8 @@ remove_logs_on_remove_local_dpt_entry(
 			printf("PMEM_INFO EMPTY GLOBAL dpt entry space %zu page %zu hashed %zu\n", global_DPT_entry->id.space(), global_DPT_entry->id.page_no(), hashed);
 #endif
 		}
-		mutex_exit(&global_DPT_entry->lock);
+		//mutex_exit(&global_DPT_entry->lock);
+		pmemobj_rwlock_unlock(pop, &global_DPT_entry->pmem_lock);
 	//}
 
 	//assert (count <= entry->list->n_items);

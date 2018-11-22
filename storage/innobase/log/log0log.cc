@@ -1938,7 +1938,13 @@ log_checkpoint(
 	// row_merge_drop_temp_indexes() -> que_eval_sql() -> que_run_threads()
 	// -> que_run_threads_low() -> log_free_check() -> log_check_margins() 
 	// -> log_checkpoint_margin() infinity loop
+	log_mutex_enter();
 	log_sys->check_flush_or_checkpoint = false;
+
+	//hot fix bug infinity loop when shutdown: in logs_empty_and_mark_files_at_shutdown() because we skip the log_checkpoint(), the is_last always set to false that cause the "goto loop"  
+	log_sys->next_checkpoint_lsn = log_sys->lsn;
+	log_sys->last_checkpoint_lsn = log_sys->next_checkpoint_lsn;
+	log_mutex_exit();
 	return (true);
 #endif
 	log_mutex_enter();

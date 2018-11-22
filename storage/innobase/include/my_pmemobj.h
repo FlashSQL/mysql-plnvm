@@ -326,7 +326,7 @@ struct __pmem_log_list {
  * data = double-linked list sorted by lsn
  * */
 struct __mem_DPT_entry {
-	ib_mutex_t			lock; //the mutex lock protect all items
+	//ib_mutex_t			lock; //the mutex lock protect all items
 	PMEMrwlock			pmem_lock; //this lock protects remain properties
 	page_id_t			id;
 	uint64_t			curLSN; //used to generate the next LSN inside its list
@@ -354,7 +354,8 @@ struct __mem_DPT {
  * data = FIFO double-linked list
  * */
 struct __mem_TT_entry {
-	ib_mutex_t			lock; //the mutex lock protect all items
+	//ib_mutex_t			lock; //the mutex lock protect all items
+	PMEMrwlock			pmem_lock; //this lock protects remain properties
 	uint64_t			tid; //transaction id
 
 	MEM_LOG_LIST*		list; // transaction FIFO list
@@ -469,6 +470,7 @@ pmemlog_add_log_to_TT	(
 
 void
 add_log_to_TT_entry(
+		PMEMobjpool*	pop,
 	   	MEM_TT_ENTRY* entry,
 	   	MEM_LOG_REC* rec);
 
@@ -476,6 +478,7 @@ add_log_to_TT_entry(
 //The pointers are removed from: (1) local dpt, (2) global dpt, and (3) tt entry
 void 
 remove_logs_on_remove_local_dpt_entry(
+		PMEMobjpool*	pop,
 		MEM_DPT*	global_dpt,
 		MEM_DPT_ENTRY*		entry);
 
