@@ -171,7 +171,7 @@ typedef struct __pmem_lsb_hashtable_t PMEM_LSB_HASHTABLE;
 #endif //UNIV_PMEMOBJ_LSB
 
 // PL-NVM
-
+#if defined (UNIV_PMEMOBJ_PL)
 struct __mem_log_rec;
 typedef struct __mem_log_rec MEM_LOG_REC;
 
@@ -195,6 +195,7 @@ typedef struct __mem_TT_entry MEM_TT_ENTRY;
 
 struct __mem_TT;
 typedef struct __mem_TT MEM_TT;
+#endif //UNIV_PMEMOBJ_PL
 
 #endif //UNIV_PMEMOBJ_BUF
 
@@ -215,8 +216,10 @@ POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LSB);
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LSB_HASHTABLE);
 #endif
 
+#if defined(UNIV_PMEMOBJ_PL)
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_LIST);
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_REC);
+#endif
 
 #endif //UNIV_PMEMOBJ_LSB
 POBJ_LAYOUT_END(my_pmemobj);
@@ -691,9 +694,11 @@ struct __pmem_buf_block_t{
 						  the offset of the page in pmem
 						  note that the size of page can be got from page
 						*/
+#if defined (UNIV_PMEMOBJ_PL)
 	//New in PL-NVM
 	TOID(PMEM_LOG_LIST)				undolog_list; //pointer to the UNDO log list
 	TOID(PMEM_LOG_LIST)				redolog_list; //pointer to the REDO log list
+#endif
 };
 
 struct __pmem_buf_block_list_t {
@@ -772,10 +777,10 @@ struct __pmem_buf {
 	PMEM_FLUSHER* flusher;	
 
 	PMEM_FILE_MAP* filemap;
+#if defined (UNIV_PMEMOBJ_PL)
 	//New in PL-NVM
 	MEM_TT*		tt; // the global transaction table
 	MEM_DPT*	dpt; //the global dirty page table
-#if defined (UNIV_PMEMOBJ_PL)
 	bool is_pl_disable;
 #endif
 	/// End new in PL-NVM

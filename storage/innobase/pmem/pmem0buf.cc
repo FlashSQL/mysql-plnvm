@@ -102,12 +102,14 @@ pm_wrapper_buf_alloc_or_open(
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION_STAT)
 	pm_filemap_init(pmw->pbuf);
 #endif
+
+#if defined (UNIV_PMEMOBJ_PL)
 	//New in PL-NVM
 	pmw->pbuf->dpt = alloc_DPT(MAX_DPT_ENTRIES);
 	pmw->pbuf->tt = alloc_TT(MAX_DPT_ENTRIES);
 	
 	pmw->pbuf->is_pl_disable = true;
-
+#endif //UNIV_PMEMOBJ_PL
 	//
 	//In any case (new allocation or resued, we should allocate the flush_events for buckets in DRAM
 	pmw->pbuf->flush_events = (os_event_t*) calloc(PMEM_N_BUCKETS, sizeof(os_event_t));
@@ -547,6 +549,8 @@ pm_buf_block_init(
 	TOID_ASSIGN(block->list, (args->list).oid);
 
 	block->pmemaddr = args->pmemaddr;
+
+#if defined(UNIV_PMEMOBJ_PL)
 	//New in PL-NVM
 	POBJ_ZNEW(pop, &block->redolog_list, PMEM_LOG_LIST);	
 	TOID_ASSIGN( D_RW(block->redolog_list)->head, OID_NULL);
@@ -557,6 +561,7 @@ pm_buf_block_init(
 	TOID_ASSIGN( D_RW(block->undolog_list)->head, OID_NULL);
 	TOID_ASSIGN( D_RW(block->undolog_list)->tail, OID_NULL);
 	D_RW(block->undolog_list)->n_items = 0;
+#endif //UNIV_PMEMOBJ_PL
 
 	//////////////////////
 	pmemobj_persist(pop, &block->id, sizeof(block->id));
@@ -566,9 +571,10 @@ pm_buf_block_init(
 	pmemobj_persist(pop, &block->state, sizeof(block->state));
 	pmemobj_persist(pop, &block->list, sizeof(block->list));
 	pmemobj_persist(pop, &block->pmemaddr, sizeof(block->pmemaddr));
-
+#if defined (UNIV_PMEMOBJ_PL)
 	pmemobj_persist(pop, &block->redolog_list, sizeof(block->redolog_list));
 	pmemobj_persist(pop, &block->undolog_list, sizeof(block->undolog_list));
+#endif //UNIV_PMEMOBJ_PL
 	return 0;
 }
 
@@ -1065,9 +1071,6 @@ pm_buf_write_with_flusher(
 	//bool is_lock_free_block = false;
 	//bool is_lock_free_list = false;
 	bool is_safe_check =	false;
-#if !defined(UNIV_TEST_PL)	
-	bool					is_need_undo;
-#endif
 	ulint					hashed;
 	ulint					log_hashed;
 	ulint					i;
@@ -1080,10 +1083,15 @@ pm_buf_write_with_flusher(
 	byte*					pdata;
 	//page_id_t page_id;
 	size_t					page_size;
+#if defined (UNIV_PMEMOBJ_PL)
 	//New in PL-NVM
 	PMEM_LOG_LIST*			plog_list;
 	MEM_DPT_ENTRY*			dpt_entry;
 	MEM_DPT_ENTRY*			prev_dpt_entry;
+#if !defined(UNIV_TEST_PL)	
+	bool					is_need_undo;
+#endif
+#endif //UNIV_PMEMOBJ_PL
 
 	//Does some checks 
 	if (buf->is_async_only)
@@ -1151,6 +1159,7 @@ retry:
 	}
 	//Now the list is non-flush and I have acquired the lock. Let's do my work
 	// (1) Remove the dpt entry in the global DPT
+#if defined (UNIV_PMEMOBJ_PL)
 #if !defined(UNIV_TEST_PL)
 	is_need_undo = true;
 	prev_dpt_entry = NULL;
@@ -1164,6 +1173,7 @@ retry:
 
 	}
 #endif // UNIV_TEST_PL
+#endif //UNIV_PMEMOBJ_PL
 
 pdata = buf->p_align;
 //(2) search in the hashed list for a block to write on 
@@ -1196,6 +1206,7 @@ for (i = 0; i < phashlist->max_pages; i++) {
 				//Copy page data
 					pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 					//New in PL-NVM
+#if defined (UNIV_PMEMOBJ_PL)
 					if (pfree_block->state == PMEM_PLACE_HOLDER_BLOCK){
 						//Remove REDO log	
 						pm_remove_REDO_log_list_when_flush(
@@ -1221,6 +1232,7 @@ for (i = 0; i < phashlist->max_pages; i++) {
 								log_hashed);
 					}
 #endif //UNIV_TEST_PL
+#endif //UNIV_PMEMOBJ_PL
 				}TX_ONABORT {
 				}TX_END
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
@@ -1282,6 +1294,7 @@ for (i = 0; i < phashlist->max_pages; i++) {
 		pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 
 		//New in PL-NVM
+#if defined (UNIV_PMEMOBJ_PL)
 #if !defined(UNIV_TEST_PL)
 		if (is_need_undo){
 			plog_list = D_RW(pfree_block->undolog_list);
@@ -1298,6 +1311,8 @@ for (i = 0; i < phashlist->max_pages; i++) {
 					log_hashed);
 		}
 #endif //UNIV_TEST_PL
+#endif //UNIV_PMEMOBJ_PL
+
 	}TX_ONABORT {
 	}TX_END
 
@@ -2445,13 +2460,13 @@ get_free_list:
 	D_RW(buf->free_pool)->cur_lists--;
 	//The free_pool may empty now, wait in necessary
 	os_event_reset(buf->free_pool_event);
-	
+#if defined (UNIV_PMEMOBJ_PL)	
 	//New in PL-NVM//////////////////////////////////
 	//Copy pmem blocks that have UNDO log or REDO log
 	pm_copy_logs_pmemlist(pop, buf, D_RW(first_list), D_RW(hashlist));
 
 	//End new in PL-NVM /////////////////////////////
-
+#endif
 	pmemobj_rwlock_unlock(pop, &(D_RW(buf->free_pool)->lock));
 
 	assert(!TOID_IS_NULL(first_list));
