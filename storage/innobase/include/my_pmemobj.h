@@ -257,7 +257,7 @@ void pm_pop_free(PMEMobjpool* pop);
 
 //////////////////// PARTITIONED-LOG 2018.11.2/////////////
 //
-
+#if defined (UNIV_PMEMOBJ_PL)
 /*
  * The in-mem log record wrapper, mem_addr is copy from REDO log record of the transaction 
  * */
@@ -583,6 +583,9 @@ seek_tt_entry(
 		uint64_t	tid,
 		MEM_TT_ENTRY* prev_tt_entry,
 		ulint*		hashed);
+#endif //UNIV_PMEMOBJ_PL
+
+
 /////////////////////////////////////////////////
 
 ////////////////////// LOG BUFFER /////////////////////////////
@@ -772,6 +775,9 @@ struct __pmem_buf {
 	//New in PL-NVM
 	MEM_TT*		tt; // the global transaction table
 	MEM_DPT*	dpt; //the global dirty page table
+#if defined (UNIV_PMEMOBJ_PL)
+	bool is_pl_disable;
+#endif
 	/// End new in PL-NVM
 	
 	//////End variables in DRAM///////////////////////

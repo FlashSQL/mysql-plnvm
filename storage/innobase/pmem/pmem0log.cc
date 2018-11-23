@@ -21,6 +21,7 @@
 
 #include "os0file.h"
 
+#if defined (UNIV_PMEMOBJ_PL)
 ///////////////////////// ALLOC / FREE ///////////////
 /*
  * Init the Dirty Page Table as the hashtable with n buckets
@@ -1668,3 +1669,4 @@ seek_tt_entry(
 	return tt_entry;
 }
 
+#endif //UNIV_PMEMOBJ_PL

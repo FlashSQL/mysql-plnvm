@@ -2205,10 +2205,12 @@ trx_commit(
 	}
 
 #if defined (UNIV_PMEMOBJ_PL)
-			if( trx->id > 0 && !trx->read_only){
-				//pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx->id);
-				pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx);
-			}
+#if !defined (UNIV_TEST_PL)
+	if( trx->id > 0 && !trx->read_only){
+		//pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx->id);
+		pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx);
+	}
+#endif
 #endif //UNIV_PMEMOBJ_PL
 	trx_commit_low(trx, mtr);
 }

@@ -4540,7 +4540,9 @@ innobase_rollback(
 
 	trx->n_autoinc_rows = 0;
 #if defined (UNIV_PMEMOBJ_PL)
+#if !defined (UNIV_TEST_PL)
 	pmemlog_trx_abort(gb_pmw->pop, gb_pmw->pbuf, trx->id);
+#endif
 #endif //UNIV_PMEMOBJ_PL
 
 	/* If we had reserved the auto-inc lock for some table (if

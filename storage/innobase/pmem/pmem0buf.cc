@@ -106,6 +106,8 @@ pm_wrapper_buf_alloc_or_open(
 	pmw->pbuf->dpt = alloc_DPT(MAX_DPT_ENTRIES);
 	pmw->pbuf->tt = alloc_TT(MAX_DPT_ENTRIES);
 	
+	pmw->pbuf->is_pl_disable = true;
+
 	//
 	//In any case (new allocation or resued, we should allocate the flush_events for buckets in DRAM
 	pmw->pbuf->flush_events = (os_event_t*) calloc(PMEM_N_BUCKETS, sizeof(os_event_t));
@@ -1063,8 +1065,9 @@ pm_buf_write_with_flusher(
 	//bool is_lock_free_block = false;
 	//bool is_lock_free_list = false;
 	bool is_safe_check =	false;
-	
+#if !defined(UNIV_TEST_PL)	
 	bool					is_need_undo;
+#endif
 	ulint					hashed;
 	ulint					log_hashed;
 	ulint					i;
@@ -1148,6 +1151,7 @@ retry:
 	}
 	//Now the list is non-flush and I have acquired the lock. Let's do my work
 	// (1) Remove the dpt entry in the global DPT
+#if !defined(UNIV_TEST_PL)
 	is_need_undo = true;
 	prev_dpt_entry = NULL;
 
@@ -1159,7 +1163,7 @@ retry:
 	else {
 
 	}
-
+#endif // UNIV_TEST_PL
 
 pdata = buf->p_align;
 //(2) search in the hashed list for a block to write on 
@@ -1200,6 +1204,7 @@ for (i = 0; i < phashlist->max_pages; i++) {
 						pfree_block->state = PMEM_IN_USED_BLOCK;
 
 					}
+#if !defined (UNIV_TEST_PL)
 					if (is_need_undo){
 						plog_list = D_RW(pfree_block->undolog_list);
 						pm_merge_logs_to_loglist(
@@ -1215,7 +1220,7 @@ for (i = 0; i < phashlist->max_pages; i++) {
 								prev_dpt_entry,
 								log_hashed);
 					}
-
+#endif //UNIV_TEST_PL
 				}TX_ONABORT {
 				}TX_END
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
@@ -1277,6 +1282,7 @@ for (i = 0; i < phashlist->max_pages; i++) {
 		pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 
 		//New in PL-NVM
+#if !defined(UNIV_TEST_PL)
 		if (is_need_undo){
 			plog_list = D_RW(pfree_block->undolog_list);
 			pm_merge_logs_to_loglist(
@@ -1291,6 +1297,7 @@ for (i = 0; i < phashlist->max_pages; i++) {
 					prev_dpt_entry,
 					log_hashed);
 		}
+#endif //UNIV_TEST_PL
 	}TX_ONABORT {
 	}TX_END
 
