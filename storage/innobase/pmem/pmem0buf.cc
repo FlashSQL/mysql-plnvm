@@ -1207,6 +1207,7 @@ for (i = 0; i < phashlist->max_pages; i++) {
 					pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 					//New in PL-NVM
 #if defined (UNIV_PMEMOBJ_PL)
+#if !defined (UNIV_TEST_PL)
 					if (pfree_block->state == PMEM_PLACE_HOLDER_BLOCK){
 						//Remove REDO log	
 						pm_remove_REDO_log_list_when_flush(
@@ -1215,7 +1216,6 @@ for (i = 0; i < phashlist->max_pages; i++) {
 						pfree_block->state = PMEM_IN_USED_BLOCK;
 
 					}
-#if !defined (UNIV_TEST_PL)
 					if (is_need_undo){
 						plog_list = D_RW(pfree_block->undolog_list);
 						pm_merge_logs_to_loglist(
@@ -2461,12 +2461,14 @@ get_free_list:
 	//The free_pool may empty now, wait in necessary
 	os_event_reset(buf->free_pool_event);
 #if defined (UNIV_PMEMOBJ_PL)	
+#if !defined (UNIV_TEST_PL)
 	//New in PL-NVM//////////////////////////////////
 	//Copy pmem blocks that have UNDO log or REDO log
 	pm_copy_logs_pmemlist(pop, buf, D_RW(first_list), D_RW(hashlist));
 
 	//End new in PL-NVM /////////////////////////////
 #endif
+#endif // UNIV_PMEOBJ_PL
 	pmemobj_rwlock_unlock(pop, &(D_RW(buf->free_pool)->lock));
 
 	assert(!TOID_IS_NULL(first_list));

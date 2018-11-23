@@ -1053,6 +1053,9 @@ buf_flush_write_block_low(
 #if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PL)
 		//Since the log records are persist in NVM we don't need to follow WAL rule
 		//Skip flush log here
+#if defined(UNIV_TEST_PL)
+		log_write_up_to(bpage->newest_modification, true);
+#endif //UNIV_TEST_PL
 #else //original 
 		log_write_up_to(bpage->newest_modification, true);
 #endif

@@ -951,7 +951,7 @@ mtr_t::Command::release_blocks()
 
 /** Write the redo log record, add dirty pages to the flush list and release
 the resources. */
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PL) && !defined (UNIV_TEST_PL)
 // In PL-NVM, we keep log records in our data structure
 // This function just release the resource without writing any logs
 // We save the overhead of : (1) log_mutex_enter(), 
