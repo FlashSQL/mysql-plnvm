@@ -1355,8 +1355,10 @@ loop:
 	}
 #endif
 #if defined (UNIV_PMEMOBJ_PL)
+#if !defined (UNIV_TEST_PL)
 	//PL-NVM does not need this function
 	return;
+#endif //UNIV_TEST_PL
 #endif
 
 	log_write_mutex_enter();
@@ -1934,6 +1936,7 @@ log_checkpoint(
 #endif /* !_WIN32 */
 
 #if defined (UNIV_PMEMOBJ_PL)
+#if !defined (UNIV_TEST_PL)
 	//hot fix bug: when start server recv_recovery_rollback_active() ->
 	// row_merge_drop_temp_indexes() -> que_eval_sql() -> que_run_threads()
 	// -> que_run_threads_low() -> log_free_check() -> log_check_margins() 
@@ -1947,6 +1950,7 @@ log_checkpoint(
 	log_mutex_exit();
 	return (true);
 #endif
+#endif // UNIV_PMEMOBJ_PL
 	log_mutex_enter();
 
 	ut_ad(!recv_no_log_write);

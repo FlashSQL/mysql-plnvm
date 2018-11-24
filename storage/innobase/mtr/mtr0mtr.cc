@@ -344,9 +344,46 @@ struct ReleaseBlocks {
 		buf_block_t*	block;
 
 		block = reinterpret_cast<buf_block_t*>(slot->object);
+#if defined (UNIV_PMEMOBJ_PL)
+		//simulate buf_flush_note_modification()
+		mutex_enter(&block->mutex);
+		block->page.newest_modification = m_end_lsn;
+		/* Don't allow to set flush observer from non-null to null,
+		   or from one observer to another. */
+		ut_ad(block->page.flush_observer == NULL
+				|| block->page.flush_observer == m_flush_observer);
+		block->page.flush_observer = m_flush_observer;
 
+		if (block->page.oldest_modification == 0) {
+			//simulate buf_flush_insert_into_flush_list()
+
+			ut_ad(!block->page.in_flush_list);
+			ut_d(block->page.in_flush_list = TRUE);
+
+			block->page.oldest_modification = m_start_lsn;
+
+			buf_pool_t*	buf_pool = buf_pool_from_block(block);
+			buf_flush_list_mutex_enter(buf_pool);
+
+			UT_LIST_ADD_FIRST(buf_pool->flush_list, &block->page);
+			//simulate incr_flush_list_size_in_bytes
+			buf_pool->stat.flush_list_bytes += block->page.size.physical();
+
+			buf_flush_list_mutex_exit(buf_pool);
+
+			//buf_flush_insert_into_flush_list(buf_pool, block, start_lsn);
+		} else {
+			//ut_ad(block->page.oldest_modification <= start_lsn);
+		}
+
+		buf_page_mutex_exit(block);
+
+		srv_stats.buf_pool_write_requests.inc();
+	
+#else
 		buf_flush_note_modification(block, m_start_lsn,
 					    m_end_lsn, m_flush_observer);
+#endif
 	}
 
 	/** @return true always. */
@@ -951,7 +988,11 @@ mtr_t::Command::release_blocks()
 
 /** Write the redo log record, add dirty pages to the flush list and release
 the resources. */
+//Case A:  Disable write log from mtr's heap to log buffer
 #if defined (UNIV_PMEMOBJ_PL)
+
+//Case B: Enale write log from mtr's heap to log buffer
+//#if defined (UNIV_PMEMOBJ_PL) && !defined(UNIV_TEST_PL)
 // In PL-NVM, we keep log records in our data structure
 // This function just release the resource without writing any logs
 // We save the overhead of : (1) log_mutex_enter(), 
@@ -961,11 +1002,29 @@ mtr_t::Command::execute()
 {
 	ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);
 
-	//TODO: what-if we ommit release_blocks(), 
-	// buf_flush_note_modification() will not called, and 
-	// The page oldest_lsn and newest_lsn are not set
-	//release_blocks();
 
+	/*(1) We make our own start_lsn and end_lsn here	
+	 * m_start_lsn is the current tiem in seconds
+	 * m_end_lsn = m_start_lsn + lenght of the log record
+	 * release_blocks() -> add_dirty_page_to_flush_list()
+	 */
+	ulint   len = m_impl->m_log.size();	
+	ulint cur_time = ut_time_ms();
+	m_start_lsn = cur_time;
+	m_end_lsn = m_start_lsn + len;
+
+	//test, (2) add the block to the flush list 
+	if (m_impl->m_made_dirty) {
+		log_flush_order_mutex_enter();
+	}
+	m_impl->m_mtr->m_commit_lsn = m_end_lsn;
+
+	release_blocks();
+
+	if (m_impl->m_made_dirty) {
+		log_flush_order_mutex_exit();
+	}
+	//end test
 	release_latches();
 
 	release_resources();

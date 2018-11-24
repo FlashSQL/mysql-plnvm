@@ -437,7 +437,6 @@ buf_flush_insert_into_flush_list(
 	ut_ad(buf_page_mutex_own(block));
 
 	buf_flush_list_mutex_enter(buf_pool);
-
 	ut_ad((UT_LIST_GET_FIRST(buf_pool->flush_list) == NULL)
 	      || (UT_LIST_GET_FIRST(buf_pool->flush_list)->oldest_modification
 		  <= lsn));
