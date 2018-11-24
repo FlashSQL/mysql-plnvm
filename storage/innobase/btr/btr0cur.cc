@@ -3650,7 +3650,7 @@ btr_cur_update_in_place_log(
 	assert(memrec);
 	//Add memrec to the global TT
 	pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
-#endif
+#endif // UNIV_TEST_PL
 #endif // UNIV_PMEMOBJ_PL
 }
 

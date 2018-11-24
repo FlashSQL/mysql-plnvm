@@ -1359,7 +1359,7 @@ loop:
 	//PL-NVM does not need this function
 	return;
 #endif //UNIV_TEST_PL
-#endif
+#endif // UNIV_PMEMOBJ_PL
 
 	log_write_mutex_enter();
 	ut_ad(!recv_no_log_write);
@@ -1950,6 +1950,7 @@ log_checkpoint(
 	log_mutex_exit();
 	return (true);
 #endif
+	//if the UNIV_TEST_PL is defined, we still does as the original InnoDB
 #endif // UNIV_PMEMOBJ_PL
 	log_mutex_enter();
 
