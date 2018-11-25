@@ -3649,7 +3649,10 @@ buf_flush_validate_low(
 	buf_page_t*		bpage;
 	const ib_rbt_node_t*	rnode = NULL;
 	Check			check;
-
+#if defined (UNIV_PMEMOBJ_PL)
+	//In PL-NVM we do not use pageLSN in the flush list
+	return (TRUE);
+#endif //UNIV_PMEMOBJ_PL
 	ut_ad(buf_flush_list_mutex_own(buf_pool));
 
 	ut_list_validate(buf_pool->flush_list, check);
