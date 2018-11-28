@@ -2,8 +2,8 @@
 MYSQL_HOME=/home/vldb/mysql-plnvm
 
 #debug mode
-IS_DEBUG=0
-#IS_DEBUG=1
+#IS_DEBUG=0
+IS_DEBUG=1
 
 ##The original InnoDB
 #BUILD_NAME="-DUNIV_TRACE_FLUSH_TIME"

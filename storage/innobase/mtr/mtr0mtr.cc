@@ -344,7 +344,9 @@ struct ReleaseBlocks {
 		buf_block_t*	block;
 
 		block = reinterpret_cast<buf_block_t*>(slot->object);
+
 #if defined (UNIV_PMEMOBJ_PL)
+//#if defined (UNIV_PMEMOBJ_PL) && !defined(UNIV_TEST_PL)
 		//simulate buf_flush_note_modification()
 		mutex_enter(&block->mutex);
 		block->page.newest_modification = m_end_lsn;
@@ -364,6 +366,12 @@ struct ReleaseBlocks {
 
 			buf_pool_t*	buf_pool = buf_pool_from_block(block);
 			buf_flush_list_mutex_enter(buf_pool);
+			buf_page_t* first_page = UT_LIST_GET_FIRST(buf_pool->flush_list);
+
+			//if (first_page != NULL) 
+			////printf("PL_NVM_DEBUG: m_start_lsn = %zu first_page->om = %zu first_page->pageLSN = %zu\n", 
+			////		m_start_lsn, first_page->oldest_modification, first_page->newest_modification);
+			//assert(first_page->oldest_modification <= m_start_lsn);
 
 			UT_LIST_ADD_FIRST(buf_pool->flush_list, &block->page);
 			//simulate incr_flush_list_size_in_bytes
@@ -379,7 +387,6 @@ struct ReleaseBlocks {
 		buf_page_mutex_exit(block);
 
 		srv_stats.buf_pool_write_requests.inc();
-	
 #else
 		buf_flush_note_modification(block, m_start_lsn,
 					    m_end_lsn, m_flush_observer);
@@ -989,10 +996,10 @@ mtr_t::Command::release_blocks()
 /** Write the redo log record, add dirty pages to the flush list and release
 the resources. */
 
-//Case A: Let's the mtr copy log to the log buffer
+//////Case A: Let's the mtr copy log to the log buffer
 //#if defined (UNIV_PMEMOBJ_PL) && !defined (UNIV_TEST_PL)
 
-//Case B: Stop the mtr copy log to the log buffer
+//////Case B: Stop the mtr copy log to the log buffer
 #if defined (UNIV_PMEMOBJ_PL) 
 // In PL-NVM, we keep log records in our data structure
 // This function just release the resource without writing any logs
@@ -1010,7 +1017,9 @@ mtr_t::Command::execute()
 	 * release_blocks() -> add_dirty_page_to_flush_list()
 	 */
 	ulint   len = m_impl->m_log.size();	
-	ulint cur_time = ut_time_ms();
+	//ulint cur_time = ut_time_ms();
+	
+	ulint cur_time = ut_time_us(NULL);
 	m_start_lsn = cur_time;
 	m_end_lsn = m_start_lsn + len;
 

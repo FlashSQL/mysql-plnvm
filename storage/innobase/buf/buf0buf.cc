@@ -790,7 +790,9 @@ buf_page_is_corrupted(
 
 		return(TRUE);
 	}
-
+//#if defined (UNIV_PMEMOBJ_PL)
+	//In PL-NVM we don't use lsn
+//#else
 #if !defined(UNIV_HOTBACKUP) && !defined(UNIV_INNOCHECKSUM)
 	if (check_lsn && recv_lsn_checks_on) {
 		lsn_t		current_lsn;
@@ -822,6 +824,7 @@ buf_page_is_corrupted(
 		}
 	}
 #endif /* !UNIV_HOTBACKUP && !UNIV_INNOCHECKSUM */
+//#endif //UNIV_PMEMOBJ_PL
 
 	/* Check whether the checksum fields have correct values */
 
