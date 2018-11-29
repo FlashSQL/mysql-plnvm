@@ -1100,7 +1100,7 @@ buf_flush_write_block_low(
 #elif defined (UNIV_PMEMOBJ_BUF_V2)	
 	ret = pm_buf_write_no_free_pool(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_FLUSHER)
-	if(bpage->id.page_no() != 0)
+	//if(bpage->id.page_no() != 0)
 		ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_APPEND)
 	ret = pm_buf_write_with_flusher_append(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);

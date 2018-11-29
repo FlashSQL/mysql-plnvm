@@ -2095,9 +2095,6 @@ pm_buf_read(
 				pspec_block = D_RW(D_RW(D_RW(buf->spec_list)->arr)[i]);
 				//if(is_lock_on_read)
 				pmemobj_rwlock_rdlock(pop, &pspec_block->lock);
-			//if (pspec_block != NULL &&
-			//		pspec_block->state != PMEM_FREE_BLOCK &&
-			//		pspec_block->id.equals_to(page_id)) {
 				//found
 				pdata = buf->p_align;
 				memcpy(data, pdata + pspec_block->pmemaddr, pspec_block->size.physical()); 
@@ -2120,8 +2117,8 @@ pm_buf_read(
 	} //end if page_no == 0
 #endif //UNIV_PMEMOBJ_BUF_RECOVERY
 #if defined (UNIV_PMEMOBJ_PL)
-		if (page_id.page_no() == 0)
-			return NULL;
+		//if (page_id.page_no() == 0)
+		//	return NULL;
 #endif
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
