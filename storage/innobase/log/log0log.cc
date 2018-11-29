@@ -1355,10 +1355,10 @@ loop:
 	}
 #endif
 #if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
+//#if !defined (UNIV_TEST_PL)
 	//PL-NVM does not need this function
 	return;
-#endif //UNIV_TEST_PL
+//#endif //UNIV_TEST_PL
 #endif // UNIV_PMEMOBJ_PL
 
 	log_write_mutex_enter();
