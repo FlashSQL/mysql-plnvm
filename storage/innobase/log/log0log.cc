@@ -1937,7 +1937,7 @@ log_checkpoint(
 
 #if defined (UNIV_PMEMOBJ_PL)
 //#if !defined (UNIV_TEST_PL)
-	printf("PL DEBUG ====> log_checkpoint()\n");
+	//printf("PL DEBUG ====> log_checkpoint()\n");
 	//hot fix bug: when start server recv_recovery_rollback_active() ->
 	// row_merge_drop_temp_indexes() -> que_eval_sql() -> que_run_threads()
 	// -> que_run_threads_low() -> log_free_check() -> log_check_margins() 

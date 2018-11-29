@@ -3370,9 +3370,7 @@ try_again:
 	size = mach_read_from_4(space_header + FSP_SIZE);
 	ut_ad(size == space->size_in_header);
 
-	printf("PL DEBUG ---> size %zu space %zu \n", size, space->id);
 	if (size < FSP_EXTENT_SIZE && n_pages < FSP_EXTENT_SIZE / 2) {
-		printf("PL DEBUG ---> size < FSP_EXTENT_SZIE %zu < %zu, space %zu \n", size, FSP_EXTENT_SIZE, space->id);
 	
 		/* Use different rules for small single-table tablespaces */
 		*n_reserved = 0;
