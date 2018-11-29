@@ -199,12 +199,9 @@ buf_read_page_low(
 #if defined (UNIV_PMEMOBJ_BUF)
 	//printf ("\n[start our func  ");
 	//printf("pm_buf_read space %zu page %zu start...", page_id.space(), page_id.page_no());
-#if defined (UNIV_PMEMOBJ_LSB)
-	const PMEM_BUF_BLOCK* pblock=  pm_lsb_read(gb_pmw->pop, gb_pmw->plsb, page_id, page_size, (byte*)dst, sync);
-#elif defined (UNIV_PMEMOBJ_BUF_APPEND)
-	const PMEM_BUF_BLOCK* pblock=  pm_buf_read_lasted(gb_pmw->pop, gb_pmw->pbuf, page_id, page_size, (byte*)dst, sync);
-#else
-	const PMEM_BUF_BLOCK* pblock=  pm_buf_read(gb_pmw->pop, gb_pmw->pbuf, page_id, page_size, (byte*)dst, sync);
+	const PMEM_BUF_BLOCK* pblock = NULL;
+	if (page_id.page_no() != 0)
+	pblock=  pm_buf_read(gb_pmw->pop, gb_pmw->pbuf, page_id, page_size, (byte*)dst, sync);
 #endif
 	//printf("end pm_buf_read_space, pblock is NULL  %d\n ", (pblock==NULL));
 	//if (read_bytes > 0) {

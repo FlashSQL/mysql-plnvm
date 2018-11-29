@@ -1094,17 +1094,18 @@ buf_flush_write_block_low(
 #if defined(UNIV_PMEMOBJ_BUF)
 	
 	//printf("\n [begin pm_buf_write space %zu page %zu==>", bpage->id.space(),bpage->id.page_no());
-
+	int ret = 0;
 #if defined(UNIV_PMEMOBJ_LSB)
-	int ret = pm_lsb_write(gb_pmw->pop, gb_pmw->plsb, bpage->id, bpage->size, frame, sync);
+	ret = pm_lsb_write(gb_pmw->pop, gb_pmw->plsb, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_V2)	
-	int ret = pm_buf_write_no_free_pool(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	ret = pm_buf_write_no_free_pool(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_FLUSHER)
-	int ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	if(bpage->id.page_no() != 0)
+		ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_APPEND)
-	int ret = pm_buf_write_with_flusher_append(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	ret = pm_buf_write_with_flusher_append(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #else
-	int ret = pm_buf_write(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	ret = pm_buf_write(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #endif
 		//printf("END  pm_buf_write space %zu page %zu]\n", bpage->id.space(),bpage->id.page_no());
 		//printf(" END pm_buf_write]");

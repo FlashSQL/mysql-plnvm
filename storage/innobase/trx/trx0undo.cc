@@ -479,7 +479,6 @@ trx_undo_seg_create(
 	}
 
 	space = page_get_space_id(page_align(rseg_hdr));
-
 	success = fsp_reserve_free_extents(&n_reserved, space, 2, FSP_UNDO,
 					   mtr);
 	if (!success) {

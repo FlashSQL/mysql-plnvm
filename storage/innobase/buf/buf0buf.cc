@@ -808,7 +808,9 @@ buf_page_is_corrupted(
 				read_buf + FIL_PAGE_SPACE_ID);
 			const ulint	page_no = mach_read_from_4(
 				read_buf + FIL_PAGE_OFFSET);
-
+#if defined (UNIV_PMEMOBJ_PL)
+			//we ignore this error because we don't use LSN
+#else
 			ib::error() << "Page " << page_id_t(space_id, page_no)
 				<< " log sequence number " << page_lsn
 				<< " is in the future! Current system"
@@ -820,7 +822,7 @@ buf_page_is_corrupted(
 				" tablespace but not the InnoDB"
 				" log files. "
 				<< FORCE_RECOVERY_MSG;
-
+#endif //UNIV_PMEMOBJ_PL
 		}
 	}
 #endif /* !UNIV_HOTBACKUP && !UNIV_INNOCHECKSUM */
