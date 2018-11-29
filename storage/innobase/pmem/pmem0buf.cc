@@ -2119,6 +2119,10 @@ pm_buf_read(
 		return NULL;
 	} //end if page_no == 0
 #endif //UNIV_PMEMOBJ_BUF_RECOVERY
+#if defined (UNIV_PMEMOBJ_PL)
+		if (page_id.page_no() == 0)
+			return NULL;
+#endif
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
 	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
