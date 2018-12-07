@@ -2506,7 +2506,7 @@ get_free_list:
 #endif
 
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
-	if ( !TOID_IS_NULL( D_RW(hash_list)->next_list ))
+	if ( !TOID_IS_NULL( D_RW(hashlist)->next_list ))
 		++buf->bucket_stats[hashed].max_linked_lists;
 #endif 
 

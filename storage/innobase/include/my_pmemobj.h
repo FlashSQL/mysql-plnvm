@@ -79,34 +79,34 @@ static uint64_t PMEM_PAGE_PER_BUCKET_BITS=10;
 @P			[in]: number of bits present max number of pages per space on a bucket, this value is log2(page_per_bucket)
  * 
  * */
-ulint 
-hash_f1(
-		ulint&			hashed,
-		uint32_t		space_no,
-	   	uint32_t		page_no,
-	   	uint64_t		n,
-		uint64_t		B,	
-		uint64_t		S,
-		uint64_t		P)
-{	
-
-	uint32_t mask1 = 0xffffffff >> (32 - S);
-	uint32_t mask2 = 0xffffffff >> 
-		(32 - P - (B - S)) ;
-
-	ulint p;
-	ulint s;
-
-	s = (space_no & mask1) << (B - S);
-	p = (page_no & mask2) >> P;
-
-	hashed = (p + s) % n;
-
-	printf("space %zu (0x%08x) page %zu (0x%08x)  p 0x%016x s 0x%016x hashed %zu (0x%016x) \n",
-			space_no, space_no, page_no, page_no, p, s, hashed, hashed);
-
-	return hashed;
-}
+//ulint 
+//hash_f1(
+//		ulint&			hashed,
+//		uint32_t		space_no,
+//	   	uint32_t		page_no,
+//	   	uint64_t		n,
+//		uint64_t		B,	
+//		uint64_t		S,
+//		uint64_t		P)
+//{	
+//
+//	uint32_t mask1 = 0xffffffff >> (32 - S);
+//	uint32_t mask2 = 0xffffffff >> 
+//		(32 - P - (B - S)) ;
+//
+//	ulint p;
+//	ulint s;
+//
+//	s = (space_no & mask1) << (B - S);
+//	p = (page_no & mask2) >> P;
+//
+//	hashed = (p + s) % n;
+//
+//	printf("space %zu (0x%08x) page %zu (0x%08x)  p 0x%016x s 0x%016x hashed %zu (0x%016x) \n",
+//			space_no, space_no, page_no, page_no, p, s, hashed, hashed);
+//
+//	return hashed;
+//}
 #endif //UNIV_PMEMOBJ_BUF_PARTITION
 
 #endif //UNIV_PMEM_BUF
@@ -1273,15 +1273,15 @@ void
 pm_buf_flush_list_cleaner_disabled_loop(void);
 #endif
 
-ulint 
-hash_f1(
-		ulint&			hashed,
-		uint32_t		space_no,
-	   	uint32_t		page_no,
-	   	uint64_t		n,
-		uint64_t		B,	
-		uint64_t		S,
-		uint64_t		P);
+//ulint 
+//hash_f1(
+//		ulint&			hashed,
+//		uint32_t		space_no,
+//	   	uint32_t		page_no,
+//	   	uint64_t		n,
+//		uint64_t		B,	
+//		uint64_t		S,
+//		uint64_t		P);
 
 #define PMEM_BUF_LIST_INSERT(pop, list, entries, type, func, args) do {\
 	POBJ_LIST_INSERT_NEW_HEAD(pop, &list.head, entries, sizeof(type), func, &args); \
