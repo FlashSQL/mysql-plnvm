@@ -808,7 +808,7 @@ buf_page_is_corrupted(
 				read_buf + FIL_PAGE_SPACE_ID);
 			const ulint	page_no = mach_read_from_4(
 				read_buf + FIL_PAGE_OFFSET);
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 			//we ignore this error because we don't use LSN
 #else
 			ib::error() << "Page " << page_id_t(space_id, page_no)

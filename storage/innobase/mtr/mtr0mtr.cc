@@ -345,7 +345,7 @@ struct ReleaseBlocks {
 
 		block = reinterpret_cast<buf_block_t*>(slot->object);
 
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 //#if defined (UNIV_PMEMOBJ_PL) && !defined(UNIV_TEST_PL)
 		//simulate buf_flush_note_modification()
 		mutex_enter(&block->mutex);
@@ -1000,7 +1000,7 @@ the resources. */
 //#if defined (UNIV_PMEMOBJ_PL) && !defined (UNIV_TEST_PL)
 
 //////Case B: Stop the mtr copy log to the log buffer
-#if defined (UNIV_PMEMOBJ_PL) 
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 // In PL-NVM, we keep log records in our data structure
 // This function just release the resource without writing any logs
 // We save the overhead of : (1) log_mutex_enter(), 

@@ -1354,7 +1354,7 @@ loop:
 		return;
 	}
 #endif
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 //#if !defined (UNIV_TEST_PL)
 	//PL-NVM does not need this function
 	return;
@@ -1935,7 +1935,7 @@ log_checkpoint(
 	}
 #endif /* !_WIN32 */
 
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 //#if !defined (UNIV_TEST_PL)
 	//printf("PL DEBUG ====> log_checkpoint()\n");
 	//hot fix bug: when start server recv_recovery_rollback_active() ->
