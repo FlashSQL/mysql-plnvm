@@ -437,6 +437,7 @@ buf_flush_insert_into_flush_list(
 	ut_ad(buf_page_mutex_own(block));
 
 	buf_flush_list_mutex_enter(buf_pool);
+
 	ut_ad((UT_LIST_GET_FIRST(buf_pool->flush_list) == NULL)
 	      || (UT_LIST_GET_FIRST(buf_pool->flush_list)->oldest_modification
 		  <= lsn));
@@ -1049,12 +1050,9 @@ buf_flush_write_block_low(
 
 	/* Force the log to the disk before writing the modified block */
 	if (!srv_read_only_mode) {
-#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
 		//Since the log records are persist in NVM we don't need to follow WAL rule
 		//Skip flush log here
-//#if defined(UNIV_TEST_PL)
-		//log_write_up_to(bpage->newest_modification, true);
-//#endif //UNIV_TEST_PL
 #else //original 
 		log_write_up_to(bpage->newest_modification, true);
 #endif
@@ -1094,18 +1092,17 @@ buf_flush_write_block_low(
 #if defined(UNIV_PMEMOBJ_BUF)
 	
 	//printf("\n [begin pm_buf_write space %zu page %zu==>", bpage->id.space(),bpage->id.page_no());
-	int ret = 0;
+
 #if defined(UNIV_PMEMOBJ_LSB)
-	ret = pm_lsb_write(gb_pmw->pop, gb_pmw->plsb, bpage->id, bpage->size, frame, sync);
+	int ret = pm_lsb_write(gb_pmw->pop, gb_pmw->plsb, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_V2)	
-	ret = pm_buf_write_no_free_pool(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write_no_free_pool(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_FLUSHER)
-	//if(bpage->id.page_no() != 0)
-		ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_APPEND)
-	ret = pm_buf_write_with_flusher_append(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write_with_flusher_append(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #else
-	ret = pm_buf_write(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #endif
 		//printf("END  pm_buf_write space %zu page %zu]\n", bpage->id.space(),bpage->id.page_no());
 		//printf(" END pm_buf_write]");
@@ -3650,10 +3647,7 @@ buf_flush_validate_low(
 	buf_page_t*		bpage;
 	const ib_rbt_node_t*	rnode = NULL;
 	Check			check;
-#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
-	//In PL-NVM we do not use pageLSN in the flush list
-	return (TRUE);
-#endif //UNIV_PMEMOBJ_PL
+
 	ut_ad(buf_flush_list_mutex_own(buf_pool));
 
 	ut_list_validate(buf_pool->flush_list, check);

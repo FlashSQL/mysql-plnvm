@@ -118,11 +118,6 @@ enum_tx_isolation thd_get_trx_isolation(const THD* thd);
 /* for ha_innopart, Native InnoDB Partitioning. */
 #include "ha_innopart.h"
 
-#if defined (UNIV_PMEMOBJ_PL)
-#include "my_pmemobj.h"
-extern PMEM_WRAPPER* gb_pmw;
-#endif //UNIV_PMEMOBJ_PL
-
 /** to protect innobase_open_files */
 static mysql_mutex_t innobase_share_mutex;
 /** to force correct commit order in binlog */
@@ -408,10 +403,6 @@ static PSI_mutex_info all_innodb_mutexes[] = {
 #if defined (UNIV_PMEMOBJ_BUF)
 	PSI_KEY(pm_list_cleaner_mutex),
 	PSI_KEY(pm_flusher_mutex),
-#endif
-#if defined (UNIV_PMEMOBJ_PL)
-	PSI_KEY(pl_dpt_entry_mutex),
-	PSI_KEY(pl_tt_entry_mutex),
 #endif
 	PSI_KEY(page_zip_stat_per_index_mutex),
 	PSI_KEY(purge_sys_pq_mutex),
@@ -4363,9 +4354,6 @@ innobase_commit(
 
 	if (trx_in_innodb.is_aborted()) {
 
-#if defined (UNIV_PMEMOBJ_PL_DEBUG)
-	printf("in innobase_commit tid = %zu ABORT\n", trx->id);
-#endif 
 		innobase_rollback(hton, thd, commit_trx);
 
 		DBUG_RETURN(convert_error_code_to_mysql(
@@ -4472,8 +4460,6 @@ innobase_commit(
 			trx->flush_log_later = true;
 			//Do nothing now
 #else //original
-
-
 			trx_commit_complete_for_mysql(trx);
 #endif /*UNIV_PMEMOBJ_LOG */
 		}
@@ -4539,11 +4525,6 @@ innobase_rollback(
 	/* Reset the number AUTO-INC rows required */
 
 	trx->n_autoinc_rows = 0;
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-	pmemlog_trx_abort(gb_pmw->pop, gb_pmw->pbuf, trx->id);
-#endif
-#endif //UNIV_PMEMOBJ_PL
 
 	/* If we had reserved the auto-inc lock for some table (if
 	we come here to roll back the latest SQL statement) we

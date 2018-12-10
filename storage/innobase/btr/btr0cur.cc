@@ -71,11 +71,6 @@ Created 10/16/1994 Heikki Tuuri
 #include "zlib.h"
 #include "srv0start.h"
 
-#if defined (UNIV_PMEMOBJ_PL)
-#include "my_pmemobj.h"
-extern PMEM_WRAPPER* gb_pmw;
-#endif
-
 /** Buffered B-tree operation types, introduced as part of delete buffering. */
 enum btr_op_t {
 	BTR_NO_OP = 0,			/*!< Not buffered */
@@ -3203,11 +3198,6 @@ fail_err:
 
 	/* Now, try the insert */
 	{
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-		mtr->pmemlog_set_parent_trx(NULL);
-#endif
-#endif //UNIV_PMEMOBJ_PL
 		const rec_t*	page_cursor_rec = page_cur_get_rec(page_cursor);
 
 		if (dict_table_is_intrinsic(index->table)) {
@@ -3221,16 +3211,6 @@ fail_err:
 			if specified */
 			err = btr_cur_ins_lock_and_undo(flags, cursor, entry,
 							thr, mtr, &inherit);
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-		//save the pointer to the transaction
-		//We need it later in page_cur_insert_rec_log() 
-		if (thr){
-			trx_t* trx_p = thr_get_trx(thr);
-			mtr->pmemlog_set_parent_trx(trx_p);
-		}
-#endif
-#endif //UNIV_PMEMOBJ_PL
 
 			if (err != DB_SUCCESS) {
 				goto fail_err;
@@ -3591,13 +3571,6 @@ btr_cur_update_in_place_log(
 		return;
 	}
 
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-	byte* start_log_ptr = log_ptr; //save the start position
-	uint64_t log_size; //size of the REDO log
-#endif
-#endif //UNIV_PMEMOBJ_PL
-
 	/* For secondary indexes, we could skip writing the dummy system fields
 	to the redo log but we have to change redo log parsing of
 	MLOG_REC_UPDATE_IN_PLACE/MLOG_COMP_REC_UPDATE_IN_PLACE or we have to add
@@ -3625,35 +3598,7 @@ btr_cur_update_in_place_log(
 	log_ptr += 2;
 
 	row_upd_index_write_log(update, log_ptr, mtr);
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-	/*
-	 *Approach 2: Only copy UNDO log records
-	 Remember to uncomment the code in trx_undo_page_report_modify() in trx0rec.cc
-	 * */
-	//Copy the log in the mini-transaction's buffer
-	const byte* page_temp;
-	ulint		space_no;
-	ulint		page_no;
-
-	//Re-construct the page_id
-	page_temp = (const byte*) ut_align_down(rec, UNIV_PAGE_SIZE);
-	space_no = mach_read_from_4(page_temp + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
-	page_no = mach_read_from_4(page_temp + FIL_PAGE_OFFSET);
-	page_id_t page_id(space_no, page_no);
-
-	log_size = log_ptr - start_log_ptr;
-	assert(log_size > 0);
-	//Alloc memrec
-	MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
-			start_log_ptr, log_size, page_id, trx_id);
-	assert(memrec);
-	//Add memrec to the global TT
-	pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
-#endif // UNIV_TEST_PL
-#endif // UNIV_PMEMOBJ_PL
 }
-
 #endif /* UNIV_HOTBACKUP */
 
 /***********************************************************//**
@@ -4724,7 +4669,6 @@ btr_cur_del_mark_set_clust_rec_log(
 {
 	byte*	log_ptr;
 
-
 	ut_ad(!!page_rec_is_comp(rec) == dict_table_is_comp(index->table));
 	ut_ad(mtr->is_named_space(index->space));
 
@@ -4740,13 +4684,6 @@ btr_cur_del_mark_set_clust_rec_log(
 		return;
 	}
 
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-	byte* start_log_ptr = log_ptr; //save the start position
-	uint64_t log_size; //size of the REDO log
-#endif
-#endif //UNIV_PMEMOBJ_PL
-
 	*log_ptr++ = 0;
 	*log_ptr++ = 1;
 
@@ -4756,33 +4693,6 @@ btr_cur_del_mark_set_clust_rec_log(
 	log_ptr += 2;
 
 	mlog_close(mtr, log_ptr);
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-		/*
-		 *Approach 2: Only copy UNDO log records
-		 Remember to uncomment the code in trx_undo_page_report_modify() in trx0rec.cc
-		 * */
-		//Copy the log in the mini-transaction's buffer
-		const byte* page_temp;
-		ulint		space_no;
-		ulint		page_no;
-
-		//Re-construct the page_id
-		page_temp = (const byte*) ut_align_down(rec, UNIV_PAGE_SIZE);
-		space_no = mach_read_from_4(page_temp + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
-		page_no = mach_read_from_4(page_temp + FIL_PAGE_OFFSET);
-		page_id_t page_id(space_no, page_no);
-
-		log_size = log_ptr - start_log_ptr;
-		assert(log_size > 0);
-		//Alloc memrec
-		MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
-				start_log_ptr, log_size, page_id, trx_id);
-		assert(memrec);
-		//Add memrec to the global TT
-		pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
-#endif //UNIV_TEST_PL
-#endif // UNIV_PMEMOBJ_PL
 }
 #endif /* !UNIV_HOTBACKUP */
 

@@ -46,11 +46,6 @@ Created 10/4/1994 Heikki Tuuri
 static ulint	page_cur_short_succ	= 0;
 # endif /* UNIV_SEARCH_PERF_STAT */
 
-#if defined (UNIV_PMEMOBJ_PL)
-#include "my_pmemobj.h"
-extern PMEM_WRAPPER* gb_pmw;
-#endif //UNIV_PMEMOBJ_PL
-
 /*******************************************************************//**
 This is a linear congruential generator PRNG. Returns a pseudo random
 number between 0 and 2^64-1 inclusive. The formula and the constants
@@ -1039,23 +1034,6 @@ page_cur_insert_rec_write_log(
 
 	byte*	log_ptr;
 
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-	byte* start_log_ptr; //save the start position
-	uint64_t log_size; //size of the REDO log
-	const byte* page_temp;
-	ulint		space_no;
-	ulint		page_no;
-	trx_t*		trx;
-	//re-build the page_id
-	page_temp = (const byte*) ut_align_down(insert_rec, UNIV_PAGE_SIZE);
-	space_no = mach_read_from_4(page_temp + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
-	page_no = mach_read_from_4(page_temp + FIL_PAGE_OFFSET);
-	page_id_t page_id(space_no, page_no);
-	//Now let's the InnoDB write REDO log to mrx buffer
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
-
 	if (mtr_get_log_mode(mtr) != MTR_LOG_SHORT_INSERTS) {
 
 		if (page_rec_is_comp(insert_rec)) {
@@ -1068,13 +1046,6 @@ page_cur_insert_rec_write_log(
 				mlog_open returns NULL */
 				return;
 			}
-
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-			//save the start of log_ptr
-			start_log_ptr = log_ptr;
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 		} else {
 			log_ptr = mlog_open(mtr, 11
 					    + 2 + 5 + 1 + 5 + 5
@@ -1086,12 +1057,6 @@ page_cur_insert_rec_write_log(
 				return;
 			}
 
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-			//save the start of log_ptr
-			start_log_ptr = log_ptr;
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 			log_ptr = mlog_write_initial_log_record_fast(
 				insert_rec, MLOG_REC_INSERT, log_ptr, mtr);
 		}
@@ -1107,12 +1072,6 @@ page_cur_insert_rec_write_log(
 			recovery: in that case mlog_open returns NULL */
 			return;
 		}
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-			//save the start of log_ptr
-			start_log_ptr = log_ptr;
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 		log_end = &log_ptr[5 + 1 + 5 + 5 + MLOG_BUF_MARGIN];
 	}
 
@@ -1173,30 +1132,6 @@ need_extra_info:
 		ut_a(rec_size < UNIV_PAGE_SIZE);
 		mlog_catenate_string(mtr, ins_ptr, rec_size);
 	}
-
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-		//retrieve the parent trx
-		//We set it in btr_cur_optimistic_insert() 
-		trx = mtr->pmemlog_get_parent_trx();
-		//Note that trx could be NULL
-		if (trx != NULL) {
-			//save the start of log_ptr
-			log_size = log_ptr - start_log_ptr;
-			assert(log_size > 0);
-			//Alloc memrec
-			MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
-					start_log_ptr, log_size, page_id, trx->id);
-			assert(memrec);
-			//Add memrec to the global TT
-			pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
-		}
-		else {
-			//printf("PMEM_WARN: ===>in  page_cur_insert_rec_write_log(), REDO log of space %zu page %zu has NULL trx\n", page_id.space(), page_id.page_no() );
-		}
-#endif
-#endif //UNIV_PMEMOBJ_PL
-
 }
 #else /* !UNIV_HOTBACKUP */
 # define page_cur_insert_rec_write_log(ins_rec,size,cur,index,mtr) ((void) 0)
