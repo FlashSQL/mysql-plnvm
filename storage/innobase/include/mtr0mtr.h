@@ -169,6 +169,10 @@ struct mtr_t {
 
 	/** State variables of the mtr */
 	struct Impl {
+#if defined (UNIV_PMEMOBJ_PL)
+		/* pointer to the parent transaction*/
+		trx_t* m_parent_trx;
+#endif
 
 		/** memo stack for locks etc. */
 		mtr_buf_t	m_memo;
@@ -241,6 +245,16 @@ struct mtr_t {
 	@param read_only	true if read only mini-transaction */
 	void start(bool sync = true, bool read_only = false);
 
+#if defined (UNIV_PMEMOBJ_PL)
+	trx_t* pmemlog_get_parent_trx()
+	{
+		return m_impl.m_parent_trx;
+	}
+	void pmemlog_set_parent_trx(trx_t* p)
+	{
+		m_impl.m_parent_trx = p;
+	}
+#endif 
 	/** @return whether this is an asynchronous mini-transaction. */
 	bool is_async() const
 	{

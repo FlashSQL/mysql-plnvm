@@ -56,6 +56,11 @@ Created 3/26/1996 Heikki Tuuri
 #include <set>
 #include <new>
 
+#if defined (UNIV_PMEMOBJ_PL)
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
+#endif //UNIV_PMEMOBJ_PL
+
 static const ulint MAX_DETAILED_ERROR_LEN = 256;
 
 /** Set of table_id */
@@ -2199,6 +2204,14 @@ trx_commit(
 		mtr = NULL;
 	}
 
+#if defined (UNIV_PMEMOBJ_PL)
+#if !defined (UNIV_TEST_PL)
+	if( trx->id > 0 && !trx->read_only){
+		//pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx->id);
+		pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx);
+	}
+#endif
+#endif //UNIV_PMEMOBJ_PL
 	trx_commit_low(trx, mtr);
 }
 

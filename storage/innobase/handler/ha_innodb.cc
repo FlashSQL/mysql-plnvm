@@ -118,6 +118,11 @@ enum_tx_isolation thd_get_trx_isolation(const THD* thd);
 /* for ha_innopart, Native InnoDB Partitioning. */
 #include "ha_innopart.h"
 
+#if defined (UNIV_PMEMOBJ_PL)
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
+#endif //UNIV_PMEMOBJ_PL
+
 /** to protect innobase_open_files */
 static mysql_mutex_t innobase_share_mutex;
 /** to force correct commit order in binlog */
@@ -4525,6 +4530,11 @@ innobase_rollback(
 	/* Reset the number AUTO-INC rows required */
 
 	trx->n_autoinc_rows = 0;
+#if defined (UNIV_PMEMOBJ_PL)
+#if !defined (UNIV_TEST_PL)
+	pmemlog_trx_abort(gb_pmw->pop, gb_pmw->pbuf, trx->id);
+#endif
+#endif //UNIV_PMEMOBJ_PL
 
 	/* If we had reserved the auto-inc lock for some table (if
 	we come here to roll back the latest SQL statement) we

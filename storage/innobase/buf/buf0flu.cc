@@ -1050,7 +1050,7 @@ buf_flush_write_block_low(
 
 	/* Force the log to the disk before writing the modified block */
 	if (!srv_read_only_mode) {
-#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 		//Since the log records are persist in NVM we don't need to follow WAL rule
 		//Skip flush log here
 #else //original 
@@ -3648,6 +3648,10 @@ buf_flush_validate_low(
 	const ib_rbt_node_t*	rnode = NULL;
 	Check			check;
 
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
+	//In PL-NVM we do not use pageLSN in the flush list
+	return (TRUE);
+#endif //UNIV_PMEMOBJ_PL
 	ut_ad(buf_flush_list_mutex_own(buf_pool));
 
 	ut_list_validate(buf_pool->flush_list, check);

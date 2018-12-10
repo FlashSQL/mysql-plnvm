@@ -22,75 +22,8 @@
 #include "os0file.h"
 #include "buf0dblwr.h"
 
+
 #if defined (UNIV_PMEMOBJ_BUF)
-//GLOBAL variables
-static uint64_t PMEM_N_BUCKETS;
-static uint64_t PMEM_BUCKET_SIZE;
-static double PMEM_BUF_FLUSH_PCT;
-
-static uint64_t PMEM_N_FLUSH_THREADS;
-//set this to large number to eliminate 
-//static uint64_t PMEM_PAGE_PER_BUCKET_BITS=32;
-
-// 1 < this_value < flusher->size (32)
-//static uint64_t PMEM_FLUSHER_WAKE_THRESHOLD=5;
-static uint64_t PMEM_FLUSHER_WAKE_THRESHOLD=30;
-
-static FILE* debug_file = fopen("part_debug.txt","a");
-
-#if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-//256 buckets => 8 bits, max 32 spaces => 5 bits => need 3 = 8 - 5 bits
-static uint64_t PMEM_N_BUCKET_BITS = 8;
-static uint64_t PMEM_N_SPACE_BITS = 5;
-static uint64_t PMEM_PAGE_PER_BUCKET_BITS=10;
-
-
-/*
- * This is the "clear" version of hash function, use it for debugging 
- * For the production version, use the macro instead 
- * LESS_BUCKET partition
- * space_no and page_no are 32-bits value
- * the hashed value is B-bits value where B is the number of bits to present the number of buckets 
- * One space_no in a bucket has maximum N pages where log2(N) is page_per_bucket_bits
-@hashed		[out]: return hashed value
-@space		[in]: space_no
-@page		[in]: page_no
-@n			[in]: number of buckets 
-@B			[in]: number of bits present number of buckets
-@S			[in]: number of bits present space_no
-@P			[in]: number of bits present max number of pages per space on a bucket, this value is log2(page_per_bucket)
- * 
- * */
-ulint 
-hash_f1(
-		ulint&			hashed,
-		uint32_t		space_no,
-	   	uint32_t		page_no,
-	   	uint64_t		n,
-		uint64_t		B,	
-		uint64_t		S,
-		uint64_t		P)
-{	
-
-	uint32_t mask1 = 0xffffffff >> (32 - S);
-	uint32_t mask2 = 0xffffffff >> 
-		(32 - P - (B - S)) ;
-
-	ulint p;
-	ulint s;
-
-	s = (space_no & mask1) << (B - S);
-	p = (page_no & mask2) >> P;
-
-	hashed = (p + s) % n;
-
-	printf("space %zu (0x%08x) page %zu (0x%08x)  p 0x%016x s 0x%016x hashed %zu (0x%016x) \n",
-			space_no, space_no, page_no, page_no, p, s, hashed, hashed);
-
-	return hashed;
-}
-#endif //UNIV_PMEMOBJ_BUF_PARTITION
-
 /*
   There are two types of structure need to be allocated: structures in NVM that non-volatile after shutdown server or power-off and D-RAM structures that only need when the server is running. 
  * Case 1: First time the server start (fresh server): allocate structures in NVM
@@ -151,6 +84,17 @@ pm_wrapper_buf_alloc_or_open(
 		assert(p);
 		pmw->pbuf->p_align = static_cast<byte*> (ut_align(p, page_size));
 	}
+	//New in PL-NVM, we need to save the const int the local variable of pmem_buf, so that the pmem0log.cc can access them
+	pmw->pbuf->PMEM_N_BUCKETS = PMEM_N_BUCKETS;
+	pmw->pbuf->PMEM_BUCKET_SIZE = PMEM_BUCKET_SIZE;
+	pmw->pbuf->PMEM_BUF_FLUSH_PCT = PMEM_BUF_FLUSH_PCT;
+	pmw->pbuf->PMEM_N_FLUSH_THREADS =  PMEM_N_FLUSH_THREADS;
+#if defined (UNIV_PMEMOBJ_BUF_PARTITION)
+	pmw->pbuf->PMEM_N_BUCKET_BITS = PMEM_N_BUCKET_BITS;
+	pmw->pbuf->PMEM_N_SPACE_BITS = PMEM_N_SPACE_BITS;
+	pmw->pbuf->PMEM_PAGE_PER_BUCKET_BITS = PMEM_PAGE_PER_BUCKET_BITS;
+#endif //UNIV_PMEMOBJ_BUF_PARTITION
+
 	////////////////////////////////////////////////////
 	// Part 2: D-RAM structures and open file(s)
 	// ///////////////////////////////////////////////////
@@ -680,9 +624,9 @@ pm_buf_write(
 
 	//PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
+	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
-	PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
+	PMEM_HASH_KEY(hashed, page_id.fold(), buf->PMEM_N_BUCKETS);
 #endif
 	//hashed = hash_f1(page_id.space(), 
 	//		page_id.page_no(), PMEM_N_BUCKETS, PMEM_PAGE_PER_BUCKET_BITS);
@@ -936,9 +880,9 @@ pm_buf_write_no_free_pool(
 
 	//PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
+	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
-	PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
+	PMEM_HASH_KEY(hashed, page_id.fold(), buf->PMEM_N_BUCKETS);
 #endif
 //	hashed = hash_f1(page_id.space(),
 //			page_id.page_no(), PMEM_N_BUCKETS, PMEM_PAGE_PER_BUCKET_BITS);
@@ -1222,9 +1166,9 @@ TX_BEGIN(pop) {
 #endif //UNIV_PMEMOBJ_BUF_RECOVERY
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
+	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
-	PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
+	PMEM_HASH_KEY(hashed, page_id.fold(), buf->PMEM_N_BUCKETS);
 #endif
 
 retry:
@@ -1458,9 +1402,9 @@ pm_buf_write_with_flusher_append(
 	//PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
+	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
-	PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
+	PMEM_HASH_KEY(hashed, page_id.fold(), buf->PMEM_N_BUCKETS);
 #endif
 //	hashed = hash_f1(page_id.space(),
 //			page_id.page_no(), PMEM_N_BUCKETS, PMEM_PAGE_PER_BUCKET_BITS);
@@ -2067,9 +2011,9 @@ pm_buf_read(
 #endif //UNIV_PMEMOBJ_BUF_RECOVERY
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
+	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
-	PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
+	PMEM_HASH_KEY(hashed, page_id.fold(), buf->PMEM_N_BUCKETS);
 #endif
 
 	TOID_ASSIGN(cur_list, (D_RO(buf->buckets)[hashed]).oid);
@@ -2189,9 +2133,9 @@ pm_buf_read_lasted(
 
 	//PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
+	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
-	PMEM_HASH_KEY(hashed, page_id.fold(), PMEM_N_BUCKETS);
+	PMEM_HASH_KEY(hashed, page_id.fold(), buf->PMEM_N_BUCKETS);
 #endif
 //	hashed = hash_f1(page_id.space(),
 //			page_id.page_no(), PMEM_N_BUCKETS, PMEM_PAGE_PER_BUCKET_BITS);
