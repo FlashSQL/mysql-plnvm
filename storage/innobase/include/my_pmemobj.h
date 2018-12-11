@@ -1248,10 +1248,10 @@ hash_f1(
 //Use this macro for production build 
 #define PMEM_LESS_BUCKET_HASH_KEY(pbuf, hashed, space, page)\
    	PARTITION_FUNC1(hashed, space, page,\
-		   	pbuf->PMEM_N_BUCKETS,\
-		   	pbuf->PMEM_N_BUCKET_BITS,\
-		   	pbuf->PMEM_N_SPACE_BITS,\
-		   	pbuf->PMEM_PAGE_PER_BUCKET_BITS) 
+		   	PMEM_N_BUCKETS,\
+		   	PMEM_N_BUCKET_BITS,\
+		   	PMEM_N_SPACE_BITS,\
+		   	PMEM_PAGE_PER_BUCKET_BITS) 
 
 #define PARTITION_FUNC1(hashed, space, page, n, B, S, P) do {\
 	hashed = (((space & (0xffffffff >> (32 - S))) << (B - S)) + ((page & (0xffffffff >> (32 - P - (B - S)))) >> P)) % n;\

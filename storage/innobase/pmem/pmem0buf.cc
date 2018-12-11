@@ -1985,9 +1985,6 @@ pm_buf_read(
 				pspec_block = D_RW(D_RW(D_RW(buf->spec_list)->arr)[i]);
 				//if(is_lock_on_read)
 				pmemobj_rwlock_rdlock(pop, &pspec_block->lock);
-			//if (pspec_block != NULL &&
-			//		pspec_block->state != PMEM_FREE_BLOCK &&
-			//		pspec_block->id.equals_to(page_id)) {
 				//found
 				pdata = buf->p_align;
 				memcpy(data, pdata + pspec_block->pmemaddr, pspec_block->size.physical()); 
@@ -2019,6 +2016,7 @@ pm_buf_read(
 	TOID_ASSIGN(cur_list, (D_RO(buf->buckets)[hashed]).oid);
 
 #if defined(UNIV_PMEMOBJ_BUF_STAT)
+	//printf("====> space %zu page %zu hashed %zu \n", page_id.space(), page_id.page_no(), hashed);
 	++buf->bucket_stats[hashed].n_reads;
 #endif
 
@@ -2037,7 +2035,6 @@ pm_buf_read(
 		//plist = D_RW(cur_list);
 		//pmemobj_rwlock_rdlock(pop, &plist->lock);
 		//Scan in this list
-		//for (i = 0; i < D_RO(cur_list)->max_pages; i++) {
 		if (D_RO(cur_list) == NULL) {
 			printf("===> ERROR read NULL list \n");
 			assert(0);
