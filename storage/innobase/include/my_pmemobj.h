@@ -147,6 +147,15 @@ typedef struct __mem_TT_entry MEM_TT_ENTRY;
 struct __mem_TT;
 typedef struct __mem_TT MEM_TT;
 #endif //UNIV_PMEMOBJ_PL
+
+#if defined (UNIV_PMEMOBJ_BLOOM)
+struct __pmem_bloom_filter;
+typedef struct __pmem_bloom_filter PMEM_BLOOM;
+
+#define BLOOM_MAY_EXIST 0
+#define BLOOM_NOT_EXIST -1
+#endif //UNIV_PMEMOBJ_BLOOM
+
 #endif //UNIV_PMEMOBJ_BUF
 
 POBJ_LAYOUT_BEGIN(my_pmemobj);
@@ -743,6 +752,10 @@ struct __pmem_buf {
 	bool is_pl_disable;
 #endif
 	/// End new in PL-NVM
+	
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	PMEM_BLOOM* bf;
+#endif //UNIV_PMEMOBJ_BLOOM
 };
 
 // PARTITION //////////////
@@ -1266,5 +1279,61 @@ hash_f1(
 #endif //UNIV_PMEMOBJ_PL
 
 #endif //UNIV_PMEMOBJ_BUF
+
+/*Bloom Filter on PMEM implementation in Dec 2018*/
+#if defined (UNIV_PMEMOBJ_BLOOM)
+
+typedef void (*bh_func) (uint64_t* hashed_vals, uint64_t num_hashes, char *str);
+
+struct __pmem_bloom_filter {
+    /* bloom parameters */
+    uint64_t		est_elements;
+    float			false_pos_prob;
+    uint64_t		n_hashes; // the number of hash functions
+    uint64_t		n_bits; // the number of bits in bloom
+    /* bloom filter */
+    unsigned char	*bloom; //the bit array implemented as byte array
+    long			bloom_length;// the number of bytes in bloom
+    uint64_t		elements_added;
+    bh_func			hash_func;
+};
+
+PMEM_BLOOM* 
+pm_bloom_alloc(
+		uint64_t	est_elements,
+		float		false_positive_rate,
+		bh_func		bloom_hash_func);
+//PMEM_BLOOM* 
+//pm_bloom_alloc(
+//		uint64_t	est_elements,
+//		float		false_positive_rate
+//		);
+void
+pm_bloom_free(PMEM_BLOOM* pm_bloom);
+
+int
+pm_bloom_add(
+		PMEM_BLOOM*		pm_bloom, 
+		uint64_t		key);
+
+int
+pm_bloom_check(
+		PMEM_BLOOM*		pm_bloom,
+		uint64_t		key);
+
+uint64_t
+pm_bloom_get_set_bits(
+		PMEM_BLOOM*		pm_bloom);
+
+
+void
+__default_hash(
+		uint64_t* hashed_vals,
+		uint64_t n_hashes,
+		char* str);
+
+uint64_t __fnv_1a (char* key);
+
+#endif //UNIV_PMEMOBJ_BLOOM
 
 #endif /*__PMEMOBJ_H__ */

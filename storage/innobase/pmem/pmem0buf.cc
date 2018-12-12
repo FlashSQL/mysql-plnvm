@@ -271,6 +271,13 @@ pm_pop_buf_alloc(
 	}
 
 	pm_buf_lists_init(pop, pbuf, align_size, page_size);
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	uint64_t n_pages = align_size / page_size;
+	//allocate bloom filter with false-positive ratio and __default_hash function
+	//pbuf->bf = pm_bloom_alloc(n_pages, 0.01);
+	pbuf->bf = pm_bloom_alloc(n_pages, 0.01, NULL);
+#endif
+
 	pmemobj_persist(pop, pbuf, sizeof(*pbuf));
 	return pbuf;
 } 
