@@ -90,6 +90,11 @@ pm_bloom_free(PMEM_BLOOM* pm_bloom){
 	pm_bloom = NULL;
 }
 
+/*
+ * Add a integer to bloom filter
+ * pm_bloom [in]: Pointer to the bloom filter
+ * key [in]: the input key
+ * */
 int
 pm_bloom_add(
 		PMEM_BLOOM*		pm_bloom, 
@@ -126,6 +131,12 @@ pm_bloom_add(
 	return PMEM_SUCCESS;
 }
 
+/*
+ * Check a integer to bloom filter
+ * pm_bloom [in]: Pointer to the bloom filter
+ * key [in]: the input key
+ * return: BLOOM_NOT_EXIST or BLOOM_MAY_EXIST
+ * */
 int
 pm_bloom_check(
 		PMEM_BLOOM*		pm_bloom,
@@ -161,6 +172,7 @@ pm_bloom_check(
 
 	return ret;
 }
+
 /*
  * Get the number of bits set to 1
  * */
@@ -171,6 +183,61 @@ pm_bloom_get_set_bits(
 
 	return count;
 }
+
+/*
+Print statistic information  
+ * */
+void
+pm_bloom_stats(PMEM_BLOOM* bf) {
+
+    printf("BloomFilter\n\
+    bits: %" PRIu64 "\n\
+    estimated elements: %" PRIu64 "\n\
+    number hashes: %d\n\
+    max false positive rate: %f\n\
+    bloom length (8 bits): %ld\n\
+    elements added: %" PRIu64 "\n\
+    estimated elements added: %" PRIu64 "\n\
+    current false positive rate: %f\n\
+    number bits set: %" PRIu64 "\n",
+    bf->n_bits,
+   	bf->est_elements,
+   	bf->n_hashes,
+    bf->false_pos_prob,
+   	bf->bloom_length,
+   	bf->elements_added,
+    pm_bloom_est_elements(bf),
+    pm_bloom_current_false_pos_prob(bf),
+    pm_bloom_count_set_bits(bf));
+}
+
+uint64_t pm_bloom_est_elements(PMEM_BLOOM*	bf) {
+	uint64_t m, x, k;
+	m = bf->n_bits;
+	x = pm_bloom_count_set_bits(bf);
+	k = bf->n_hashes;
+
+    double log_n = log(1 - ((double) x / (double) m));
+    return (uint64_t)-(((double) m / k) * log_n);
+
+}
+
+uint64_t pm_bloom_count_set_bits(PMEM_BLOOM* bf){
+	uint64_t i;
+	uint64_t count;
+
+	count = 0;
+	for (i = 0; i < bf->bloom_length; i++){
+		count += __sum_bits_set_char(bf->bloom[i]);
+	}
+}
+float pm_bloom_current_false_pos_prob(PMEM_BLOOM *bf) {
+    int num = (bf->n_hashes * -1 * bf->elements_added);
+    double d = num / (float) bf->n_bits;
+    double e = exp(d);
+    return pow((1 - e), bf->n_hashes);
+}
+///////////////////// Internal Functions /////////////
 /*
  * The default hash function
  * n_hashes [in]: the number of hash functions
@@ -218,6 +285,14 @@ uint64_t __fnv_1a (char* key) {
             h = h * 1099511628211ULL; // FNV_PRIME 64 bit
     }
     return h;
+}
+
+static int __sum_bits_set_char(char c) {
+    int j, count = 0;
+    for (j = 0; j < CHAR_LEN; j++) {
+        count += (CHECK_BIT_CHAR(c, j) != 0) ? 1 : 0;
+    }
+    return count;
 }
 
 #endif //UNIV_PMEMOBJ_BLOOM

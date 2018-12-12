@@ -209,6 +209,10 @@ void pm_wrapper_buf_close(PMEM_WRAPPER* pmw) {
 	pm_buf_flusher_close(pmw->pbuf->flusher);
 #endif 
 
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	//Because we want to keep the bloom filter in PM
+	//we will not deallocate its resource
+#endif 
 	fclose(pmw->pbuf->deb_file);
 }
 
@@ -1172,6 +1176,11 @@ TX_BEGIN(pop) {
 	} // end if page_no == 0
 #endif //UNIV_PMEMOBJ_BUF_RECOVERY
 
+#if defined (UNIV_PMEMOBJ_BLOOM)
+//add the fold() value to the bloom filter
+pm_bloom_add(buf->bf, page_id.fold());
+#endif
+
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
 	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
@@ -1939,7 +1948,14 @@ pm_buf_read(
 	   	byte*				data, 
 		bool				sync) 
 {
-	
+
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	int ret = pm_bloom_check(buf->bf, page_id.fold());
+	if (ret == BLOOM_NOT_EXIST){
+		return NULL;
+	}
+#endif //UNIV_PMEMOBJ_BLOOM
+
 	//bool is_lock_on_read = true;	
 	ulint hashed;
 	int i;
@@ -1961,15 +1977,6 @@ pm_buf_read(
 	assert(buf);
 	assert(data);	
 
-	//if (buf == NULL){
-	//	printf("PMEM_ERROR, param buf is null in pm_buf_read\n");
-	//	assert(0);
-	//}
-
-	//if (data == NULL){
-	//	printf("PMEM_ERROR, param data is null in pm_buf_read\n");
-	//	assert(0);
-	//}
 
 /*handle page 0
 // Note that there are two case for reading a page 0

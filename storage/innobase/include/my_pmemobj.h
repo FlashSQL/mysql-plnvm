@@ -1325,7 +1325,14 @@ uint64_t
 pm_bloom_get_set_bits(
 		PMEM_BLOOM*		pm_bloom);
 
+///////////// STATISTIC FUNCTIONS ///////////
+void
+pm_bloom_stats(PMEM_BLOOM* bf);
+uint64_t pm_bloom_est_elements(PMEM_BLOOM*	bf);
+uint64_t pm_bloom_count_set_bits(PMEM_BLOOM* bf);
+float pm_bloom_current_false_pos_prob(PMEM_BLOOM *bf);
 
+///////////////// LOCAL FUNCTIONS//////////////
 void
 __default_hash(
 		uint64_t* hashed_vals,
@@ -1333,6 +1340,7 @@ __default_hash(
 		char* str);
 
 uint64_t __fnv_1a (char* key);
+static int __sum_bits_set_char(char c);
 
 #endif //UNIV_PMEMOBJ_BLOOM
 
