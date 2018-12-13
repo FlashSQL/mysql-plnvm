@@ -4456,6 +4456,12 @@ DECLARE_THREAD(pm_buf_flush_list_cleaner_coordinator)(
 		}
 #if defined (UNIV_PMEMOBJ_LSB)
 		printf("cur lsb_list cur pages/max_pages = %zu/%zu\n", D_RW(gb_pmw->plsb->lsb_list)->cur_pages, D_RW(gb_pmw->plsb->lsb_list)->max_pages);
+#elif defined (UNIV_PMEMOBJ_BLOOM)
+		printf("cur free list = %zu, cur spec_list = %zu \n",
+			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,
+				D_RW(gb_pmw->pbuf->spec_list)->cur_pages);
+
+		pm_bloom_stats(gb_pmw->pbuf->bf);
 #else
 		printf("cur free list = %zu, cur spec_list = %zu\n",
 			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,

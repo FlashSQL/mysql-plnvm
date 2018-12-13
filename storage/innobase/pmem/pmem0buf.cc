@@ -279,7 +279,8 @@ pm_pop_buf_alloc(
 	uint64_t n_pages = align_size / page_size;
 	//allocate bloom filter with false-positive ratio and __default_hash function
 	//pbuf->bf = pm_bloom_alloc(n_pages, 0.01);
-	pbuf->bf = pm_bloom_alloc(n_pages, 0.01, NULL);
+	//pbuf->bf = pm_bloom_alloc(n_pages, 0.01, NULL);
+	pbuf->bf = pm_bloom_alloc(BLOOM_SIZE, 0.01, NULL);
 #endif
 
 	pmemobj_persist(pop, pbuf, sizeof(*pbuf));
@@ -1081,6 +1082,12 @@ pm_buf_write_with_flusher(
 
 	assert(buf);
 	assert(src_data);
+
+#if defined (UNIV_PMEMOBJ_BLOOM)
+//add the fold() value to the bloom filter
+pm_bloom_add(buf->bf, page_id.fold());
+#endif
+
 #if defined (UNIV_PMEMOBJ_BUF_DEBUG)
 	assert (pm_check_io(src_data, page_id) );
 #endif 
@@ -1176,10 +1183,6 @@ TX_BEGIN(pop) {
 	} // end if page_no == 0
 #endif //UNIV_PMEMOBJ_BUF_RECOVERY
 
-#if defined (UNIV_PMEMOBJ_BLOOM)
-//add the fold() value to the bloom filter
-pm_bloom_add(buf->bf, page_id.fold());
-#endif
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
 	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
@@ -1949,13 +1952,13 @@ pm_buf_read(
 		bool				sync) 
 {
 
+
 #if defined (UNIV_PMEMOBJ_BLOOM)
-	int ret = pm_bloom_check(buf->bf, page_id.fold());
-	if (ret == BLOOM_NOT_EXIST){
+	int bloom_ret = pm_bloom_check(buf->bf, page_id.fold());
+	if (bloom_ret == BLOOM_NOT_EXIST){
 		return NULL;
 	}
 #endif //UNIV_PMEMOBJ_BLOOM
-
 	//bool is_lock_on_read = true;	
 	ulint hashed;
 	int i;
@@ -2021,6 +2024,7 @@ pm_buf_read(
 	} //end if page_no == 0
 #endif //UNIV_PMEMOBJ_BUF_RECOVERY
 
+
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
 	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
@@ -2077,7 +2081,11 @@ pm_buf_read(
 #endif
 				//if(is_lock_on_read)
 				pmemobj_rwlock_unlock(pop, &pblock->lock);
-
+#if defined (UNIV_PMEMOBJ_BLOOM)
+				if (bloom_ret == BLOOM_NOT_EXIST){
+					printf("===> BLOOM false nagative fold %zu \n", page_id.fold());
+				}
+#endif
 				//return pblock;
 				return D_RO(D_RO(D_RO(cur_list)->arr)[i]);
 			}
@@ -2098,6 +2106,12 @@ pm_buf_read(
 		
 	} //end while
 	
+#if defined (UNIV_PMEMOBJ_BLOOM)
+				if (bloom_ret == BLOOM_MAY_EXIST){
+					printf("++++> BLOOM false positive fold %zu \n", page_id.fold());
+					buf->bf->n_false_pos_reads++;
+				}
+#endif
 		return NULL;
 }
 /*

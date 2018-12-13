@@ -149,8 +149,12 @@ typedef struct __mem_TT MEM_TT;
 #endif //UNIV_PMEMOBJ_PL
 
 #if defined (UNIV_PMEMOBJ_BLOOM)
+#define BLOOM_SIZE 5000000
 struct __pmem_bloom_filter;
 typedef struct __pmem_bloom_filter PMEM_BLOOM;
+
+struct __pmem_counting_bloom_filter;
+typedef struct __pmem_counting_bloom_filter PMEM_CBF;
 
 #define BLOOM_MAY_EXIST 0
 #define BLOOM_NOT_EXIST -1
@@ -820,6 +824,9 @@ struct __pmem_buf_bucket_stat {
 	uint64_t		n_reads_flushing;/*number of reads on the on-flushing list, n_reads_flushing < n_reads_hit < n_reads*/	
 	uint64_t		max_linked_lists;
 	uint64_t		n_flushed_lists; /*number of of flushes on the bucket*/
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	uint64_t		n_false_positive; /*number of false-positive read from bloom filter on this bucket*/
+#endif
 };
 
 #endif
@@ -1295,6 +1302,7 @@ struct __pmem_bloom_filter {
     unsigned char	*bloom; //the bit array implemented as byte array
     long			bloom_length;// the number of bytes in bloom
     uint64_t		elements_added;
+    uint64_t		n_false_pos_reads;
     bh_func			hash_func;
 };
 
@@ -1325,6 +1333,49 @@ uint64_t
 pm_bloom_get_set_bits(
 		PMEM_BLOOM*		pm_bloom);
 
+// Counting Bloom Filter, support deleting an element
+struct __pmem_counting_bloom_filter {
+    /* bloom parameters */
+    uint64_t		est_elements;
+    float			false_pos_prob;
+    uint64_t		n_hashes; // the number of hash functions
+    uint64_t		n_counts; // the number of counting in bloom
+    /* bloom filter */
+    uint16_t		*bloom; //the count array 
+    //long			bloom_length;// the number of bytes in bloom
+    uint64_t		elements_added;
+    uint64_t		n_false_pos_reads;
+    bh_func			hash_func;
+};
+
+PMEM_CBF* 
+pm_cbf_alloc(
+		uint64_t	est_elements,
+		float		false_pos_prob,
+		bh_func		bloom_hash_func);
+//PMEM_BLOOM* 
+//pm_bloom_alloc(
+//		uint64_t	est_elements,
+//		float		false_positive_rate
+//		);
+void
+pm_cbf_free(PMEM_CBF* cbf);
+
+int
+pm_cbf_add(
+		PMEM_CBF*		cbf, 
+		uint64_t		key);
+
+int
+pm_cbf_check(
+		PMEM_CBF*		cbf,
+		uint64_t		key);
+
+int
+pm_cbf_remove(
+		PMEM_CBF*		cbf, 
+		uint64_t		key);
+
 ///////////// STATISTIC FUNCTIONS ///////////
 void
 pm_bloom_stats(PMEM_BLOOM* bf);
@@ -1332,6 +1383,10 @@ uint64_t pm_bloom_est_elements(PMEM_BLOOM*	bf);
 uint64_t pm_bloom_count_set_bits(PMEM_BLOOM* bf);
 float pm_bloom_current_false_pos_prob(PMEM_BLOOM *bf);
 
+
+void
+pm_cbf_stats(PMEM_CBF* cbf);
+float pm_cbf_current_false_pos_prob(PMEM_CBF *cbf);
 ///////////////// LOCAL FUNCTIONS//////////////
 void
 __default_hash(
