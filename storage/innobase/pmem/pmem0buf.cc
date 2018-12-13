@@ -278,9 +278,8 @@ pm_pop_buf_alloc(
 #if defined (UNIV_PMEMOBJ_BLOOM)
 	uint64_t n_pages = align_size / page_size;
 	//allocate bloom filter with false-positive ratio and __default_hash function
-	//pbuf->bf = pm_bloom_alloc(n_pages, 0.01);
-	//pbuf->bf = pm_bloom_alloc(n_pages, 0.01, NULL);
-	pbuf->bf = pm_bloom_alloc(BLOOM_SIZE, 0.01, NULL);
+	//pbuf->bf = pm_bloom_alloc(BLOOM_SIZE, 0.01, NULL);
+	pbuf->cbf = pm_cbf_alloc(BLOOM_SIZE, 0.01, NULL);
 #endif
 
 	pmemobj_persist(pop, pbuf, sizeof(*pbuf));
@@ -1085,7 +1084,8 @@ pm_buf_write_with_flusher(
 
 #if defined (UNIV_PMEMOBJ_BLOOM)
 //add the fold() value to the bloom filter
-pm_bloom_add(buf->bf, page_id.fold());
+//pm_bloom_add(buf->bf, page_id.fold());
+pm_cbf_add(buf->cbf, page_id.fold());
 #endif
 
 #if defined (UNIV_PMEMOBJ_BUF_DEBUG)
@@ -1954,7 +1954,8 @@ pm_buf_read(
 
 
 #if defined (UNIV_PMEMOBJ_BLOOM)
-	int bloom_ret = pm_bloom_check(buf->bf, page_id.fold());
+	//int bloom_ret = pm_bloom_check(buf->bf, page_id.fold());
+	int bloom_ret = pm_cbf_check(buf->cbf, page_id.fold());
 	if (bloom_ret == BLOOM_NOT_EXIST){
 		return NULL;
 	}
@@ -2109,7 +2110,7 @@ pm_buf_read(
 #if defined (UNIV_PMEMOBJ_BLOOM)
 				if (bloom_ret == BLOOM_MAY_EXIST){
 					printf("++++> BLOOM false positive fold %zu \n", page_id.fold());
-					buf->bf->n_false_pos_reads++;
+					buf->cbf->n_false_pos_reads++;
 				}
 #endif
 		return NULL;

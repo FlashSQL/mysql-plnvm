@@ -435,14 +435,13 @@ pm_cbf_stats(PMEM_CBF* cbf) {
     max false positive rate: %f\n\
     current false positive reads: %zu\n\
     current false positive rate: %f\n\
-    elements added: %" PRIu64 "\n\
-    estimated elements added: %" PRIu64 "\n",
+    elements added: %" PRIu64 "\n",
     cbf->n_counts, cbf->n_counts * sizeof(uint16_t) * 1.0 / (1024*1024),
    	cbf->est_elements,
    	cbf->n_hashes,
     cbf->false_pos_prob,
-    pm_cbf_current_false_pos_prob(cbf),
    	cbf->n_false_pos_reads,
+    pm_cbf_current_false_pos_prob(cbf),
    	cbf->elements_added);
 }
 

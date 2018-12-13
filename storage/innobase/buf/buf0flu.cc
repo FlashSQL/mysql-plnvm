@@ -4195,6 +4195,7 @@ pm_handle_finished_block_with_flusher(
 {
 	
 	PMEM_FLUSHER* flusher;
+	ulint i;
 
 	//bool is_lock_prev_list = false;
 
@@ -4223,6 +4224,15 @@ pm_handle_finished_block_with_flusher(
 		   	pflush_list->list_id, pflush_list->hashed_id);
 #endif
 		//Now all pages in this list are persistent in disk
+		//
+#if defined (UNIV_PMEMOBJ_BLOOM)
+		//Remove the page's tag from bloom filter
+		for (i = 0; i < pflush_list->max_pages; i++){
+			uint64_t key = D_RW(D_RW(pflush_list->arr)[i])->id.fold();
+			pm_cbf_remove(buf->cbf, key);
+		}
+#endif //UNIV_PMEMOBJ_BLOOM
+
 		//(0) flush spaces
 		pm_buf_flush_spaces_in_list(pop, buf, pflush_list);
 		// Reset the param_array
@@ -4235,7 +4245,6 @@ pm_handle_finished_block_with_flusher(
 		pmemobj_rwlock_unlock(pop, &buf->param_lock);
 
 		//(1) Reset blocks in the list
-		ulint i;
 		for (i = 0; i < pflush_list->max_pages; i++) {
 			D_RW(D_RW(pflush_list->arr)[i])->state = PMEM_FREE_BLOCK;
 			D_RW(D_RW(pflush_list->arr)[i])->sync = false;
@@ -4461,7 +4470,8 @@ DECLARE_THREAD(pm_buf_flush_list_cleaner_coordinator)(
 			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,
 				D_RW(gb_pmw->pbuf->spec_list)->cur_pages);
 
-		pm_bloom_stats(gb_pmw->pbuf->bf);
+		//pm_bloom_stats(gb_pmw->pbuf->bf);
+		pm_cbf_stats(gb_pmw->pbuf->cbf);
 #else
 		printf("cur free list = %zu, cur spec_list = %zu\n",
 			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,

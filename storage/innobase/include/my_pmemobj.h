@@ -758,7 +758,8 @@ struct __pmem_buf {
 	/// End new in PL-NVM
 	
 #if defined (UNIV_PMEMOBJ_BLOOM)
-	PMEM_BLOOM* bf;
+	//PMEM_BLOOM* bf;
+	PMEM_CBF* cbf;
 #endif //UNIV_PMEMOBJ_BLOOM
 };
 
@@ -824,9 +825,6 @@ struct __pmem_buf_bucket_stat {
 	uint64_t		n_reads_flushing;/*number of reads on the on-flushing list, n_reads_flushing < n_reads_hit < n_reads*/	
 	uint64_t		max_linked_lists;
 	uint64_t		n_flushed_lists; /*number of of flushes on the bucket*/
-#if defined (UNIV_PMEMOBJ_BLOOM)
-	uint64_t		n_false_positive; /*number of false-positive read from bloom filter on this bucket*/
-#endif
 };
 
 #endif
