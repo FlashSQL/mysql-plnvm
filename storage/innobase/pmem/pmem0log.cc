@@ -899,7 +899,7 @@ pm_write_REDO_logs(
 
 	//(1) Get the bucket that has the page
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-	PMEM_LESS_BUCKET_HASH_KEY(hashed,page_id.space(), page_id.page_no());
+	PMEM_LESS_BUCKET_HASH_KEY(buf, hashed,page_id.space(), page_id.page_no());
 #else //EVEN_BUCKET
 	PMEM_HASH_KEY(hashed, page_id.fold(), buf->PMEM_N_BUCKETS);
 #endif

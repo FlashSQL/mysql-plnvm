@@ -345,7 +345,7 @@ struct ReleaseBlocks {
 
 		block = reinterpret_cast<buf_block_t*>(slot->object);
 
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 //#if defined (UNIV_PMEMOBJ_PL) && !defined(UNIV_TEST_PL)
 		//simulate buf_flush_note_modification()
 		mutex_enter(&block->mutex);
@@ -387,10 +387,10 @@ struct ReleaseBlocks {
 		buf_page_mutex_exit(block);
 
 		srv_stats.buf_pool_write_requests.inc();
-#else
+#else // original
 		buf_flush_note_modification(block, m_start_lsn,
 					    m_end_lsn, m_flush_observer);
-#endif
+#endif //UNIV_PMEMOBJ_PL || UNIV_SKIPLOG 
 	}
 
 	/** @return true always. */
@@ -569,6 +569,7 @@ mtr_t::start(bool sync, bool read_only)
 #if defined (UNIV_PMEMOBJ_PL)
 	m_impl.m_parent_trx = NULL;
 #endif //UNIV_PMEMOBJ_PL
+
 	ut_d(m_impl.m_magic_n = MTR_MAGIC_N);
 }
 
@@ -957,6 +958,7 @@ mtr_t::Command::finish_write(
 
 	m_end_lsn = log_close();
 }
+
 /** Release the latches and blocks acquired by this mini-transaction */
 void
 mtr_t::Command::release_all()
@@ -995,12 +997,7 @@ mtr_t::Command::release_blocks()
 
 /** Write the redo log record, add dirty pages to the flush list and release
 the resources. */
-
-//////Case A: Let's the mtr copy log to the log buffer
-//#if defined (UNIV_PMEMOBJ_PL) && !defined (UNIV_TEST_PL)
-
-//////Case B: Stop the mtr copy log to the log buffer
-#if defined (UNIV_PMEMOBJ_PL) 
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 // In PL-NVM, we keep log records in our data structure
 // This function just release the resource without writing any logs
 // We save the overhead of : (1) log_mutex_enter(), 

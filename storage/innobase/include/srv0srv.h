@@ -282,6 +282,10 @@ extern ulong	srv_pmem_flush_threshold;
 extern ulong	srv_pmem_n_space_bits;
 extern ulong	srv_pmem_page_per_bucket_bits;
 #endif
+#if defined (UNIV_PMEMOBJ_BLOOM)
+extern ulong	srv_pmem_bloom_n_elements;
+extern double	srv_pmem_bloom_fpr;
+#endif
 #if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_WAL)
 extern char*	srv_pmem_home_dir;
 extern ulong	srv_pmem_pool_size;

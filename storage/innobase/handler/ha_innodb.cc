@@ -409,10 +409,6 @@ static PSI_mutex_info all_innodb_mutexes[] = {
 	PSI_KEY(pm_list_cleaner_mutex),
 	PSI_KEY(pm_flusher_mutex),
 #endif
-#if defined (UNIV_PMEMOBJ_PL)
-	PSI_KEY(pl_dpt_entry_mutex),
-	PSI_KEY(pl_tt_entry_mutex),
-#endif
 	PSI_KEY(page_zip_stat_per_index_mutex),
 	PSI_KEY(purge_sys_pq_mutex),
 	PSI_KEY(recv_sys_mutex),
@@ -3753,6 +3749,16 @@ innobase_init(
 		srv_pmem_page_per_bucket_bits = 8;
 	}
 #endif 
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	if (!srv_pmem_bloom_n_elements) {
+		srv_pmem_bloom_n_elements = 1000000;
+	}
+	// bloom filter false-negative-probability
+	if (!srv_pmem_bloom_fpr) {
+		srv_pmem_bloom_fpr = 0.01;
+	}
+
+#endif
 	if (!srv_log_group_home_dir) {
 		srv_log_group_home_dir = default_path;
 	}
@@ -4363,9 +4369,6 @@ innobase_commit(
 
 	if (trx_in_innodb.is_aborted()) {
 
-#if defined (UNIV_PMEMOBJ_PL_DEBUG)
-	printf("in innobase_commit tid = %zu ABORT\n", trx->id);
-#endif 
 		innobase_rollback(hton, thd, commit_trx);
 
 		DBUG_RETURN(convert_error_code_to_mysql(
@@ -4472,8 +4475,6 @@ innobase_commit(
 			trx->flush_log_later = true;
 			//Do nothing now
 #else //original
-
-
 			trx_commit_complete_for_mysql(trx);
 #endif /*UNIV_PMEMOBJ_LOG */
 		}
@@ -19549,6 +19550,18 @@ static MYSQL_SYSVAR_ULONG(pmem_page_per_bucket_bits, srv_pmem_page_per_bucket_bi
   "Number of bits present the maxmum number of pages per space in a bucket in partition algorithm, from 1 to log2(srv_pmem_buf_bucket_size), default is 10.",
   NULL, NULL, 10, 1, 32, 0);
 #endif 
+
+#if defined (UNIV_PMEMOBJ_BLOOM)
+static MYSQL_SYSVAR_ULONG(pmem_bloom_n_elements, srv_pmem_bloom_n_elements,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Number of maximum elements inserted in the bloom filter, from 1 to 10000000, default is 1000000.",
+  NULL, NULL, 1000000, 1, 10000000,0);
+static MYSQL_SYSVAR_DOUBLE(pmem_bloom_fpr, srv_pmem_bloom_fpr,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Maximum false-positive rate allowed, from 0 to 1, default is 0.001",
+  NULL, NULL, 0.001, 0, 1,0);
+#endif
+
 #if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
 static MYSQL_SYSVAR_STR(pmem_home_dir, srv_pmem_home_dir,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
@@ -20391,6 +20404,11 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
   MYSQL_SYSVAR(pmem_n_space_bits),
   MYSQL_SYSVAR(pmem_page_per_bucket_bits),
+#endif
+#if defined (UNIV_PMEMOBJ_BLOOM)
+  MYSQL_SYSVAR(pmem_bloom_n_elements),
+  MYSQL_SYSVAR(pmem_bloom_fpr),
+
 #endif
 #if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
   MYSQL_SYSVAR(pmem_home_dir),

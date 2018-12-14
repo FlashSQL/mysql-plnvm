@@ -82,10 +82,6 @@ extern mysql_pfs_key_t	page_cleaner_mutex_key;
 extern mysql_pfs_key_t	pm_list_cleaner_mutex_key;
 extern mysql_pfs_key_t	pm_flusher_mutex_key;
 #endif
-#if defined (UNIV_PMEMOBJ_PL)
-extern mysql_pfs_key_t	pl_dpt_entry_mutex_key;
-extern mysql_pfs_key_t	pl_tt_entry_mutex_key;
-#endif
 extern mysql_pfs_key_t	purge_sys_pq_mutex_key;
 extern mysql_pfs_key_t	recv_sys_mutex_key;
 extern mysql_pfs_key_t	recv_writer_mutex_key;

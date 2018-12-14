@@ -173,6 +173,7 @@ struct mtr_t {
 		/* pointer to the parent transaction*/
 		trx_t* m_parent_trx;
 #endif
+
 		/** memo stack for locks etc. */
 		mtr_buf_t	m_memo;
 
@@ -254,7 +255,6 @@ struct mtr_t {
 		m_impl.m_parent_trx = p;
 	}
 #endif 
-
 	/** @return whether this is an asynchronous mini-transaction. */
 	bool is_async() const
 	{

@@ -1068,7 +1068,6 @@ page_cur_insert_rec_write_log(
 				mlog_open returns NULL */
 				return;
 			}
-
 #if defined (UNIV_PMEMOBJ_PL)
 #if !defined (UNIV_TEST_PL)
 			//save the start of log_ptr
@@ -1107,12 +1106,6 @@ page_cur_insert_rec_write_log(
 			recovery: in that case mlog_open returns NULL */
 			return;
 		}
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-			//save the start of log_ptr
-			start_log_ptr = log_ptr;
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 		log_end = &log_ptr[5 + 1 + 5 + 5 + MLOG_BUF_MARGIN];
 	}
 
@@ -1194,9 +1187,8 @@ need_extra_info:
 		else {
 			//printf("PMEM_WARN: ===>in  page_cur_insert_rec_write_log(), REDO log of space %zu page %zu has NULL trx\n", page_id.space(), page_id.page_no() );
 		}
-#endif
+#endif // UNIV_TEST_PL
 #endif //UNIV_PMEMOBJ_PL
-
 }
 #else /* !UNIV_HOTBACKUP */
 # define page_cur_insert_rec_write_log(ins_rec,size,cur,index,mtr) ((void) 0)

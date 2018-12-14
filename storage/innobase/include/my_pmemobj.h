@@ -30,16 +30,13 @@
 #include "ut0dbg.h"
 #include "ut0new.h"
 
-#include "trx0trx.h"
+#include "trx0trx.h" //for trx_t
+
 //#include "pmem_log.h"
 #include <libpmemobj.h>
 #include "my_pmem_common.h"
-
 //#include "pmem0buf.h"
 //cc -std=gnu99 ... -lpmemobj -lpmem
-//
-
-
 #if defined (UNIV_PMEMOBJ_BUF)
 //GLOBAL variables
 static uint64_t PMEM_N_BUCKETS;
@@ -61,55 +58,14 @@ static FILE* debug_file = fopen("part_debug.txt","a");
 static uint64_t PMEM_N_BUCKET_BITS = 8;
 static uint64_t PMEM_N_SPACE_BITS = 5;
 static uint64_t PMEM_PAGE_PER_BUCKET_BITS=10;
-
-
-/*
- * This is the "clear" version of hash function, use it for debugging 
- * For the production version, use the macro instead 
- * LESS_BUCKET partition
- * space_no and page_no are 32-bits value
- * the hashed value is B-bits value where B is the number of bits to present the number of buckets 
- * One space_no in a bucket has maximum N pages where log2(N) is page_per_bucket_bits
-@hashed		[out]: return hashed value
-@space		[in]: space_no
-@page		[in]: page_no
-@n			[in]: number of buckets 
-@B			[in]: number of bits present number of buckets
-@S			[in]: number of bits present space_no
-@P			[in]: number of bits present max number of pages per space on a bucket, this value is log2(page_per_bucket)
- * 
- * */
-ulint 
-hash_f1(
-		ulint&			hashed,
-		uint32_t		space_no,
-	   	uint32_t		page_no,
-	   	uint64_t		n,
-		uint64_t		B,	
-		uint64_t		S,
-		uint64_t		P)
-{	
-
-	uint32_t mask1 = 0xffffffff >> (32 - S);
-	uint32_t mask2 = 0xffffffff >> 
-		(32 - P - (B - S)) ;
-
-	ulint p;
-	ulint s;
-
-	s = (space_no & mask1) << (B - S);
-	p = (page_no & mask2) >> P;
-
-	hashed = (p + s) % n;
-
-	printf("space %zu (0x%08x) page %zu (0x%08x)  p 0x%016x s 0x%016x hashed %zu (0x%016x) \n",
-			space_no, space_no, page_no, page_no, p, s, hashed, hashed);
-
-	return hashed;
-}
 #endif //UNIV_PMEMOBJ_BUF_PARTITION
 
-#endif //UNIV_PMEM_BUF
+#if defined (UNIV_PMEMOBJ_BLOOM)
+static uint64_t PMEM_BLOOM_N_ELEMENTS;
+static double PMEM_BLOOM_FPR;
+
+#endif 
+#endif //UNIV_PMEMOBJ_BUF
 
 struct __pmem_wrapper;
 typedef struct __pmem_wrapper PMEM_WRAPPER;
@@ -168,7 +124,7 @@ typedef struct __pmem_lsb_hash_bucket_t PMEM_LSB_HASH_BUCKET;
 
 struct __pmem_lsb_hashtable_t;
 typedef struct __pmem_lsb_hashtable_t PMEM_LSB_HASHTABLE;
-#endif //UNIV_PMEMOBJ_LSB
+#endif
 
 // PL-NVM
 #if defined (UNIV_PMEMOBJ_PL)
@@ -196,6 +152,18 @@ typedef struct __mem_TT_entry MEM_TT_ENTRY;
 struct __mem_TT;
 typedef struct __mem_TT MEM_TT;
 #endif //UNIV_PMEMOBJ_PL
+
+#if defined (UNIV_PMEMOBJ_BLOOM)
+#define BLOOM_SIZE 5000000
+struct __pmem_bloom_filter;
+typedef struct __pmem_bloom_filter PMEM_BLOOM;
+
+struct __pmem_counting_bloom_filter;
+typedef struct __pmem_counting_bloom_filter PMEM_CBF;
+
+#define BLOOM_MAY_EXIST 0
+#define BLOOM_NOT_EXIST -1
+#endif //UNIV_PMEMOBJ_BLOOM
 
 #endif //UNIV_PMEMOBJ_BUF
 
@@ -258,8 +226,9 @@ pm_wrapper_free(PMEM_WRAPPER* pmw);
 PMEMoid pm_pop_alloc_bytes(PMEMobjpool* pop, size_t size);
 void pm_pop_free(PMEMobjpool* pop);
 
+
 //////////////////// PARTITIONED-LOG 2018.11.2/////////////
-//
+
 #if defined (UNIV_PMEMOBJ_PL)
 /*
  * The in-mem log record wrapper, mem_addr is copy from REDO log record of the transaction 
@@ -587,10 +556,7 @@ seek_tt_entry(
 		MEM_TT_ENTRY* prev_tt_entry,
 		ulint*		hashed);
 #endif //UNIV_PMEMOBJ_PL
-
-
-/////////////////////////////////////////////////
-
+//
 ////////////////////// LOG BUFFER /////////////////////////////
 
 struct __pmem_log_buf {
@@ -757,13 +723,25 @@ struct __pmem_buf {
 
 	bool is_async_only; //true if we only capture non-sync write from buffer pool
 
-	//Those varables are in DRAM //////////////////
+	//Common used variables, used as const
+	
 	uint64_t PMEM_N_BUCKETS;
 	uint64_t PMEM_BUCKET_SIZE;
 	double PMEM_BUF_FLUSH_PCT;
 
 	uint64_t PMEM_N_FLUSH_THREADS;
-	//They suppose to be lost in the event of system crash
+	//set this to large number to eliminate 
+	//static uint64_t PMEM_PAGE_PER_BUCKET_BITS=32;
+
+	uint64_t PMEM_FLUSHER_WAKE_THRESHOLD;
+#if defined (UNIV_PMEMOBJ_BUF_PARTITION)
+	//256 buckets => 8 bits, max 32 spaces => 5 bits => need 3 = 8 - 5 bits
+	uint64_t PMEM_N_BUCKET_BITS;
+	uint64_t PMEM_N_SPACE_BITS;
+	uint64_t PMEM_PAGE_PER_BUCKET_BITS;
+#endif //UNIV_PMEMOBJ_BUF_PARTITION
+
+	//Those varables are in DRAM
 	bool is_recovery;
 	os_event_t*  flush_events; //N flush events for N buckets
 	os_event_t free_pool_event; //event for free_pool
@@ -785,7 +763,12 @@ struct __pmem_buf {
 #endif
 	/// End new in PL-NVM
 	
-	//////End variables in DRAM///////////////////////
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	uint64_t PMEM_BLOOM_N_ELEMENTS;
+	double PMEM_BLOOM_FPR;
+	//PMEM_BLOOM* bf;
+	PMEM_CBF* cbf;
+#endif //UNIV_PMEMOBJ_BLOOM
 };
 
 // PARTITION //////////////
@@ -919,14 +902,6 @@ pm_buf_write_no_free_pool(
 
 int
 pm_buf_write_with_flusher(
-			PMEMobjpool*	pop,
-		   	PMEM_BUF*		buf,
-		   	page_id_t		page_id,
-		   	page_size_t		size,
-		   	byte*			src_data,
-		   	bool			sync);
-int
-pm_buf_write_page_zero(
 			PMEMobjpool*	pop,
 		   	PMEM_BUF*		buf,
 		   	page_id_t		page_id,
@@ -1294,33 +1269,10 @@ hash_f1(
 	hashed = hashed % n;\
 }while(0)
 
-//Simply hash for distributed log
-#define PMEM_LOG_HASH_KEY(hashed, key, n) do {\
-	hashed = key ^ PMEM_HASH_MASK;\
-	hashed = hashed % n;\
-}while(0)
-
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
-/*LESS_BUCKET partition
- *One space is mapped with as less buckets as possible
-@hashed		[out]: return hashed value
-@space		[in]: space_no
-@page		[in]: page_no
-@n			[in]: number of buckets 
-@B			[in]: number of bits present number of buckets
-@S			[in]: number of bits present space_no
-@P			[in]: number of bits present max number of pages per space on a bucket, this value is log2(page_per_bucket)
- * */
-//Use this funciton for DEBUG only
-//#define PMEM_LESS_BUCKET_HASH_KEY(hashed, space, page)\
-//   hash_f1(hashed, space, page,\
-//		   	PMEM_N_BUCKETS,\
-//		   	PMEM_N_BUCKET_BITS,\
-//		   	PMEM_N_SPACE_BITS,\
-//		   	PMEM_PAGE_PER_BUCKET_BITS) 
 
 //Use this macro for production build 
-#define PMEM_LESS_BUCKET_HASH_KEY(hashed, space, page)\
+#define PMEM_LESS_BUCKET_HASH_KEY(pbuf, hashed, space, page)\
    	PARTITION_FUNC1(hashed, space, page,\
 		   	PMEM_N_BUCKETS,\
 		   	PMEM_N_BUCKET_BITS,\
@@ -1332,6 +1284,125 @@ hash_f1(
 } while(0)
 #endif //UNIV_PMEMOBJ_BUF_PARTITION
 
+#if defined (UNIV_PMEMOBJ_PL)
+#define PMEM_LOG_HASH_KEY(hashed, key, n) do {\
+	hashed = key ^ PMEM_HASH_MASK;\
+	hashed = hashed % n;\
+}while(0)
+#endif //UNIV_PMEMOBJ_PL
+
 #endif //UNIV_PMEMOBJ_BUF
+
+/*Bloom Filter on PMEM implementation in Dec 2018*/
+#if defined (UNIV_PMEMOBJ_BLOOM)
+
+typedef void (*bh_func) (uint64_t* hashed_vals, uint64_t num_hashes, char *str);
+
+struct __pmem_bloom_filter {
+    /* bloom parameters */
+    uint64_t		est_elements;
+    float			false_pos_prob;
+    uint64_t		n_hashes; // the number of hash functions
+    uint64_t		n_bits; // the number of bits in bloom
+    /* bloom filter */
+    unsigned char	*bloom; //the bit array implemented as byte array
+    long			bloom_length;// the number of bytes in bloom
+    uint64_t		elements_added;
+    uint64_t		n_false_pos_reads;
+    bh_func			hash_func;
+};
+
+PMEM_BLOOM* 
+pm_bloom_alloc(
+		uint64_t	est_elements,
+		float		false_positive_rate,
+		bh_func		bloom_hash_func);
+//PMEM_BLOOM* 
+//pm_bloom_alloc(
+//		uint64_t	est_elements,
+//		float		false_positive_rate
+//		);
+void
+pm_bloom_free(PMEM_BLOOM* pm_bloom);
+
+int
+pm_bloom_add(
+		PMEM_BLOOM*		pm_bloom, 
+		uint64_t		key);
+
+int
+pm_bloom_check(
+		PMEM_BLOOM*		pm_bloom,
+		uint64_t		key);
+
+uint64_t
+pm_bloom_get_set_bits(
+		PMEM_BLOOM*		pm_bloom);
+
+// Counting Bloom Filter, support deleting an element
+struct __pmem_counting_bloom_filter {
+    /* bloom parameters */
+    uint64_t		est_elements;
+    float			false_pos_prob;
+    uint64_t		n_hashes; // the number of hash functions
+    uint64_t		n_counts; // the number of counting in bloom
+    /* bloom filter */
+    uint16_t		*bloom; //the count array 
+    //long			bloom_length;// the number of bytes in bloom
+    uint64_t		elements_added;
+    uint64_t		n_false_pos_reads;
+    bh_func			hash_func;
+};
+
+PMEM_CBF* 
+pm_cbf_alloc(
+		uint64_t	est_elements,
+		float		false_pos_prob,
+		bh_func		bloom_hash_func);
+//PMEM_BLOOM* 
+//pm_bloom_alloc(
+//		uint64_t	est_elements,
+//		float		false_positive_rate
+//		);
+void
+pm_cbf_free(PMEM_CBF* cbf);
+
+int
+pm_cbf_add(
+		PMEM_CBF*		cbf, 
+		uint64_t		key);
+
+int
+pm_cbf_check(
+		PMEM_CBF*		cbf,
+		uint64_t		key);
+
+int
+pm_cbf_remove(
+		PMEM_CBF*		cbf, 
+		uint64_t		key);
+
+///////////// STATISTIC FUNCTIONS ///////////
+void
+pm_bloom_stats(PMEM_BLOOM* bf);
+uint64_t pm_bloom_est_elements(PMEM_BLOOM*	bf);
+uint64_t pm_bloom_count_set_bits(PMEM_BLOOM* bf);
+float pm_bloom_current_false_pos_prob(PMEM_BLOOM *bf);
+
+
+void
+pm_cbf_stats(PMEM_CBF* cbf);
+float pm_cbf_current_false_pos_prob(PMEM_CBF *cbf);
+///////////////// LOCAL FUNCTIONS//////////////
+void
+__default_hash(
+		uint64_t* hashed_vals,
+		uint64_t n_hashes,
+		char* str);
+
+uint64_t __fnv_1a (char* key);
+static int __sum_bits_set_char(char c);
+
+#endif //UNIV_PMEMOBJ_BLOOM
 
 #endif /*__PMEMOBJ_H__ */

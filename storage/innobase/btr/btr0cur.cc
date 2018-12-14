@@ -3221,6 +3221,7 @@ fail_err:
 			if specified */
 			err = btr_cur_ins_lock_and_undo(flags, cursor, entry,
 							thr, mtr, &inherit);
+
 #if defined (UNIV_PMEMOBJ_PL)
 #if !defined (UNIV_TEST_PL)
 		//save the pointer to the transaction
@@ -3231,7 +3232,6 @@ fail_err:
 		}
 #endif
 #endif //UNIV_PMEMOBJ_PL
-
 			if (err != DB_SUCCESS) {
 				goto fail_err;
 			}
@@ -3653,7 +3653,6 @@ btr_cur_update_in_place_log(
 #endif // UNIV_TEST_PL
 #endif // UNIV_PMEMOBJ_PL
 }
-
 #endif /* UNIV_HOTBACKUP */
 
 /***********************************************************//**
@@ -4723,7 +4722,6 @@ btr_cur_del_mark_set_clust_rec_log(
 	mtr_t*		mtr)	/*!< in: mtr */
 {
 	byte*	log_ptr;
-
 
 	ut_ad(!!page_rec_is_comp(rec) == dict_table_is_comp(index->table));
 	ut_ad(mtr->is_named_space(index->space));

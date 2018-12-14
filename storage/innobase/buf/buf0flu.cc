@@ -437,6 +437,7 @@ buf_flush_insert_into_flush_list(
 	ut_ad(buf_page_mutex_own(block));
 
 	buf_flush_list_mutex_enter(buf_pool);
+
 	ut_ad((UT_LIST_GET_FIRST(buf_pool->flush_list) == NULL)
 	      || (UT_LIST_GET_FIRST(buf_pool->flush_list)->oldest_modification
 		  <= lsn));
@@ -1049,12 +1050,9 @@ buf_flush_write_block_low(
 
 	/* Force the log to the disk before writing the modified block */
 	if (!srv_read_only_mode) {
-#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 		//Since the log records are persist in NVM we don't need to follow WAL rule
 		//Skip flush log here
-//#if defined(UNIV_TEST_PL)
-		//log_write_up_to(bpage->newest_modification, true);
-//#endif //UNIV_TEST_PL
 #else //original 
 		log_write_up_to(bpage->newest_modification, true);
 #endif
@@ -1094,18 +1092,17 @@ buf_flush_write_block_low(
 #if defined(UNIV_PMEMOBJ_BUF)
 	
 	//printf("\n [begin pm_buf_write space %zu page %zu==>", bpage->id.space(),bpage->id.page_no());
-	int ret = 0;
+
 #if defined(UNIV_PMEMOBJ_LSB)
-	ret = pm_lsb_write(gb_pmw->pop, gb_pmw->plsb, bpage->id, bpage->size, frame, sync);
+	int ret = pm_lsb_write(gb_pmw->pop, gb_pmw->plsb, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_V2)	
-	ret = pm_buf_write_no_free_pool(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write_no_free_pool(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_FLUSHER)
-	//if(bpage->id.page_no() != 0)
-		ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_APPEND)
-	ret = pm_buf_write_with_flusher_append(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write_with_flusher_append(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #else
-	ret = pm_buf_write(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #endif
 		//printf("END  pm_buf_write space %zu page %zu]\n", bpage->id.space(),bpage->id.page_no());
 		//printf(" END pm_buf_write]");
@@ -3650,7 +3647,8 @@ buf_flush_validate_low(
 	buf_page_t*		bpage;
 	const ib_rbt_node_t*	rnode = NULL;
 	Check			check;
-#if defined (UNIV_PMEMOBJ_PL)
+
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 	//In PL-NVM we do not use pageLSN in the flush list
 	return (TRUE);
 #endif //UNIV_PMEMOBJ_PL
@@ -4197,6 +4195,7 @@ pm_handle_finished_block_with_flusher(
 {
 	
 	PMEM_FLUSHER* flusher;
+	ulint i;
 
 	//bool is_lock_prev_list = false;
 
@@ -4225,6 +4224,15 @@ pm_handle_finished_block_with_flusher(
 		   	pflush_list->list_id, pflush_list->hashed_id);
 #endif
 		//Now all pages in this list are persistent in disk
+		//
+#if defined (UNIV_PMEMOBJ_BLOOM)
+		//Remove the page's tag from bloom filter
+		for (i = 0; i < pflush_list->max_pages; i++){
+			uint64_t key = D_RW(D_RW(pflush_list->arr)[i])->id.fold();
+			pm_cbf_remove(buf->cbf, key);
+		}
+#endif //UNIV_PMEMOBJ_BLOOM
+
 		//(0) flush spaces
 		pm_buf_flush_spaces_in_list(pop, buf, pflush_list);
 		// Reset the param_array
@@ -4237,7 +4245,6 @@ pm_handle_finished_block_with_flusher(
 		pmemobj_rwlock_unlock(pop, &buf->param_lock);
 
 		//(1) Reset blocks in the list
-		ulint i;
 		for (i = 0; i < pflush_list->max_pages; i++) {
 			D_RW(D_RW(pflush_list->arr)[i])->state = PMEM_FREE_BLOCK;
 			D_RW(D_RW(pflush_list->arr)[i])->sync = false;
@@ -4458,6 +4465,13 @@ DECLARE_THREAD(pm_buf_flush_list_cleaner_coordinator)(
 		}
 #if defined (UNIV_PMEMOBJ_LSB)
 		printf("cur lsb_list cur pages/max_pages = %zu/%zu\n", D_RW(gb_pmw->plsb->lsb_list)->cur_pages, D_RW(gb_pmw->plsb->lsb_list)->max_pages);
+#elif defined (UNIV_PMEMOBJ_BLOOM)
+		printf("cur free list = %zu, cur spec_list = %zu \n",
+			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,
+				D_RW(gb_pmw->pbuf->spec_list)->cur_pages);
+
+		//pm_bloom_stats(gb_pmw->pbuf->bf);
+		pm_cbf_stats(gb_pmw->pbuf->cbf);
 #else
 		printf("cur free list = %zu, cur spec_list = %zu\n",
 			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,

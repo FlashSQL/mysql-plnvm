@@ -46,11 +46,6 @@ Created 3/26/1996 Heikki Tuuri
 #include "fsp0sysspace.h"
 #include "row0mysql.h"
 
-#if defined (UNIV_PMEMOBJ_PL)
-#include "my_pmemobj.h"
-extern PMEM_WRAPPER* gb_pmw;
-#endif
-
 /*=========== UNDO LOG RECORD CREATION AND DECODING ====================*/
 
 /**********************************************************************//**
@@ -1393,29 +1388,6 @@ trx_undo_page_report_modify(
 	mach_write_to_2(undo_page + TRX_UNDO_PAGE_HDR + TRX_UNDO_PAGE_FREE,
 			ptr - undo_page);
 
-#if defined (UNIV_PMEMOBJ_PL)
-	/*Approach 1: Only copy UNDO log records.
-	 *Note that undo log generated only for changes on the clustered index 
-	 * */
-//	//does some checks before capture the log record
-//	assert (trx->id > 0);
-//	assert (!trx->read_only);
-//
-//	byte* undorec_ptr = undo_page + first_free;
-//	ulint undorec_size = (ptr - undo_page - first_free); 
-//	//get the pointer to the page contains the rec
-//	const page_t*   page    = page_align(rec);
-//	ulint space = mach_read_from_4(page + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
-//	ulint page_no = mach_read_from_4(page + FIL_PAGE_OFFSET);
-//	page_id_t page_id(space, page_no);
-//
-//	MEM_LOG_REC* memrec =	pmemlog_alloc_memrec(
-//			undorec_ptr, undorec_size, page_id, trx_id);
-//
-//	assert(memrec);
-//
-//	pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
-#endif //UNIV_PMEMOBJ_PL
 	/* Write to the REDO log about this change in the UNDO log */
 
 	trx_undof_page_add_undo_rec_log(undo_page, first_free,
