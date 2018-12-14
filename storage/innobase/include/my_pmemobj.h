@@ -58,8 +58,13 @@ static FILE* debug_file = fopen("part_debug.txt","a");
 static uint64_t PMEM_N_BUCKET_BITS = 8;
 static uint64_t PMEM_N_SPACE_BITS = 5;
 static uint64_t PMEM_PAGE_PER_BUCKET_BITS=10;
-
 #endif //UNIV_PMEMOBJ_BUF_PARTITION
+
+#if defined (UNIV_PMEMOBJ_BLOOM)
+static uint64_t PMEM_BLOOM_N_ELEMENTS;
+static double PMEM_BLOOM_FPR;
+
+#endif 
 #endif //UNIV_PMEMOBJ_BUF
 
 struct __pmem_wrapper;
@@ -735,6 +740,7 @@ struct __pmem_buf {
 	uint64_t PMEM_N_SPACE_BITS;
 	uint64_t PMEM_PAGE_PER_BUCKET_BITS;
 #endif //UNIV_PMEMOBJ_BUF_PARTITION
+
 	//Those varables are in DRAM
 	bool is_recovery;
 	os_event_t*  flush_events; //N flush events for N buckets
@@ -758,6 +764,8 @@ struct __pmem_buf {
 	/// End new in PL-NVM
 	
 #if defined (UNIV_PMEMOBJ_BLOOM)
+	uint64_t PMEM_BLOOM_N_ELEMENTS;
+	double PMEM_BLOOM_FPR;
 	//PMEM_BLOOM* bf;
 	PMEM_CBF* cbf;
 #endif //UNIV_PMEMOBJ_BLOOM

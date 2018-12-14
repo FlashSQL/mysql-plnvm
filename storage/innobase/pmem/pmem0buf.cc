@@ -56,6 +56,11 @@ pm_wrapper_buf_alloc_or_open(
 	printf("======> >> > >PMEM PARTITION: n_bucket_bits %zu n_space_bits %zu page_per_bucket_bits %zu\n",
 			PMEM_N_BUCKET_BITS, PMEM_N_SPACE_BITS, PMEM_PAGE_PER_BUCKET_BITS);
 #endif 
+
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	PMEM_BLOOM_N_ELEMENTS = srv_pmem_bloom_n_elements;
+	PMEM_BLOOM_FPR = srv_pmem_bloom_fpr;
+#endif
 	/////////////////////////////////////////////////
 	// PART 1: NVM structures
 	// ///////////////////////////////////////////////
@@ -95,6 +100,10 @@ pm_wrapper_buf_alloc_or_open(
 	pmw->pbuf->PMEM_PAGE_PER_BUCKET_BITS = PMEM_PAGE_PER_BUCKET_BITS;
 #endif //UNIV_PMEMOBJ_BUF_PARTITION
 
+#if defined (UNIV_PMEMOBJ_BLOOM)
+	pmw->pbuf->PMEM_BLOOM_N_ELEMENTS = PMEM_BLOOM_N_ELEMENTS;
+	pmw->pbuf->PMEM_BLOOM_FPR = PMEM_BLOOM_FPR;
+#endif
 	////////////////////////////////////////////////////
 	// Part 2: D-RAM structures and open file(s)
 	// ///////////////////////////////////////////////////
@@ -276,10 +285,11 @@ pm_pop_buf_alloc(
 
 	pm_buf_lists_init(pop, pbuf, align_size, page_size);
 #if defined (UNIV_PMEMOBJ_BLOOM)
-	uint64_t n_pages = align_size / page_size;
-	//allocate bloom filter with false-positive ratio and __default_hash function
 	//pbuf->bf = pm_bloom_alloc(BLOOM_SIZE, 0.01, NULL);
-	pbuf->cbf = pm_cbf_alloc(BLOOM_SIZE, 0.01, NULL);
+	pbuf->cbf = pm_cbf_alloc(
+			PMEM_BLOOM_N_ELEMENTS,
+		   	PMEM_BLOOM_FPR,
+		   	NULL);
 #endif
 
 	pmemobj_persist(pop, pbuf, sizeof(*pbuf));
