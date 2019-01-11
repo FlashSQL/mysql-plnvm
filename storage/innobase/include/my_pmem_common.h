@@ -2,6 +2,7 @@
 #ifndef __PMEM_COMMON_H__
 #define __PMEM_COMMON_H__
 
+#define CACHELINE_SIZE 64
 
 #define PMEM_MAX_FILES 1000
 #define PMEM_MAX_FILE_NAME_LENGTH 10000
@@ -56,6 +57,12 @@ enum PMEM_BLOCK_STATE {
     PMEM_IN_USED_BLOCK = 2,
     PMEM_IN_FLUSH_BLOCK=3,
 	PMEM_PLACE_HOLDER_BLOCK=4
+};
+
+enum PMEM_LOG_BLOCK_STATE {
+    PMEM_FREE_LOG_BLOCK = 1, //the log block is free, a transaction can write its log records
+    PMEM_DEACTIVE_LOG_BLOCK = 2, // the transaction is either commit or abort
+    PMEM_ACTIVE_LOG_BLOCK = 3, // the transaction is active
 };
 
 enum PMEM_LOG_TYPE {

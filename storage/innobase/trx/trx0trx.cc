@@ -129,7 +129,9 @@ trx_init(
 	status is required for asynchronous handling. */
 
 	trx->id = 0;
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	trx->pm_log_block_id = -1;
+#endif
 	trx->no = TRX_ID_MAX;
 
 	trx->is_recovered = false;
@@ -2205,13 +2207,25 @@ trx_commit(
 	}
 
 #if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		//in this version, just simple set the log block free
+		if (trx->pm_log_block_id != -1){
+			pm_ppl_set_log_block_state(
+					gb_pmw->pop,
+					gb_pmw->ppl,
+					trx->id,
+					trx->pm_log_block_id,
+				   	PMEM_FREE_LOG_BLOCK);
+		}	
+#else
 #if !defined (UNIV_TEST_PL)
 	if( trx->id > 0 && !trx->read_only){
 		//pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx->id);
 		pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx);
+#endif //UNIV_PMEMOBJ_PL
 	}
 #endif
-#endif //UNIV_PMEMOBJ_PL
+#endif //UNIV_PMEMOBJ_PART_PL
 	trx_commit_low(trx, mtr);
 }
 

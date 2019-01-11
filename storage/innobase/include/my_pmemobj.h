@@ -52,6 +52,7 @@ static uint64_t PMEM_N_FLUSH_THREADS;
 static uint64_t PMEM_FLUSHER_WAKE_THRESHOLD=30;
 
 static FILE* debug_file = fopen("part_debug.txt","a");
+static FILE* debug_ppl_file = fopen("pll_debug.txt","a");
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
 //256 buckets => 8 bits, max 32 spaces => 5 bits => need 3 = 8 - 5 bits
@@ -66,6 +67,12 @@ static double PMEM_BLOOM_FPR;
 
 #endif 
 #endif //UNIV_PMEMOBJ_BUF
+
+#if defined (UNIV_PMEMOBJ_PL)
+static uint64_t PMEM_N_LOG_BUCKETS;
+static uint64_t PMEM_N_BLOCKS_PER_BUCKET;
+
+#endif //UNIV_PMEMOBJ_PL
 
 struct __pmem_wrapper;
 typedef struct __pmem_wrapper PMEM_WRAPPER;
@@ -151,6 +158,16 @@ typedef struct __mem_TT_entry MEM_TT_ENTRY;
 
 struct __mem_TT;
 typedef struct __mem_TT MEM_TT;
+
+struct __pmem_part_log;
+typedef struct __pmem_part_log PMEM_PART_LOG;
+
+struct __pmem_log_hashed_line;
+typedef struct __pmem_log_hashed_line PMEM_LOG_HASHED_LINE;
+
+struct __pmem_log_block;
+typedef struct __pmem_log_block PMEM_LOG_BLOCK;
+
 #endif //UNIV_PMEMOBJ_PL
 
 #if defined (UNIV_PMEMOBJ_BLOOM)
@@ -187,6 +204,13 @@ POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LSB_HASHTABLE);
 #if defined(UNIV_PMEMOBJ_PL)
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_LIST);
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_REC);
+
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_PART_LOG);
+POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_LOG_HASHED_LINE));
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_HASHED_LINE);
+POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_LOG_BLOCK));
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_BLOCK);
+//POBJ_LAYOUT_TOID(my_pmemobj, unsigned char);
 #endif
 
 #endif //UNIV_PMEMOBJ_LSB
@@ -202,6 +226,9 @@ struct __pmem_wrapper {
 	PMEM_DBW* pdbw;
 #if defined (UNIV_PMEMOBJ_BUF)
 	PMEM_BUF* pbuf;
+#endif
+#if defined (UNIV_PMEMOBJ_PL)
+	PMEM_PART_LOG* ppl;
 #endif
 
 #if defined (UNIV_PMEMOBJ_LSB)
@@ -346,6 +373,84 @@ struct __mem_TT {
 	MEM_TT_ENTRY**		buckets;
 	MEM_TT_ENTRY**		tails;
 	PMEMrwlock*			pmem_locks; //this lock protects remain properties
+
+	unsigned char*		free_bit_arr; // the free bit array, size equals to # of buckets. One entry manage up to 256 log blocks (0 - 255)
+};
+
+////////////////////////////////////////////////////
+////////////////////// NEW PART LOG IMPLEMENT////////////
+//////////////////////////////////////////////////
+//
+/*Implement the PMEM log in the similar way with the PMEM_BUF
+ *A sequential bytes are allocated in PMEM to avaoid allocate/deallocate overhead
+ * */
+struct __pmem_part_log {
+	uint64_t	size; //the total size for the partitioned log
+	PMEMoid		data; //log data
+	byte*		p_align; //align
+
+	bool		is_new;
+
+	uint64_t			n_buckets; //# of buckets
+	TOID_ARRAY(TOID(PMEM_LOG_HASHED_LINE)) buckets;
+
+	uint64_t			n_blocks_per_bucket; //# of log block per bucket
+	uint64_t			block_size; //log block size in bytes
+
+	FILE* deb_file;
+
+};
+/*
+ * A hashed line has array of log blocks share the same hashed value
+ * */
+struct __pmem_log_hashed_line {
+	PMEMrwlock		lock;
+	
+	int hashed_id;
+
+	uint64_t n_blocks; //the total log block in bucket
+	uint64_t cur_block_id; //current free block id, follow the round-robin fashion
+
+	TOID_ARRAY(TOID(PMEM_LOG_BLOCK)) arr;
+
+};
+/*
+ * One log block per transaction
+ * Follow the implementation of PMEM_BUF_BLOCK
+ * The REDO logs of a transactions are append on the log block
+ * */
+struct __pmem_log_block {
+	PMEMrwlock		lock;
+	uint64_t				bid; //block id
+	uint64_t				tid; //transaction id
+	uint64_t				pmemaddr; //the begin offset to the pmem data in PMEM_PART_LOG
+	uint64_t				cur_off; //the current offset (0 - log block size) 
+	uint64_t				n_log_recs; //the current number of log records 
+	PMEM_LOG_BLOCK_STATE	state;
+	
+	//debug only
+	uint64_t				prev_tid; //transaction id
+
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+	/*Statistic information */
+	//Overall stat info for the whole lifetime
+	uint64_t				all_n_reused; // 1 reused = FREE --> ACTIVE --> FREE
+	float					all_avg_small_log_recs;
+	float					all_avg_log_rec_size;
+	uint64_t				all_min_log_rec_size;
+	uint64_t				all_max_log_rec_size;
+	float					all_avg_block_lifetime;
+
+	//Per log block info, only available in the lifetime of transaction. Reset after trx commit/abort
+	uint64_t				n_small_log_recs; // number of small log record < CACHELINE_SIZE 
+
+	uint64_t				avg_log_rec_size; // average log records size in this block
+	uint64_t				min_log_rec_size; // minimum log record size in this block
+	uint64_t				max_log_rec_size; // maximum log record size in this block 
+	ulint					lifetime; //time of the first access to this block, usage: ut_time_us(), ut_time_ms(), ut_difftime()
+	ulint					start_time; //time of the first access to this block, usage: ut_time_us(), ut_time_ms(), ut_difftime()
+#endif //UNIV_PMEMOBJ_PART_PL_STAT
+	
 };
 
 /////////////// ALLOC / FREE //////////////////////////
@@ -404,6 +509,53 @@ free_pmemrec(
 		PMEMobjpool*	pop,
 		TOID(PMEM_LOG_REC)	pmem_rec
 		);
+
+////////////// NEW PARTITIONED LOG
+void
+pm_wrapper_log_alloc_or_open(
+		PMEM_WRAPPER*	pmw,
+		uint64_t		n_buckets,
+		uint64_t		n_blocks_per_bucket,
+		uint64_t		block_size);
+
+PMEM_PART_LOG* alloc_pmem_part_log(
+		PMEMobjpool*	pop,
+		uint64_t		n_buckets,
+		uint64_t		n_blocks_per_bucket,
+		uint64_t		block_size);
+void 
+pm_part_log_bucket_init(
+		PMEMobjpool*		pop,
+		PMEM_PART_LOG*		pl,
+		uint64_t			n_buckets,
+		uint64_t			n_blocks_per_bucket,
+		uint64_t			block_size); 
+
+int64_t
+pm_ppl_write(
+			PMEMobjpool*		pop,
+			PMEM_PART_LOG*		ppl,
+			uint64_t			tid,
+			byte*				log_src,
+			uint64_t			size,
+			uint64_t			n_recs,
+			int64_t			block_id);
+void
+pm_ppl_set_log_block_state(
+		PMEMobjpool*		pop,
+		PMEM_PART_LOG*		pl,
+		uint64_t tid,
+		int64_t id,
+		PMEM_LOG_BLOCK_STATE state);
+
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+void
+ppl_consolidate_stat_info(PMEM_LOG_BLOCK*	plog_block);
+void 
+ppl_print_log_block_stat_info (FILE* f, PMEM_LOG_BLOCK* plog_block);
+void 
+ppl_print_all_stat_info (FILE* f, PMEM_PART_LOG* ppl);
+#endif
 
 /////////////////////////////////////////////////////
 //////////////////////// CONNECT WITH InnoDB//////////
@@ -558,7 +710,10 @@ seek_tt_entry(
 #endif //UNIV_PMEMOBJ_PL
 //
 ////////////////////// LOG BUFFER /////////////////////////////
-
+/*
+ * This implement PMEM_WAL that copy the way InnoDB log buffer work.
+ * We allocate the centralized log buffer in PMEM instead of DRAM and follow the same logic of InnoDB's log buffer.
+ * */
 struct __pmem_log_buf {
 	size_t				size;
 	PMEM_OBJ_TYPES		type;	
@@ -1404,5 +1559,10 @@ uint64_t __fnv_1a (char* key);
 static int __sum_bits_set_char(char c);
 
 #endif //UNIV_PMEMOBJ_BLOOM
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+#define STAT_CAL_AVG(new_avg, n, old_avg, val) do {\
+	new_avg = (old_avg * (n-1) + val) / n; \
+}while (0)
+#endif //PMEMOBJ_PART_PL_STAT
 
 #endif /*__PMEMOBJ_H__ */

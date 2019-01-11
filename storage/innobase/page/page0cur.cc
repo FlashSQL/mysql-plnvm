@@ -1169,24 +1169,39 @@ need_extra_info:
 
 #if defined (UNIV_PMEMOBJ_PL)
 #if !defined (UNIV_TEST_PL)
-		//retrieve the parent trx
-		//We set it in btr_cur_optimistic_insert() 
-		trx = mtr->pmemlog_get_parent_trx();
-		//Note that trx could be NULL
-		if (trx != NULL) {
-			//save the start of log_ptr
-			log_size = log_ptr - start_log_ptr;
-			assert(log_size > 0);
-			//Alloc memrec
-			MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
-					start_log_ptr, log_size, page_id, trx->id);
-			assert(memrec);
-			//Add memrec to the global TT
-			pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
-		}
-		else {
-			//printf("PMEM_WARN: ===>in  page_cur_insert_rec_write_log(), REDO log of space %zu page %zu has NULL trx\n", page_id.space(), page_id.page_no() );
-		}
+		//Now we write REDO log in mtr_t::Command::Execute()
+		////retrieve the parent trx
+		////We set it in btr_cur_optimistic_insert() 
+		//trx = mtr->pmemlog_get_parent_trx();
+		//if (trx != NULL) {
+		//	log_size = log_ptr - start_log_ptr;
+		//	trx->pm_log_block_id = pm_ppl_write(
+		//								gb_pmw->pop,
+		//								gb_pmw->ppl,
+		//								trx->id,
+		//								start_log_ptr,
+		//								log_size,
+		//								trx->pm_log_block_id);
+
+
+		//}
+
+		//////Old implementation
+		////Note that trx could be NULL
+		//if (trx != NULL) {
+		//	//save the start of log_ptr
+		//	log_size = log_ptr - start_log_ptr;
+		//	assert(log_size > 0);
+		//	//Alloc memrec
+		//	MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
+		//			start_log_ptr, log_size, page_id, trx->id);
+		//	assert(memrec);
+		//	//Add memrec to the global TT
+		//	pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
+		//}
+		//else {
+		//	//printf("PMEM_WARN: ===>in  page_cur_insert_rec_write_log(), REDO log of space %zu page %zu has NULL trx\n", page_id.space(), page_id.page_no() );
+		//}
 #endif // UNIV_TEST_PL
 #endif //UNIV_PMEMOBJ_PL
 }

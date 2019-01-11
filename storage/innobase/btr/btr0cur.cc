@@ -3644,12 +3644,30 @@ btr_cur_update_in_place_log(
 
 	log_size = log_ptr - start_log_ptr;
 	assert(log_size > 0);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//Now we write REDO log in mtr_t::Command::Execute()
+//	trx_t*		trx;
+//	trx = mtr->pmemlog_get_parent_trx();
+//	if (trx != NULL) {
+//		log_size = log_ptr - start_log_ptr;
+//		trx->pm_log_block_id = pm_ppl_write(
+//				gb_pmw->pop,
+//				gb_pmw->ppl,
+//				trx->id,
+//				start_log_ptr,
+//				log_size,
+//				trx->pm_log_block_id);
+//
+//
+//	}
+#else
 	//Alloc memrec
 	MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
 			start_log_ptr, log_size, page_id, trx_id);
 	assert(memrec);
 	//Add memrec to the global TT
 	pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
+#endif // UNIV_PMEMOBJ_PART_PL
 #endif // UNIV_TEST_PL
 #endif // UNIV_PMEMOBJ_PL
 }
@@ -4773,12 +4791,27 @@ btr_cur_del_mark_set_clust_rec_log(
 
 		log_size = log_ptr - start_log_ptr;
 		assert(log_size > 0);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//Now we write REDO log in mtr_t::Command::Execute()
+	//trx_t*		trx;
+	//trx = mtr->pmemlog_get_parent_trx();
+	//if (trx != NULL) {
+	//	trx->pm_log_block_id = pm_ppl_write(
+	//			gb_pmw->pop,
+	//			gb_pmw->ppl,
+	//			trx->id,
+	//			start_log_ptr,
+	//			log_size,
+	//			trx->pm_log_block_id);
+	//}
+#else
 		//Alloc memrec
 		MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
 				start_log_ptr, log_size, page_id, trx_id);
 		assert(memrec);
 		//Add memrec to the global TT
 		pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
+#endif //UNIV_PMEMOBJ_PART_PL
 #endif //UNIV_TEST_PL
 #endif // UNIV_PMEMOBJ_PL
 }

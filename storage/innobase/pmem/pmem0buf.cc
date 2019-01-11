@@ -231,6 +231,11 @@ void pm_wrapper_buf_close(PMEM_WRAPPER* pmw) {
 	//we will not deallocate its resource
 #endif 
 	fclose(pmw->pbuf->deb_file);
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+	ppl_print_all_stat_info(debug_ppl_file,  pmw->ppl);
+	//fclose(debug_ppl_file);
+	fclose(pmw->ppl->deb_file);
+#endif
 }
 
 int
@@ -1115,7 +1120,8 @@ pm_buf_write_with_flusher(
 	PMEM_LOG_LIST*			plog_list;
 	MEM_DPT_ENTRY*			dpt_entry;
 	MEM_DPT_ENTRY*			prev_dpt_entry;
-#if !defined(UNIV_TEST_PL)	
+	ulint					log_hashed;
+#if !defined(UNIV_TEST_PL)
 	bool					is_need_undo;
 #endif
 #endif //UNIV_PMEMOBJ_PL
@@ -1168,11 +1174,16 @@ pm_cbf_add(buf->cbf, page_id.fold());
 						strstr(pspec_block->file_name, node->name) != 0) {
 					//overwrite this spec block
 					pspec_block->sync = sync;
-
-TX_BEGIN(pop) {
+#if defined (UNIV_PMEMOBJ_NO_PERSIST)
+					//memcpy(pdata + pspec_block->pmemaddr, src_data, page_size); 
 					pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
+#else
+TX_BEGIN(pop) {
+					//pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
+					TX_MEMCPY(pdata + pspec_block->pmemaddr, src_data, page_size); 
 }TX_ONABORT {
 }TX_END
+#endif
 					//update the file_name, page_id in case of tmp space
 					strcpy(pspec_block->file_name, node->name);
 					pspec_block->id.copy_from(page_id);
@@ -1209,10 +1220,15 @@ TX_BEGIN(pop) {
 			//pspec_block->file_handle = node->handle;
 			strcpy(pspec_block->file_name, node->name);
 
-TX_BEGIN(pop) {
+#if defined (UNIV_PMEMOBJ_NO_PERSIST)
 			pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
+			//memcpy(pdata + pspec_block->pmemaddr, src_data, page_size); 
+#else
+TX_BEGIN(pop) {
+			TX_MEMCPY(pdata + pspec_block->pmemaddr, src_data, page_size); 
 }TX_ONABORT {
 }TX_END
+#endif //UNIV_PMEMOBJ_NO_PERSIST
 			++(pspec_list->cur_pages);
 
 			printf("Add new block to the spec list, space_no %zu,file %s cur_pages %zu \n", page_id.space(),node->name,  pspec_list->cur_pages);
@@ -1322,37 +1338,50 @@ retry:
 					}
 				}
 				pfree_block->sync = sync;
-TX_BEGIN(pop) {
+#if defined (UNIV_PMEMOBJ_NO_PERSIST)
 				pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
+				//memcpy(pdata + pfree_block->pmemaddr, src_data, page_size); 
+#else
+TX_BEGIN(pop) {
+				TX_MEMCPY(pdata + pfree_block->pmemaddr, src_data, page_size); 
 #if defined (UNIV_PMEMOBJ_PL)
 #if !defined (UNIV_TEST_PL)
+#if !defined (UNIV_TEST_PL_P2)
 					if (pfree_block->state == PMEM_PLACE_HOLDER_BLOCK){
-						//Remove REDO log	
+						//Remove REDO log of the place-holder
 						pm_remove_REDO_log_list_when_flush(
 								pop,
 								D_RW(pfree_block->redolog_list));
+						//Change the state
 						pfree_block->state = PMEM_IN_USED_BLOCK;
 
 					}
+#endif // UNIV_TEST_PL_P2
 					if (is_need_undo){
 						plog_list = D_RW(pfree_block->undolog_list);
+#if !defined (UNIV_TEST_PL_P2)
+						//Merge logs in dpt_entry to the exist UNDO log or create a new one
 						pm_merge_logs_to_loglist(
 							pop,
 							plog_list,
 							dpt_entry,
 							PMEM_UNDO_LOG,
 							true);
-						//Remove the dpt entry from the cache line
+//#endif // UNIV_TEST_PL_P2
+						//Remove the dpt entry from the global DPT 
 						remove_dpt_entry(pop,
 								buf->dpt,
 								dpt_entry,
 								prev_dpt_entry,
 								log_hashed);
+#endif // UNIV_TEST_PL_P2
 					}
 #endif //UNIV_TEST_PL
 #endif //UNIV_PMEMOBJ_PL
 }TX_ONABORT {
 }TX_END
+#endif //UNIV_PMEMOBJ_NO_PERSIST
+
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
 				++buf->bucket_stats[hashed].n_overwrites;
 #endif
@@ -1410,29 +1439,37 @@ TX_BEGIN(pop) {
 	assert(pfree_block->state == PMEM_FREE_BLOCK);
 	pfree_block->state = PMEM_IN_USED_BLOCK;
 
-	TX_BEGIN(pop) {
+#if defined (UNIV_PMEMOBJ_NO_PERSIST)
 		pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
+		//memcpy(pdata + pfree_block->pmemaddr, src_data, page_size); 
+#else
+	TX_BEGIN(pop) {
+		TX_MEMCPY(pdata + pfree_block->pmemaddr, src_data, page_size); 
 		//New in PL-NVM
 #if defined (UNIV_PMEMOBJ_PL)
 #if !defined(UNIV_TEST_PL)
 		if (is_need_undo){
 			plog_list = D_RW(pfree_block->undolog_list);
+#if !defined (UNIV_TEST_PL_P2)
 			pm_merge_logs_to_loglist(
 					pop,
 					plog_list,
 					dpt_entry,
 					PMEM_UNDO_LOG,
 					true);
+//#endif //UNIV_TEST_PL_P2
 			remove_dpt_entry(pop,
 					buf->dpt,
 					dpt_entry,
 					prev_dpt_entry,
 					log_hashed);
+#endif //UNIV_TEST_PL_P2
 		}
 #endif //UNIV_TEST_PL
 #endif //UNIV_PMEMOBJ_PL
 	}TX_ONABORT {
 	}TX_END
+#endif //UNIV_PMEMOBJ_NO_PERSIST
 
 	//if(is_lock_free_block)
 	//pmemobj_rwlock_unlock(pop, &pfree_block->lock);
@@ -2505,13 +2542,17 @@ get_free_list:
 	//The free_pool may empty now, wait in necessary
 	os_event_reset(buf->free_pool_event);
 #if defined (UNIV_PMEMOBJ_PL)	
+#if !defined (UNIV_PMEMOBJ_PART_PL)
 #if !defined (UNIV_TEST_PL)
+#if !defined (UNIV_TEST_PL_P2)
 	//New in PL-NVM//////////////////////////////////
 	//Copy pmem blocks that have UNDO log or REDO log
 	pm_copy_logs_pmemlist(pop, buf, D_RW(first_list), D_RW(hashlist));
 
 	//End new in PL-NVM /////////////////////////////
-#endif
+#endif // UNIV_TEST_PL_P2
+#endif // UNIV_TEST_PL
+#endif // UNIV_PMEMOBJ_PART_PL
 #endif // UNIV_PMEOBJ_PL
 	pmemobj_rwlock_unlock(pop, &(D_RW(buf->free_pool)->lock));
 

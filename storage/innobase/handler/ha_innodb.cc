@@ -4542,7 +4542,19 @@ innobase_rollback(
 	trx->n_autoinc_rows = 0;
 #if defined (UNIV_PMEMOBJ_PL)
 #if !defined (UNIV_TEST_PL)
-	pmemlog_trx_abort(gb_pmw->pop, gb_pmw->pbuf, trx->id);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	// in this version, just simply set free the log block
+	//if (trx->pm_log_block_id != -1){
+	//	pm_ppl_set_log_block_state(
+	//			gb_pmw->pop,
+	//			gb_pmw->ppl,
+	//			trx->id,
+	//			trx->pm_log_block_id,
+	//		   	PMEM_FREE_LOG_BLOCK);
+	//}
+#else
+	//pmemlog_trx_abort(gb_pmw->pop, gb_pmw->pbuf, trx->id);
+#endif	
 #endif
 #endif //UNIV_PMEMOBJ_PL
 

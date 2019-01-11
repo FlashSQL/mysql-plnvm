@@ -911,7 +911,9 @@ struct trx_t {
 	bool		abort;		/*!< if this flag is set then
 					this transaction must abort when
 					it can */
-
+#if defined(UNIV_PMEMOBJ_PART_PL)
+	int64_t		pm_log_block_id;
+#endif
 	trx_id_t	id;		/*!< transaction id */
 
 	trx_id_t	no;		/*!< transaction serialization number:

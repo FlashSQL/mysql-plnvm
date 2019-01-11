@@ -39,6 +39,10 @@ Created 11/26/1995 Heikki Tuuri
 #include "mtr0mtr.ic"
 #endif /* UNIV_NONINL */
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw; 
+#endif /* UNIV_PMEMOBJ_PART_PL */
 /** Iterate over a memo block in reverse. */
 template <typename Functor>
 struct Iterate {
@@ -346,7 +350,6 @@ struct ReleaseBlocks {
 		block = reinterpret_cast<buf_block_t*>(slot->object);
 
 #if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
-//#if defined (UNIV_PMEMOBJ_PL) && !defined(UNIV_TEST_PL)
 		//simulate buf_flush_note_modification()
 		mutex_enter(&block->mutex);
 		block->page.newest_modification = m_end_lsn;
@@ -998,6 +1001,59 @@ mtr_t::Command::release_blocks()
 /** Write the redo log record, add dirty pages to the flush list and release
 the resources. */
 #if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
+#if defined (UNIV_PMEMOBJ_PART_PL)
+void
+mtr_t::Command::execute()
+{
+	ulint	len	= m_impl->m_log.size();
+	ulint	n_recs	= m_impl->m_n_log_recs;
+
+	trx_t*      trx;
+	trx = m_impl->m_parent_trx;
+	
+	//TODO: check if the current log block in PMEM is not enough space for this mtr log, extend the size, see prepare_write()
+	//TODO: handle MLOG_MULTI_REC_END, see prepare_write()
+	
+	if (trx != NULL){
+	// PART_PL WRITE LOG
+	const mtr_buf_t::block_t*	front = m_impl->m_log.front();
+	byte* start_log_ptr = (byte*) front->begin(); 	
+
+	trx->pm_log_block_id = pm_ppl_write(
+			gb_pmw->pop,
+			gb_pmw->ppl,
+			trx->id,
+			start_log_ptr,
+			len,
+			n_recs,
+			trx->pm_log_block_id);
+	}
+	else {
+		//printf("in mtr_t::Command::execute() trx is NULL\n");
+	}
+
+	//simulate the lsn
+	ulint cur_time = ut_time_us(NULL);
+	m_start_lsn = cur_time;
+	m_end_lsn = m_start_lsn + len;
+	//(2) add the block to the flush list 
+	if (m_impl->m_made_dirty) {
+		log_flush_order_mutex_enter();
+	}
+	m_impl->m_mtr->m_commit_lsn = m_end_lsn;
+
+	release_blocks();
+
+	if (m_impl->m_made_dirty) {
+		log_flush_order_mutex_exit();
+	}
+
+	release_latches();
+
+	release_resources();
+}
+#else //old method
+
 // In PL-NVM, we keep log records in our data structure
 // This function just release the resource without writing any logs
 // We save the overhead of : (1) log_mutex_enter(), 
@@ -1009,7 +1065,7 @@ mtr_t::Command::execute()
 
 
 	/*(1) We make our own start_lsn and end_lsn here	
-	 * m_start_lsn is the current tiem in seconds
+	 * m_start_lsn is the current time in seconds
 	 * m_end_lsn = m_start_lsn + lenght of the log record
 	 * release_blocks() -> add_dirty_page_to_flush_list()
 	 */
@@ -1036,6 +1092,7 @@ mtr_t::Command::execute()
 
 	release_resources();
 }
+#endif //UNIV_PMEMOBJ_PART_PL
 #else //original
 void
 mtr_t::Command::execute()
