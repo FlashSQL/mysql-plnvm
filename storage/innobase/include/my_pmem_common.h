@@ -25,6 +25,10 @@
 #define MAX_DPT_ENTRIES 8192
 #define MAX_TT_ENTRIES 8192
 
+//#define MAX_DPT_LINES 128 
+#define MAX_DPT_LINES 8192 
+#define MAX_DPT_ENTRIES_PER_LINE 64 //max number of entries per hashed line
+
 
 #define TOID_ARRAY(x) TOID(x)
 

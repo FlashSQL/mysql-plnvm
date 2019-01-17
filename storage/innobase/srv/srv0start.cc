@@ -1949,7 +1949,7 @@ innobase_start_or_create_for_mysql(void)
 	uint64_t n_buckets = 128;	
 	uint64_t n_blocks_per_bucket = 512;
 	uint64_t block_size = 4096;
-	pm_wrapper_log_alloc_or_open(gb_pmw,
+	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
 								 n_buckets,
 								 n_blocks_per_bucket,
 								 block_size);

@@ -571,6 +571,9 @@ mtr_t::start(bool sync, bool read_only)
 	m_impl.m_flush_observer = NULL;
 #if defined (UNIV_PMEMOBJ_PL)
 	m_impl.m_parent_trx = NULL;
+	m_impl.key_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
+	m_impl.space_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
+	m_impl.page_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 #endif //UNIV_PMEMOBJ_PL
 
 	ut_d(m_impl.m_magic_n = MTR_MAGIC_N);
@@ -596,6 +599,11 @@ mtr_t::Command::release_resources()
 	m_impl->m_log.erase();
 
 	m_impl->m_memo.erase();
+#if defined (UNIV_PMEMOBJ_PL)
+	free(m_impl->key_arr);
+	free(m_impl->space_arr);
+	free(m_impl->page_arr);
+#endif //UNIV_PMEMOBJ_PL
 
 	m_impl->m_state = MTR_STATE_COMMITTED;
 
@@ -1019,13 +1027,16 @@ mtr_t::Command::execute()
 	const mtr_buf_t::block_t*	front = m_impl->m_log.front();
 	byte* start_log_ptr = (byte*) front->begin(); 	
 
-	trx->pm_log_block_id = pm_ppl_write(
+	trx->pm_log_block_id = pm_ptxl_write(
 			gb_pmw->pop,
-			gb_pmw->ppl,
+			gb_pmw->ptxl,
 			trx->id,
 			start_log_ptr,
 			len,
 			n_recs,
+			m_impl->key_arr,
+			m_impl->space_arr,
+			m_impl->page_arr,
 			trx->pm_log_block_id);
 	}
 	else {

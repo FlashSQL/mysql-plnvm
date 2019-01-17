@@ -2210,9 +2210,9 @@ trx_commit(
 #if defined (UNIV_PMEMOBJ_PART_PL)
 		//in this version, just simple set the log block free
 		if (trx->pm_log_block_id != -1){
-			pm_ppl_set_log_block_state(
+			pm_ptxl_set_log_block_state(
 					gb_pmw->pop,
-					gb_pmw->ppl,
+					gb_pmw->ptxl,
 					trx->id,
 					trx->pm_log_block_id,
 				   	PMEM_FREE_LOG_BLOCK);
@@ -2222,10 +2222,10 @@ trx_commit(
 	if( trx->id > 0 && !trx->read_only){
 		//pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx->id);
 		pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx);
-#endif //UNIV_PMEMOBJ_PL
 	}
 #endif
 #endif //UNIV_PMEMOBJ_PART_PL
+#endif //UNIV_PMEMOBJ_PL
 	trx_commit_low(trx, mtr);
 }
 
@@ -2465,6 +2465,9 @@ trx_commit_complete_for_mysql(
 /*==========================*/
 	trx_t*	trx)	/*!< in/out: transaction */
 {
+#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+	return;
+#endif
 	if (trx->id != 0
 	    || !trx->must_flush_log_later
 	    || thd_requested_durability(trx->mysql_thd)

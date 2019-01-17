@@ -37,6 +37,9 @@ Created 10/21/1995 Heikki Tuuri
 #include "pmem_log.h"
 ////declare it at storage/innobase/srv/srv0start.cc
 extern PMEM_FILE_COLL* gb_pfc;
+#if defined (UNIV_NVM_LOG_SKIPWRITE)
+static int64_t n_writes = 10;
+#endif
 #endif
 
 #ifndef UNIV_INNOCHECKSUM
@@ -7827,10 +7830,21 @@ os_aio_func(
 #endif
 		ssize_t bytes_returned = 0;
 		if (type.is_read()) {
+			printf("READ fd %zu offset %zu n_bytes %zu \n", file.m_file, offset, n);
 			bytes_returned = pfc_pmem_io(gb_pfc, PMEM_READ, file.m_file, buf, offset, n);
 		}
 		else if(type.is_write()) {
+#if defined (UNIV_NVM_LOG_SKIPWRITE)
+			//skip write
+			if (n_writes > 0){
+				printf("write fd %zu offset %zu n_bytes %zu \n", file.m_file, offset, n);
+				n_writes--;
+				bytes_returned = pfc_pmem_io(gb_pfc, PMEM_WRITE, file.m_file, buf, offset, n);
+			}	
+			return DB_SUCCESS;
+#else
 			bytes_returned = pfc_pmem_io(gb_pfc, PMEM_WRITE, file.m_file, buf, offset, n);
+#endif // UNIV_NVM_LOG_SKIPWRITE
 		}	
 		else{
 			printf("[PMEM_ERROR] unknown IO typ in os_file_io()\n ");
@@ -7838,7 +7852,7 @@ os_aio_func(
 		//return now, the AIO post-precessing is done in upper level call
 		return ((bytes_returned > 0) ? DB_SUCCESS : DB_ERROR);
 	}
-#endif
+#endif // UNIV_NVM_LOG
 
 #ifdef WIN_ASYNC_IO
 	ut_ad((n & 0xFFFFFFFFUL) == n);

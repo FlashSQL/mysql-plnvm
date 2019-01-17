@@ -172,6 +172,10 @@ struct mtr_t {
 #if defined (UNIV_PMEMOBJ_PL)
 		/* pointer to the parent transaction*/
 		trx_t* m_parent_trx;
+		/* array of space id and page id, length is m_n_log_recs*/
+		uint64_t* key_arr;
+		uint64_t* page_arr;
+		uint64_t* space_arr;
 #endif
 
 		/** memo stack for locks etc. */
@@ -572,6 +576,17 @@ struct mtr_t {
 		++m_impl.m_n_log_recs;
 	}
 
+#if defined (UNIV_PMEMOBJ_PL)
+	void add_key(uint64_t key){
+		m_impl.key_arr[m_impl.m_n_log_recs] = key;
+	}
+	void add_space(uint64_t space_no){
+		m_impl.space_arr[m_impl.m_n_log_recs] = space_no;
+	}
+	void add_page(uint64_t page_no){
+		m_impl.page_arr[m_impl.m_n_log_recs] = page_no;
+	}
+#endif
 	/** Get the buffered redo log of this mini-transaction.
 	@return	redo log */
 	const mtr_buf_t* get_log() const

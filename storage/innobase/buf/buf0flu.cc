@@ -4477,6 +4477,9 @@ DECLARE_THREAD(pm_buf_flush_list_cleaner_coordinator)(
 			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,
 				D_RW(gb_pmw->pbuf->spec_list)->cur_pages);
 #endif
+#if defined (UNIV_PMEMOBJ_PART_PL)
+
+#endif
 	} //end while thread
 
 	printf("pm_buf_flush_list_cleaner_coordinator thread  end\n");

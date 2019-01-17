@@ -251,7 +251,11 @@ log_buffer_extend(
 
 	/* restore the last log block */
 	//ut_memcpy(log_sys->buf, tmp_buf, move_end - move_start);
-	pmemobj_memcpy_persist(gb_pmw->pop, log_sys->buf, tmp_buf, move_end - move_start);
+TX_BEGIN(gb_pmw->pop) {
+	TX_MEMCPY(log_sys->buf, tmp_buf, move_end - move_start);
+}TX_ONABORT {
+} TX_END
+	//pmemobj_memcpy_persist(gb_pmw->pop, log_sys->buf, tmp_buf, move_end - move_start);
 	//set the flag
 	gb_pmw->plogbuf->need_recv = true;
 
@@ -474,7 +478,11 @@ part_loop:
 
 #if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
 	//copy the trasaction's log records to persistent memory
-	pmemobj_memcpy_persist(gb_pmw->pop, log->buf + log->buf_free, str, len);
+TX_BEGIN(gb_pmw->pop) {
+	TX_MEMCPY(log->buf + log->buf_free, str, len);
+} TX_ONABORT {
+} TX_END
+	//pmemobj_memcpy_persist(gb_pmw->pop, log->buf + log->buf_free, str, len);
 	//set the flag here
 	gb_pmw->plogbuf->need_recv = true;
 #else //original
