@@ -655,6 +655,12 @@ __update_dpt_entry_on_commit(
 		PMEM_DPT*			pdpt,
 		uint64_t			key);
 
+bool
+pm_ptxl_check_and_reset_dpt_entry(
+		PMEMobjpool*		pop,
+		PMEM_DPT*			pdpt,
+		uint64_t			key);
+
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 void
 ptxl_consolidate_stat_info(PMEM_TX_LOG_BLOCK*	plog_block);
@@ -745,18 +751,18 @@ remove_tt_entry(
 int
 pmemlog_trx_commit(
 		PMEMobjpool*	pop,
-		PMEM_BUF*		buf,
+		PMEM_WRAPPER*		pmw,
 	   	trx_t*			trx);
 int
 pmemlog_trx_abort(
 		PMEMobjpool*	pop,
-		PMEM_BUF*		buf,
+		PMEM_WRAPPER*		pmw,
 	   	uint64_t		tid);
 
 int
 pm_write_REDO_logs(
 		PMEMobjpool*	pop,
-		PMEM_BUF*		buf,
+		PMEM_WRAPPER*		pmw,
 		MEM_DPT_ENTRY*	dpt_entry
 	   	);
 
@@ -1173,7 +1179,7 @@ pm_buf_write_no_free_pool(
 int
 pm_buf_write_with_flusher(
 			PMEMobjpool*	pop,
-		   	PMEM_BUF*		buf,
+			PMEM_WRAPPER*	pmw,
 		   	page_id_t		page_id,
 		   	page_size_t		size,
 		   	byte*			src_data,
@@ -1221,13 +1227,13 @@ pm_buf_flush_list(
 void
 pm_buf_resume_flushing(
 			PMEMobjpool*			pop,
-		   	PMEM_BUF*				buf);
+		   	PMEM_WRAPPER*				pmw);
 
 
 void
 pm_buf_handle_full_hashed_list(
 	PMEMobjpool*	pop,
-	PMEM_BUF*		buf,
+	PMEM_WRAPPER*		pmw,
 	ulint			hashed);
 
 void

@@ -714,9 +714,11 @@ add_log_to_TT_entry(
 int
 pmemlog_trx_commit(
 		PMEMobjpool*	pop,
-		PMEM_BUF*		buf,
+		PMEM_WRAPPER*		pmw,
 	   	trx_t*			trx)
 {
+
+	PMEM_BUF*		buf = pmw->pbuf;
 	ulint			hashed;
 	ulint			i;
 	MEM_TT_ENTRY*	bucket;
@@ -771,7 +773,7 @@ pmemlog_trx_commit(
 		assert(local_dpt_entry);
 		//for each entry in the same hashed line
 		while (local_dpt_entry != NULL){
-			pm_write_REDO_logs(pop, buf, local_dpt_entry);
+			pm_write_REDO_logs(pop, pmw, local_dpt_entry);
 			local_dpt_entry = local_dpt_entry->next;
 		}
 		//next hashed line
@@ -802,10 +804,11 @@ pmemlog_trx_commit(
  * */
 int
 pmemlog_trx_abort(
-		PMEMobjpool*	pop,
-		PMEM_BUF*		buf,
-	   	uint64_t		tid)
+		PMEMobjpool*		pop,
+		PMEM_WRAPPER*		pmw,
+	   	uint64_t			tid)
 {
+	PMEM_BUF*		buf = pmw->pbuf;
 	ulint			hashed;
 	ulint			i;
 	MEM_TT_ENTRY*	bucket;
@@ -891,10 +894,11 @@ pmemlog_trx_abort(
 int
 pm_write_REDO_logs(
 		PMEMobjpool*	pop,
-		PMEM_BUF*		buf,
+		PMEM_WRAPPER*		pmw,
 		MEM_DPT_ENTRY*	dpt_entry
 	   	) 
 {
+	PMEM_BUF* buf = pmw->pbuf;
 	ulint hashed;
 	ulint i;
 		
@@ -927,7 +931,7 @@ retry:
 		if (buf->is_recovery	&&
 			(phashlist->cur_pages >= phashlist->max_pages * buf->PMEM_BUF_FLUSH_PCT)) {
 			pmemobj_rwlock_unlock(pop, &phashlist->lock);
-			pm_buf_handle_full_hashed_list(pop, buf, hashed);
+			pm_buf_handle_full_hashed_list(pop, pmw, hashed);
 			goto retry;
 		}
 		pmemobj_rwlock_unlock(pop, &phashlist->lock);
@@ -1027,7 +1031,7 @@ retry:
 #if defined(UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
 		printf("\n[1] BEGIN pm_buf_handle_full list_id %zu, hashed_id %zu\n", phashlist->list_id, hashed);
 #endif 
-		pm_buf_handle_full_hashed_list(pop, buf, hashed);
+		pm_buf_handle_full_hashed_list(pop, pmw, hashed);
 #if defined(UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
 		printf("\n[1] END pm_buf_handle_full list_id %zu, hashed_id %zu\n", phashlist->list_id, hashed);
 #endif 
@@ -2395,10 +2399,11 @@ __update_dpt_entry_on_commit(
 
 /*
  * Call on propagation
- * If page with key has no transaction reference (count == 0) then reset its entry
+ * Check an entry with given key
+ * If that entry is an IDLE => set free
  * */
 bool
-__check_and_reset_dpt_entry(
+pm_ptxl_check_and_reset_dpt_entry(
 		PMEMobjpool*		pop,
 		PMEM_DPT*			pdpt,
 		uint64_t			key) {

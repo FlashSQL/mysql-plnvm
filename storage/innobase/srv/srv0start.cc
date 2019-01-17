@@ -2351,7 +2351,7 @@ files_checked:
 		been shut down normally: this is the normal startup path */
 #if defined (UNIV_PMEMOBJ_BUF_RECOVERY)
 		//printf("====> PMEM_INFO: start recovery from PMEM in background\n");
-		pm_buf_resume_flushing(gb_pmw->pop, gb_pmw->pbuf);
+		pm_buf_resume_flushing(gb_pmw->pop, gb_pmw);
 		//gb_pmw->pbuf->is_recovery = true;
 		gb_pmw->pbuf->is_recovery = false;
 #endif
