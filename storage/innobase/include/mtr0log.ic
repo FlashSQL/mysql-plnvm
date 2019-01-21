@@ -197,9 +197,10 @@ mlog_write_initial_log_record_low(
 	log_ptr += mach_write_compressed(log_ptr, page_no);
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	uint64_t key = (space_id << 20) + space_id + page_no;
+	mtr->add_key(key);
+	mtr->add_LSN(ut_time_us(NULL));
 	mtr->add_space(space_id);
 	mtr->add_page(page_no);
-	mtr->add_key(key);
 #endif
 	mtr->added_rec();
 	return(log_ptr);

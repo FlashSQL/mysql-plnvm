@@ -5902,6 +5902,13 @@ fil_io(
 #if defined (UNIV_PMEMOBJ_BUF) 
 /*
  * pm_fil_io_batch original, without space_oriented sort
+ * Scan the input plist_in
+ * assign "valid" block a param that has info to flush
+ * skip the "invalid" blocks
+ * An "Invalid" block is a block with below states: PMEM_FREE_BLOCK, PMEM_DEL_MARK_BLOCK
+ *
+ * This function does not rely on plist_in->cur_pages because we want
+ * the read thread could read the block during the flush time
  * */
 dberr_t
 pm_fil_io_batch(
@@ -5987,14 +5994,19 @@ pm_fil_io_batch(
 		 * Thus, we only skip PMEM_FREE_BLOCK block
 		 * */
 
-		//if (pblock->state == PMEM_FREE_BLOCK ||
-		//		pblock->state == PMEM_IN_FLUSH_BLOCK) {
 		if (pblock->state == PMEM_FREE_BLOCK) {
 			//This block is swaped with the free block when pm_buf_handle_full_hashed_list() if it has REDO/UNDO logs
 			continue;
 		}
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		if (pblock->state == PMEM_DEL_MARK_BLOCK){
+			//This block is move to free block when check the DPT, treat it as FREE block
+			printf("Skip del mark block space %zu page %zu \n", pblock->id.space(), pblock->id.page_no());
+			continue;
+		}
+#endif //UNIV_PMEMOBJ_PART_PL
+
 		assert( pblock->pmemaddr < pmem_buf->size);
-		//UNIV_MEM_ASSERT_RW(pdata + pblock->pmemaddr, page_size);
 #if defined(UNIV_PMEMOBJ_BUF_DEBUG)
 		//	printf("PMEM_DEBUG: aio request page_id %zu space %zu pmemaddr %zu flush_list id=%zu\n", pblock->id.page_no(), pblock->id.space(), pblock->pmemaddr, plist->list_id);
 #endif

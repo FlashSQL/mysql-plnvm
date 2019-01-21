@@ -1803,7 +1803,7 @@ PMEM_TX_PART_LOG* alloc_pmem_tx_part_log(
 	return ptxl;
 }
 /*
- * Init n hashed lines, with k entries per line
+ * Init DPT with n hashed lines, k entries per line
  * k is the load factor 
  * */
 void 
@@ -1813,7 +1813,7 @@ __init_dpt(
 		uint64_t n,
 		uint64_t k) {
 	
-	uint64_t i, j;	
+	uint64_t i, j, i_temp;	
 	PMEM_DPT* pdpt;
 	PMEM_DPT_HASHED_LINE *pline;
 	PMEM_DPT_ENTRY* pe;
@@ -1886,7 +1886,21 @@ __init_dpt(
 
 			pe->is_free = true;
 			pe->key = 0;
+			pe->eid = i * k + j;
 			pe->count = 0;
+			pe->pageLSN = 0;
+			POBJ_ALLOC(pop,
+					&pe->tx_idx_arr,
+					int64_t,
+					sizeof(int64_t) * MAX_TX_PER_PAGE,
+					NULL,
+					NULL);
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+	ptxl->pmem_dpt_size += sizeof(int64_t) * MAX_TX_PER_PAGE;
+#endif
+			for (i_temp = 0; i_temp < MAX_TX_PER_PAGE; i_temp++){
+				D_RW(pe->tx_idx_arr)[i_temp] = -1;
+			}
 		} //end for each entry
 	}// end for each line
 }
@@ -1970,17 +1984,26 @@ pm_tx_part_log_bucket_init(
 			plog_block->cur_off = 0;
 			plog_block->n_log_recs = 0;
 			plog_block->state = PMEM_FREE_LOG_BLOCK;
+			plog_block->count = 0;
 			
 			//array of dirty pages
 			plog_block->n_dp_entries = 0;
 			POBJ_ALLOC(pop,
 					&plog_block->dp_array,
-					uint64_t,
-					sizeof(uint64_t) * MAX_DPT_ENTRIES_PER_LINE,
+					TOID(PMEM_DPT_ENTRY_REF),
+					sizeof(TOID(PMEM_DPT_ENTRY_REF)) * MAX_DPT_ENTRIES_PER_LINE,
 					NULL,
 					NULL);
+			uint64_t i_temp;
+			for (i_temp = 0; i_temp < MAX_DPT_ENTRIES_PER_LINE; i_temp++){
+				POBJ_ZNEW(pop,
+					&D_RW(plog_block->dp_array)[i_temp],
+				PMEM_DPT_ENTRY_REF);	
+			}
+
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
-		pl->pmem_tx_log_size += sizeof(uint64_t) * MAX_DPT_ENTRIES_PER_LINE;
+		//pl->pmem_tx_log_size += sizeof(uint64_t) * MAX_DPT_ENTRIES_PER_LINE;
+		pl->pmem_tx_log_size += ( sizeof(TOID(PMEM_DPT_ENTRY_REF)) + sizeof(PMEM_DPT_ENTRY_REF)) * MAX_DPT_ENTRIES_PER_LINE;
 #endif
 
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
@@ -2001,7 +2024,7 @@ pm_tx_part_log_bucket_init(
 }
 
 /*
- * Write REDO log records from mtr's heap to PMEM in partitioned-log   Follow the logic in pm_buf_write_with_flusher()
+ * Write REDO log records from mtr's heap to PMEM in partitioned-log   
  *
  * If the current transaction has its first log record, the block_id is -1
  *
@@ -2016,6 +2039,7 @@ pm_ptxl_write(
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
+			uint64_t*			LSN_arr,
 			uint64_t*			space_arr,
 			uint64_t*			page_arr,
 			int64_t			block_id)
@@ -2031,15 +2055,17 @@ pm_ptxl_write(
 //			int64_t				block_id)
 {
 	ulint hashed;
-	ulint i;
+	ulint i, j;
 
 	uint64_t n, k;
 	uint64_t bucket_id, local_id;
 	int64_t ret;
+
 	//handle DPT
 	uint64_t page_no;
 	uint64_t space_no;	
 	uint64_t key;	
+	uint64_t LSN;	
 
 	byte* pdata;
 
@@ -2049,11 +2075,13 @@ pm_ptxl_write(
 	TOID(PMEM_TX_LOG_BLOCK) log_block;
 	PMEM_TX_LOG_BLOCK*	plog_block;
 
+	PMEM_DPT* pdpt;
+
 	n = ptxl->n_buckets;
 	k = ptxl->n_blocks_per_bucket;
-	
 	if (block_id == -1) {
-		//Case A: Search the right log block to write
+		//Case A: A first log write of this transaction
+		//Search the right log block to write
 		//(1) Hash the tid
 		PMEM_LOG_HASH_KEY(hashed, tid, n);
 		assert (hashed < n);
@@ -2066,7 +2094,6 @@ pm_ptxl_write(
 		//(2) Search for the free log block to write on
 		//lock the hash line
 		pmemobj_rwlock_wrlock(pop, &pline->lock);
-		//for (i = 0; i < pline->n_blocks; i++) {
 
 		//Choose the starting point as the hashed value, to avoid contention
 		PMEM_LOG_HASH_KEY(i, tid, pline->n_blocks);
@@ -2099,17 +2126,19 @@ pm_ptxl_write(
 		plog_block = D_RW(log_block);
 		assert(plog_block->tid == tid);
 	}
-	// Now the plog_block point to the log block to write on and the ret is the log_block_id
 
+	// Now the plog_block point to the log block to write on and the ret is the log_block_id
 	
 	pmemobj_rwlock_wrlock(pop, &plog_block->lock);
 
 	//Check the capacity, current version is fix size
 	if (plog_block->cur_off + size > ptxl->block_size) {
 		printf("PMEM_LOG_ERROR: The log block %zu is not enough space, cur size %zu write_size %zu block_size %zu \n", ret, plog_block->cur_off, size, ptxl->block_size);
+		assert(0);
 	}
+	// (1) Append log record
 	pdata = ptxl->p_align;
-	//CACHELINE_SIZE is defined in libpmemobj
+	//CACHELINE_SIZE is 64B
 	if (size <= CACHELINE_SIZE){
 		//Do not need a transaction for atomicity
 			pmemobj_memcpy_persist(
@@ -2127,34 +2156,67 @@ pm_ptxl_write(
 		}TX_ONABORT {
 		}TX_END
 	}
-	//update metadata
 	plog_block->cur_off += size;
 	plog_block->n_log_recs += n_recs;
 
-	//Part 2: handle DPT
-	//// (1) Get the key
-	//const byte* temp = (const byte*) ut_align_down(log_src, UNIV_PAGE_SIZE);
-	//space_no = mach_read_from_4(temp + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
-	//page_no = mach_read_from_4(temp + FIL_PAGE_OFFSET);
-	////folow fold() in InnoDB
-	//key = (space_no << 20) + space_no + page_no;
 
+	//Part 2: handle DPT
+	
+	// for each input log record
 	for (i = 0; i < n_recs; i++) {
 		//key = key_arr[i];
+		LSN = LSN_arr[i];
 		space_no = space_arr[i];
 		page_no = page_arr[i];
 
 		key = (space_no << 20) + space_no + page_no;
 		assert (key == key_arr[i]);
-		int dpt_ret = __handle_dpt(pop, ptxl, plog_block, key);
 
-		if (dpt_ret == PMEM_ERROR) {
-			pmemobj_rwlock_unlock(pop, &plog_block->lock);
-			printf("PMEM_ERROR error in __handle_dpt() block_id %zu tid %zu space_no %zu page_no %zu key %zu \n ", plog_block->bid, tid, space_no, page_no, key);
+		
+		if (plog_block->n_dp_entries >= MAX_DPT_ENTRIES){
+			printf("PMEM ERROR, in pm_ptxl_write(), n_dp_entries reach the max capacity, change your setting \n");
 			assert(0);
 		}
 
-	}//end handle DPT
+		//find the corresponding pageref with this log rec
+		PMEM_DPT_ENTRY_REF* pref;
+		for (j = 0; j < plog_block->n_dp_entries; j++) {
+			pref = D_RW(D_RW(plog_block->dp_array)[j]);
+
+			if (pref->key == key){
+				//pagref already exist
+				break;
+			}
+		}	
+
+		if (j < plog_block->n_dp_entries){
+			//pageref already exist, update LSN
+			pref->pageLSN = LSN;
+		}
+		else{
+			//new pageref
+			pdpt = D_RW(ptxl->dpt);
+			assert (pdpt);
+
+			//update the entry in DPT 
+			uint64_t eid = __update_dpt_entry_on_write_log(pop, pdpt, plog_block->bid, key);
+
+			//update metadata in this log block
+			plog_block->count++;
+
+			assert (j == plog_block->n_dp_entries);
+			pref = D_RW(D_RW(plog_block->dp_array)[j]);
+
+			pref->key = key;
+			pref->idx = eid;
+			pref->pageLSN = LSN;
+
+			plog_block->n_dp_entries++;
+		}
+
+		//uint64_t dpt_ret = __handle_dpt_on_write_log(pop, ptxl, plog_block, key, LSN);
+
+	}//end for each input log record
 
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 	//Collect statistic information
@@ -2183,66 +2245,21 @@ pm_ptxl_write(
 	return ret;
 }
 
-/* Called inside pm_ptxl_write() to handle related dirty page table data structure
- * At most one transaction access to a log block, so we don't need to lock the log block
- * */
-int
-__handle_dpt(
-		PMEMobjpool*			pop,
-		PMEM_TX_PART_LOG*		pl,
-		PMEM_TX_LOG_BLOCK*		plog_block,
-		uint64_t				key) {
-	
-	int ret;
-	ulint i;
-	PMEM_DPT*	pdpt;
-	
-	if (plog_block->n_dp_entries >= MAX_DPT_ENTRIES){
-		printf("PMEM ERROR, in __handle_dpt, n_dp_entries reach the max capacity, change your setting \n");
-		assert(0);
-	}
-
-	//search in the dp_array 
-	uint64_t* arr = D_RW(plog_block->dp_array);
-
-	for (i = 0; i < plog_block->n_dp_entries; i++) {
-		if (arr[i] == key){
-			//key already exist, do nothing
-			break;
-		}
-	}	
-
-	if (i < plog_block->n_dp_entries){
-		//key already exist, do nothing
-	}
-	else{
-		//new key
-		assert (i == plog_block->n_dp_entries);
-		arr[i] = key;
-		plog_block->n_dp_entries++;
-
-		//Add new entry on the DPT 
-		pdpt = D_RW(pl->dpt);
-		assert (pdpt);
-
-		ret = __update_dpt_entry_on_write_log(pop, pdpt, key);
-
-	}
-	return ret;
-}
 
 /* If key is not exist: add new key 
  * Otherwise: update (increase count 1)
  *
  * At the first time added: set count to 1
  * When a transaction commit/abort decrease counter 1
- * the pe->is_free is set to true only when a associated page is propagated 
+ *
+ * Return the index of the entry in DPT
  *
  * */
-int
+uint64_t
 __update_dpt_entry_on_write_log(
 		PMEMobjpool*		pop,
 		PMEM_DPT*			pdpt,
+		uint64_t			bid,
 		uint64_t			key) {
 
 	ulint hashed;
@@ -2291,11 +2308,18 @@ __update_dpt_entry_on_write_log(
 				}
 #endif
 				pe->count++;
+				/*Note that we don't update pe->pageLSN*/
+
+				D_RW(pe->tx_idx_arr)[pe->n_tx_idx] = bid;
+				pe->n_tx_idx++;
+				
+
 				pmemobj_rwlock_unlock(pop, &pline->lock);
-				return PMEM_SUCCESS;
+				return pe->eid;
 			}
 		}
 		else{
+			//Save the last free entry in the array
 			free_idx = i;
 		}
 
@@ -2310,6 +2334,7 @@ __update_dpt_entry_on_write_log(
 		__print_DPT(pdpt, debug_ptxl_file);
 #endif
 		pmemobj_rwlock_unlock(pop, &pline->lock);
+		assert(0);
 		return PMEM_ERROR;
 	}
 
@@ -2321,32 +2346,216 @@ __update_dpt_entry_on_write_log(
 
 	pe->is_free = false;
 	pe->key = key;
-	pe->count = 1;
+	pe->count++;
+	/*Note that pe->pageLSN = 0; */
+	D_RW(pe->tx_idx_arr)[pe->n_tx_idx] = bid;
+	pe->n_tx_idx++;
 	
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 	pline->n_free--;
 #endif
 	pmemobj_rwlock_unlock(pop, &pline->lock);
-	return PMEM_SUCCESS;
+	return pe->eid;
 }
 
-/* key must exist in DPT
- * decrease the counter 1
+/*
+ * High level funciton called when transaction commit
  * */
-int
+void
+pm_ptxl_commit(
+		PMEMobjpool*		pop,
+		PMEM_TX_PART_LOG*		ptxl,
+		uint64_t tid,
+		int64_t bid)
+{
+	ulint hashed;
+	uint64_t n, k, i;
+	uint64_t bucket_id, local_id;
+	bool is_reclaim;
+
+	TOID(PMEM_TX_LOG_HASHED_LINE) line;
+	PMEM_TX_LOG_HASHED_LINE* pline;
+
+	TOID(PMEM_TX_LOG_BLOCK) log_block;
+	PMEM_TX_LOG_BLOCK*	plog_block;
+
+	n = ptxl->n_buckets;
+	k = ptxl->n_blocks_per_bucket;
+	
+	// (1) Get the log block by block id
+	bucket_id = bid / k;
+	local_id = bid % k;
+
+	TOID_ASSIGN(line, (D_RW(ptxl->buckets)[bucket_id]).oid);
+	pline = D_RW(line);
+	assert(pline);
+	TOID_ASSIGN (log_block, (D_RW(pline->arr)[local_id]).oid);
+	plog_block = D_RW(log_block);
+	assert(plog_block);
+
+	if (plog_block->tid != tid){
+		printf("PMEM_TX_PART_LOG error in pm_ptxl_set_log_block_state(), block id %zu != tid %zu\n ", plog_block->tid, tid);
+		assert(0);
+	}
+
+	pmemobj_rwlock_wrlock(pop, &plog_block->lock);
+
+	//(2) for each pageref in the log block
+	PMEM_DPT* pdpt = D_RW(ptxl->dpt);
+	PMEM_DPT_ENTRY_REF* pref;
+
+	for (i = 0; i < plog_block->n_dp_entries; i++) {
+			pref = D_RW(D_RW(plog_block->dp_array)[i]);
+			__update_dpt_entry_on_commit(
+				pop, pdpt, pref);
+
+	} // end for each pageref in the log block	
+	
+	// (3) update metadata
+	plog_block->state = PMEM_COMMIT_LOG_BLOCK;
+	// (4) Check for reclaim
+	if (plog_block->count == 0){
+		__reset_tx_log_block(plog_block);
+	}
+
+	pmemobj_rwlock_unlock(pop, &plog_block->lock);
+}
+
+/*
+ * Reset the tx log block to reused in the next time
+ * */
+void 
+__reset_tx_log_block(PMEM_TX_LOG_BLOCK* plog_block)
+{
+	uint64_t i;
+	PMEM_DPT_ENTRY_REF* pref;
+
+	plog_block->tid = 0;
+	plog_block->cur_off = 0;
+	plog_block->n_log_recs = 0;
+	plog_block->state = PMEM_FREE_LOG_BLOCK;
+	plog_block->count = 0;
+
+	//reset array of dirty pages but not deallocate
+	for (i = 0; i < plog_block->n_dp_entries; i++){
+		pref = D_RW(D_RW(plog_block->dp_array)[i]);
+		pref->key = 0;
+		pref->idx = -1;
+		pref->pageLSN = 0;
+	}
+	plog_block->n_dp_entries = 0;
+}
+
+/* update the DPT when tx commit
+ * called by pm_ptxl_commit()
+ * decrease the counter 1
+ *
+ * return 
+ * true : if we reset the entry
+ * false: otherwise
+ * */
+bool
 __update_dpt_entry_on_commit(
 		PMEMobjpool*		pop,
 		PMEM_DPT*			pdpt,
-		uint64_t			key) {
+		PMEM_DPT_ENTRY_REF* pref) {
 
 	ulint hashed;
 	uint32_t n, k, i;
+	uint64_t line_id, local_id;
+
+	assert(pref != NULL);
+
+	uint64_t key = pref->key;
 
 	TOID(PMEM_DPT_HASHED_LINE) line;
 	PMEM_DPT_HASHED_LINE* pline;
 
 	TOID(PMEM_DPT_ENTRY) e;
 	PMEM_DPT_ENTRY* pe;
+
+	n = pdpt->n_buckets;
+	k = pdpt->n_entries_per_bucket;
+	
+	//Get the entry by eid without hashing
+	line_id = pref->idx / k;
+	local_id = pref->idx % k;
+	
+	pline = D_RW(D_RW(pdpt->buckets)[line_id]);
+	pe = D_RW(D_RW(pline->arr)[local_id]);
+
+	assert(pe != NULL);
+	assert(	pe->is_free == false &&
+			pe->key == pref->key);
+
+	if (pe->count == 0){
+		printf("PMEM_ERROR in __update_dpt_entry_on_commit(), entry count is already zero, cannot reduce more. This is logical error!!!\n");
+		assert(0);
+		return false;
+	}
+	//decrease the count
+	pe->count--;
+
+	//Reclaim the entry if:
+	//(1) there is no active transaction access on this page (pe->count == 0), AND
+	//(2) the pmem page has newer or equal version than the pmem log
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+	if (pe->count == 0){
+		//busy -> idle
+		pline->n_idle++;
+	}
+#endif
+	if (pe->count == 0 &&
+		pref->pageLSN <= pe->pageLSN){
+		__reset_DPT_entry(pe);
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
+// reset (reclaim) a DPT entry
+void 
+__reset_DPT_entry(PMEM_DPT_ENTRY* pe) 
+{
+	uint64_t i;
+
+	pe->is_free = true;
+	pe->key = 0;
+	pe->count = 0;
+	pe->pageLSN = 0;
+
+	for (i = 0; i < pe->n_tx_idx; i++){
+		D_RW(pe->tx_idx_arr)[i] = -1;
+	}	
+	pe->n_tx_idx = 0;
+}
+
+/*
+ * Called when the buffer pool flush page to PB-NVM
+ *
+ * key (in): the fold of space_id and page_no
+ * */
+void 
+pm_ptxl_on_flush_page(
+		PMEMobjpool*		pop,
+		PMEM_TX_PART_LOG*	ptxl,
+		uint64_t			key,
+		uint64_t			pageLSN)
+{
+	ulint hashed;
+	uint32_t n, k, i, j;
+
+	int64_t free_idx;
+
+	TOID(PMEM_DPT_HASHED_LINE) line;
+	PMEM_DPT_HASHED_LINE* pline;
+
+	TOID(PMEM_DPT_ENTRY) e;
+	PMEM_DPT_ENTRY* pe;
+
+	PMEM_DPT* pdpt = D_RW(ptxl->dpt);
 
 	n = pdpt->n_buckets;
 	k = pdpt->n_entries_per_bucket;
@@ -2359,48 +2568,106 @@ __update_dpt_entry_on_commit(
 	pline = D_RW(line);
 	assert(pline);
 	assert(pline->n_entries == k);
-
-	/*(2) Sequential scan for the entry 
-	 * if the entry is exist -> decrease the counter
-	 * otherwise: ERROR
-	 */
-	//lock the hash line
+	
 	pmemobj_rwlock_wrlock(pop, &pline->lock);
-
+	//(2) Get the entry in the hashed line
+	free_idx = -1;
 	for (i = 0; i < k; i++) {
 		TOID_ASSIGN(e, (D_RW(pline->arr)[i]).oid);
 		pe = D_RW(e);
 		assert(pe != NULL);
 		if (!pe->is_free){
 			if (pe->key == key){
-				if (pe->count == 0){
-					printf("PMEM_ERROR in __update_dpt_entry_on_commit(),key %zu is not exist\n", key);
-					pmemobj_rwlock_unlock(pop, &pline->lock);
-					return PMEM_ERROR;
+				//for each tid in the list of entry
+				for (j = 0; j < pe->n_tx_idx; j++){
+					uint64_t tx_idx = D_RW(pe->tx_idx_arr)[j];
+					if (tx_idx >= 0){
+						bool is_reclaim = __check_and_reclaim_tx_log_block(
+								pop,
+								ptxl,
+								tx_idx);
+						if (is_reclaim){
+							D_RW(pe->tx_idx_arr)[j] = -1;
+						}
+					}
 				}
-				//decrease the count
-				pe->count--;
-#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+
+				pe->pageLSN = pageLSN;
+				//Check to reclaim this entry
 				if (pe->count == 0){
-					//busy -> idle
-					pline->n_idle++;
+					//since pe->pageLSN now is the largest LSN in the page, we don't check the LSN condition anymore
+					__reset_DPT_entry(pe);
 				}
-#endif
 				pmemobj_rwlock_unlock(pop, &pline->lock);
-				return PMEM_SUCCESS;
+				return;
 			}
+		}
+		else {
+			free_idx = i;
 		}
 	}
 
+	if (free_idx == -1){
+		printf("PMEM_ERROR in pm_ptxl_on_flush_page(), no free entry\n");
+		pmemobj_rwlock_unlock(pop, &pline->lock);
+		assert(0);
+	}
+	//The entry is not exist, set the current free entry with empty transaction list
+	assert(free_idx < k);
+	TOID_ASSIGN(e, (D_RW(pline->arr)[free_idx]).oid);
+	pe = D_RW(e);
+	assert(pe != NULL);
+
+	pe->is_free = false;
+	pe->key = key;
+	/*Note that still pe->count = 0; */
+	pe->pageLSN = pageLSN;
+
 	pmemobj_rwlock_unlock(pop, &pline->lock);
-	printf("PMEM_ERROR in __update_dpt_entry_on_commit(),key %zu is not exist\n", key);
-	return PMEM_ERROR;
+	return;
+}
+
+/*
+ * Check and reclaim a log block with input block id
+ * */
+bool
+__check_and_reclaim_tx_log_block(
+		PMEMobjpool*		pop,
+		PMEM_TX_PART_LOG*	ptxl,
+		uint64_t			block_id)
+{
+	uint64_t n, k;
+	uint64_t bucket_id, local_id;
+
+	PMEM_TX_LOG_HASHED_LINE* pline;
+	PMEM_TX_LOG_BLOCK*	plog_block;
+
+	n = ptxl->n_buckets;
+	k = ptxl->n_blocks_per_bucket;
+
+	bucket_id = block_id / k;
+	local_id = block_id % k;
+
+	pline = D_RW(D_RW(ptxl->buckets)[bucket_id]);
+	plog_block = D_RW(D_RW(pline->arr)[local_id]);
+
+	plog_block->count--;
+
+	if (plog_block->state == PMEM_COMMIT_LOG_BLOCK &&
+			plog_block->count == 0) {
+		__reset_tx_log_block(plog_block);
+		return true;
+	}
+	else{
+		return false;
+	}
 }
 
 /*
  * Call on propagation
  * Check an entry with given key
- * If that entry is an IDLE => set free
+ * If that entry is an IDLE => set free and return true
+ * Otherwise: return false
  * */
 bool
 pm_ptxl_check_and_reset_dpt_entry(
@@ -2460,98 +2727,7 @@ pm_ptxl_check_and_reset_dpt_entry(
 	return false;
 }
 
-/*
- *A transaction call this function when it commit 
-trx_commit(). In InnoDB, both commit and rollback eventually call trx_commit()
- * */
-void
-pm_ptxl_set_log_block_state(
-		PMEMobjpool*		pop,
-		PMEM_TX_PART_LOG*		ptxl,
-		uint64_t tid,
-		int64_t id,
-		PMEM_LOG_BLOCK_STATE state)
-{
-	ulint hashed;
-	uint64_t n, k, i;
-	uint64_t bucket_id, local_id;
-	int64_t ret;
 
-
-	TOID(PMEM_TX_LOG_HASHED_LINE) line;
-	PMEM_TX_LOG_HASHED_LINE* pline;
-
-	TOID(PMEM_TX_LOG_BLOCK) log_block;
-	PMEM_TX_LOG_BLOCK*	plog_block;
-
-	n = ptxl->n_buckets;
-	k = ptxl->n_blocks_per_bucket;
-
-	bucket_id = id / k;
-	local_id = id % k;
-
-	//Debug check
-	PMEM_LOG_HASH_KEY(hashed, tid, n);
-	assert (hashed == bucket_id);
-
-
-	TOID_ASSIGN(line, (D_RW(ptxl->buckets)[bucket_id]).oid);
-	pline = D_RW(line);
-	assert(pline);
-	TOID_ASSIGN (log_block, (D_RW(pline->arr)[local_id]).oid);
-	plog_block = D_RW(log_block);
-	assert(plog_block);
-
-	if (plog_block->tid != tid){
-		printf("PMEM_TX_PART_LOG error in pm_ptxl_set_log_block_state(), block id %zu != tid %zu\n ", plog_block->tid, tid);
-		assert(0);
-	}
-
-	//fprintf(debug_ptxl_file,"tx %zu set_state log_block (row, col) (%zu, %zu) size %zu hashed %zu state %zu\n", tid, bucket_id, local_id, plog_block->cur_off, hashed, plog_block->state);
-	pmemobj_rwlock_wrlock(pop, &plog_block->lock);
-	// if set free then reset the offset and size
-	if (state == PMEM_FREE_LOG_BLOCK){
-#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
-		//(1) Compute remain trx-life info, other info has already computed at the time adding log record
-		ulint cur_time = ut_time_ms();
-		plog_block->lifetime = cur_time - plog_block->start_time;
-
-		//(2) Consolidate trx-life info into block-life info
-		ptxl_consolidate_stat_info(plog_block);
-		//(3) Print out
-		//ptxl_print_log_block_stat_info(debug_ptxl_file, plog_block);
-		//(4) Reset trx-life info
-		plog_block->n_small_log_recs = 0;
-		plog_block->avg_log_rec_size = 0;
-		plog_block->min_log_rec_size = ULONG_MAX;
-		plog_block->max_log_rec_size = 0;
-		plog_block->start_time = 0;
-#endif
-		plog_block->prev_tid = plog_block->tid;
-
-		plog_block->tid = 0;
-		plog_block->cur_off = 0;
-		plog_block->n_log_recs = 0;
-
-		//handle the dirty page table
-		uint64_t* arr = D_RW(plog_block->dp_array);
-		uint64_t key;
-		PMEM_DPT* pdpt = D_RW(ptxl->dpt);
-		for (i = 0; i < plog_block->n_dp_entries; i++) {
-			key = arr[i];
-			__update_dpt_entry_on_commit(
-				pop, pdpt, key);
-			
-			//reset
-			arr[i] = 0;
-		}	
-		//reset
-		plog_block->n_dp_entries = 0;
-	}
-
-	plog_block->state = state;
-	pmemobj_rwlock_unlock(pop, &plog_block->lock);
-}
 
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 /*
@@ -2577,18 +2753,18 @@ __print_DPT(
 	k = pdpt->n_entries_per_bucket;
 
 	fprintf(f, "\n============ Print Idle Entries in DPT ======= \n"); 
-	printf("\n============ Print Idle Entries in DPT ======= \n"); 
+	//printf("\n============ Print Idle Entries in DPT ======= \n"); 
 	for (i = 0; i < pdpt->n_buckets; i++) {
 		pline = D_RW(D_RW(pdpt->buckets)[i]);
 		fprintf(f, "line %zu n_free %zu n_idle %zu load factor %zu\n", pline->hashed_id, pline->n_free, pline->n_idle, pline->n_entries);
-		printf("line %zu n_free %zu n_idle %zu load factor %zu\n", pline->hashed_id, pline->n_free, pline->n_idle, pline->n_entries);
+		//printf("line %zu n_free %zu n_idle %zu load factor %zu\n", pline->hashed_id, pline->n_free, pline->n_idle, pline->n_entries);
 		total_free_entries += pline->n_free;
 
 	}
 	fprintf(f, "Total free entries in DPT:\t%zu\n", total_free_entries);
-	printf("Total free entries in DPT:\t%zu\n", total_free_entries);
+	//printf("Total free entries in DPT:\t%zu\n", total_free_entries);
 	fprintf(f, "============ End Idle Entries in DPT ======= \n"); 
-	printf("============ End Idle Entries in DPT ======= \n"); 
+	//printf("============ End Idle Entries in DPT ======= \n"); 
 }
 /*
  * Consolidate info from trx-life info into whole time info

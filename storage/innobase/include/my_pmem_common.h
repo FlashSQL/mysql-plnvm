@@ -27,7 +27,8 @@
 
 //#define MAX_DPT_LINES 128 
 #define MAX_DPT_LINES 8192 
-#define MAX_DPT_ENTRIES_PER_LINE 64 //max number of entries per hashed line
+#define MAX_DPT_ENTRIES_PER_LINE 64 //max number of DPT entries per hashed line
+#define MAX_TX_PER_PAGE 64 //max number transaction could access on a page at the same time 
 
 
 #define TOID_ARRAY(x) TOID(x)
@@ -60,12 +61,13 @@ enum PMEM_BLOCK_STATE {
     PMEM_FREE_BLOCK = 1,
     PMEM_IN_USED_BLOCK = 2,
     PMEM_IN_FLUSH_BLOCK=3,
-	PMEM_PLACE_HOLDER_BLOCK=4
+	PMEM_PLACE_HOLDER_BLOCK=4,
+	PMEM_DEL_MARK_BLOCK=5
 };
 
 enum PMEM_LOG_BLOCK_STATE {
     PMEM_FREE_LOG_BLOCK = 1, //the log block is free, a transaction can write its log records
-    PMEM_DEACTIVE_LOG_BLOCK = 2, // the transaction is either commit or abort
+    PMEM_COMMIT_LOG_BLOCK = 2, // the transaction is either commit or abort
     PMEM_ACTIVE_LOG_BLOCK = 3, // the transaction is active
 };
 

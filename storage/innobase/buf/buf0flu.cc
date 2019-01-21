@@ -1096,7 +1096,8 @@ buf_flush_write_block_low(
 #if defined(UNIV_PMEMOBJ_LSB)
 	int ret = pm_lsb_write(gb_pmw->pop, gb_pmw->plsb, bpage->id, bpage->size, frame, sync);
 #elif defined (UNIV_PMEMOBJ_BUF_FLUSHER)
-	int ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw, bpage->id, bpage->size, frame, sync);
+	//int ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw, bpage->id, bpage->size, frame, sync);
+	int ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw, bpage->id, bpage->size, bpage->newest_modification, frame, sync);
 #else
 	int ret = pm_buf_write(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
 #endif

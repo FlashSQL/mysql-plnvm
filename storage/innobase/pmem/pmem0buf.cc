@@ -645,6 +645,7 @@ pm_buf_write_with_flusher(
 		   	PMEM_WRAPPER*	pmw	,
 		   	page_id_t		page_id,
 		   	page_size_t		size,
+			uint64_t		pageLSN,
 		   	byte*			src_data,
 		   	bool			sync) 
 {
@@ -666,17 +667,6 @@ pm_buf_write_with_flusher(
 	//page_id_t page_id;
 	size_t page_size;
 
-#if defined (UNIV_PMEMOBJ_PL)
-	//New in PL-NVM
-	PMEM_LOG_LIST*			plog_list;
-	MEM_DPT_ENTRY*			dpt_entry;
-	MEM_DPT_ENTRY*			prev_dpt_entry;
-	ulint					log_hashed;
-#if !defined(UNIV_TEST_PL)
-	bool					is_need_undo;
-#endif
-#endif //UNIV_PMEMOBJ_PL
-
 	//Does some checks 
 	if (buf->is_async_only)
 		assert(!sync);
@@ -684,9 +674,12 @@ pm_buf_write_with_flusher(
 	assert(buf);
 	assert(src_data);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	pm_ptxl_on_flush_page(pop, pmw->ptxl, page_id.fold(), pageLSN);
+#endif
+
 #if defined (UNIV_PMEMOBJ_BLOOM)
 //add the fold() value to the bloom filter
-//pm_bloom_add(buf->bf, page_id.fold());
 pm_cbf_add(buf->cbf, page_id.fold());
 #endif
 
@@ -840,22 +833,7 @@ retry:
 
 		goto retry;
 	}
-	//Now the list is non-flush and I have acquired the lock. Let's do my work
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined(UNIV_TEST_PL)
-	is_need_undo = true;
-	prev_dpt_entry = NULL;
 
-	dpt_entry = seek_dpt_entry(buf->dpt, page_id, prev_dpt_entry, &log_hashed);
-	if (dpt_entry == NULL){
-		//The dirty page doesn't have any log records of uncommited transaction
-		is_need_undo = false;
-	}
-	else {
-
-	}
-#endif // UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 	pdata = buf->p_align;
 	//(1) search in the hashed list for a first FREE block to write on 
 	for (i = 0; i < phashlist->max_pages; i++) {
@@ -867,13 +845,7 @@ retry:
 			//pmemobj_rwlock_wrlock(pop, &pfree_block->lock);
 			break;	
 		}
-#if defined (UNIV_PMEMOBJ_PL)
-		else if(pfree_block->state == PMEM_IN_USED_BLOCK ||
-				pfree_block->state == PMEM_PLACE_HOLDER_BLOCK) 
-#else //Only PMEMOBJ_BUF
-		else if(pfree_block->state == PMEM_IN_USED_BLOCK) 
-#endif
-		{
+		else if(pfree_block->state == PMEM_IN_USED_BLOCK) 		{
 			if (pfree_block->id.equals_to(page_id)) {
 				//overwrite the old page
 				//if(is_lock_free_block)
@@ -895,40 +867,6 @@ retry:
 #else
 TX_BEGIN(pop) {
 				TX_MEMCPY(pdata + pfree_block->pmemaddr, src_data, page_size); 
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-#if !defined (UNIV_TEST_PL_P2)
-					if (pfree_block->state == PMEM_PLACE_HOLDER_BLOCK){
-						//Remove REDO log of the place-holder
-						pm_remove_REDO_log_list_when_flush(
-								pop,
-								D_RW(pfree_block->redolog_list));
-						//Change the state
-						pfree_block->state = PMEM_IN_USED_BLOCK;
-
-					}
-#endif // UNIV_TEST_PL_P2
-					if (is_need_undo){
-						plog_list = D_RW(pfree_block->undolog_list);
-#if !defined (UNIV_TEST_PL_P2)
-						//Merge logs in dpt_entry to the exist UNDO log or create a new one
-						pm_merge_logs_to_loglist(
-							pop,
-							plog_list,
-							dpt_entry,
-							PMEM_UNDO_LOG,
-							true);
-//#endif // UNIV_TEST_PL_P2
-						//Remove the dpt entry from the global DPT 
-						remove_dpt_entry(pop,
-								buf->dpt,
-								dpt_entry,
-								prev_dpt_entry,
-								log_hashed);
-#endif // UNIV_TEST_PL_P2
-					}
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 }TX_ONABORT {
 }TX_END
 #endif //UNIV_PMEMOBJ_NO_PERSIST
@@ -936,8 +874,6 @@ TX_BEGIN(pop) {
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
 				++buf->bucket_stats[hashed].n_overwrites;
 #endif
-				//if(is_lock_free_block)
-				//pmemobj_rwlock_unlock(pop, &pfree_block->lock);
 				pmemobj_rwlock_unlock(pop, &phashlist->lock);
 #if defined(UNIV_PMEMOBJ_BUF_DEBUG)
 				printf("========   PMEM_DEBUG: in pmem_buf_write, OVERWRITTEN page_id %zu space %zu size %zu hash_list id %zu \n ", page_id.page_no(), page_id.space(), size.physical(), phashlist->list_id);
@@ -955,8 +891,9 @@ TX_BEGIN(pop) {
 		pmemobj_rwlock_unlock(pop, &phashlist->lock);
 		os_event_wait(buf->flush_events[hashed]);
 		//os_thread_sleep(PMEM_WAIT_FOR_WRITE);
-
 	printf("\n\n    PMEM_DEBUG: in pmem_buf_write,  hash_list id %zu no free or non-block pages retry \n ", phashlist->list_id);
+	//test
+	exit(0);
 		goto retry;
 	}
 #if defined(UNIV_PMEMOBJ_BUF_DEBUG)
@@ -996,28 +933,6 @@ TX_BEGIN(pop) {
 #else
 	TX_BEGIN(pop) {
 		TX_MEMCPY(pdata + pfree_block->pmemaddr, src_data, page_size); 
-		//New in PL-NVM
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined(UNIV_TEST_PL)
-		if (is_need_undo){
-			plog_list = D_RW(pfree_block->undolog_list);
-#if !defined (UNIV_TEST_PL_P2)
-			pm_merge_logs_to_loglist(
-					pop,
-					plog_list,
-					dpt_entry,
-					PMEM_UNDO_LOG,
-					true);
-//#endif //UNIV_TEST_PL_P2
-			remove_dpt_entry(pop,
-					buf->dpt,
-					dpt_entry,
-					prev_dpt_entry,
-					log_hashed);
-#endif //UNIV_TEST_PL_P2
-		}
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 	}TX_ONABORT {
 	}TX_END
 #endif //UNIV_PMEMOBJ_NO_PERSIST
@@ -1066,7 +981,6 @@ TX_BEGIN(pop) {
 	else {
 		//unlock the hashed list
 		pmemobj_rwlock_unlock(pop, &phashlist->lock);
-		//pmemobj_rwlock_unlock(pop, &D_RW(D_RW(buf->buckets)[hashed])->lock);
 	}
 
 	return PMEM_SUCCESS;
@@ -1368,11 +1282,6 @@ pm_buf_flush_list(
 	assert(pop);
 	assert(buf);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-	/*Before propagate pages in this list to diks, remove IDLE entries in DPT*/
-
-#endif //UNIV_PMEMOBJ_PART_PL
-
 #if defined (UNIV_PMEMOBJ_BUF)
 		ulint type = IORequest::PM_WRITE;
 #else
@@ -1415,8 +1324,6 @@ pm_handle_finished_block(
 	else
 		pflush_list->n_aio_pending--;
 
-	//printf("PMEM_DEBUG aio FINISHED slot_id = %zu n_page_requested = %zu flush_list id = %zu n_pending = %zu/%zu page_id %zu space_id %zu \n",
-	//if (pflush_list->n_aio_pending == 0) {
 	if (pflush_list->n_aio_pending + pflush_list->n_sio_pending == 0) {
 		//Now all pages in this list are persistent in disk
 		//(0) flush spaces
@@ -1505,8 +1412,6 @@ pm_handle_finished_block_no_free_pool(
 	else
 		pflush_list->n_aio_pending--;
 
-	//printf("PMEM_DEBUG aio FINISHED slot_id = %zu n_page_requested = %zu flush_list id = %zu n_pending = %zu/%zu page_id %zu space_id %zu \n",
-	//if (pflush_list->n_aio_pending == 0) {
 	if (pflush_list->n_aio_pending + pflush_list->n_sio_pending == 0) {
 		//Now all pages in this list are persistent in disk
 		//(0) flush spaces
@@ -1659,7 +1564,7 @@ pm_buf_read(
 			assert(0);
 		}
 		for (i = 0; i < D_RO(cur_list)->cur_pages; i++) {
-			//accepted states: PMEM_IN_USED_BLOCK, PMEM_IN_FLUSH_BLOCK
+			//accepted states: PMEM_IN_USED_BLOCK, PMEM_IN_FLUSH_BLOCK, PMEM_DEL_MARK_BLOCK
 			//if ( D_RO(D_RO(plist->arr)[i])->state != PMEM_FREE_BLOCK &&
 			if (	D_RO(D_RO(D_RO(cur_list)->arr)[i]) != NULL && 
 					D_RO(D_RO(D_RO(cur_list)->arr)[i])->state != PMEM_FREE_BLOCK &&
@@ -1938,6 +1843,47 @@ pm_buf_resume_flushing(
 }
 
 /*
+ *Logicaly move a block to a index in the input list
+ Simulate write a block on plist
+ * */
+void 
+__append_buf_block(
+		PMEMobjpool*		pop,
+		PMEM_BUF*			buf,
+		PMEM_BUF_BLOCK_LIST* plist,
+		PMEM_BUF_BLOCK* p1)
+{
+
+	byte* pdata = buf->p_align;
+	PMEM_BUF_BLOCK* p2;
+	
+	assert(plist->cur_pages < plist->max_pages);
+
+	p2 = D_RW(D_RW(plist->arr)[plist->cur_pages]);
+
+	assert(p2 != NULL);
+	assert(p2->state == PMEM_FREE_BLOCK);
+
+	// Start the copy
+	p2->id.copy_from(p1->id);
+	p2->state = PMEM_IN_USED_BLOCK;
+	strcpy(p2->file_name, p1->file_name);
+
+	pmemobj_memcpy_persist(pop, 
+			pdata + p2->pmemaddr,
+		    pdata +	p1->pmemaddr,
+			p1->size.physical());
+
+	p2->sync = p1->sync;
+	if (p1->sync == false)
+		++(plist->n_aio_pending);
+	else
+		++(plist->n_sio_pending);
+
+	plist->cur_pages++;
+}
+
+/*
  *Handle flushng a bucket list when it is full
  (1) Assign a pointer in worker thread to the full list
  (2) Swap the full list with the first free list from the free pool 
@@ -1956,41 +1902,8 @@ pm_buf_handle_full_hashed_list(
 	TOID_ASSIGN(hash_list, (D_RW(buf->buckets)[hashed]).oid);
 	phashlist = D_RW(hash_list);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-	/* Reset IDLE entries in DPT before propagating pages to disk*/
-	PMEM_BUF_BLOCK* pblock;
-	PMEM_DPT* pdpt = D_RW(pmw->ptxl->dpt);
-	assert(pdpt != NULL);
-	uint64_t key;
-	ulint i;
 
-	for (i = 0; i < phashlist->cur_pages; i++) {
-		pblock = D_RW(D_RW(phashlist->arr)[i]);
-		key = pblock->id.fold();
-		pm_ptxl_check_and_reset_dpt_entry(pop, pdpt, key);
-	}
-	
-		
-#endif
-	/*(1) Handle flusher */
-#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
-	printf("\n[[1.1] BEGIN handle assign flusher list %zu hashed %zu ===> ", phashlist->list_id, hashed);
-#endif
-	pm_buf_assign_flusher(buf, phashlist);
-#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
-	printf("\n[1.1] END handle assign flusher list %zu]\n", phashlist->list_id);
-#endif
-
-
-	//this assert inform that all write is async
-	if (buf->is_async_only){ 
-		if (phashlist->n_aio_pending != phashlist->cur_pages) {
-			printf("!!!! ====> PMEM_ERROR: n_aio_pending=%zu != cur_pages = %zu. They should be equal\n", phashlist->n_aio_pending, phashlist->cur_pages);
-			assert (phashlist->n_aio_pending == phashlist->cur_pages);
-		}
-	}
-
-	/*    (2) Handle free list*/
+	/*    (1) Handle free list*/
 get_free_list:
 #if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
 	printf("\n [1.2] BEGIN get_free_list to replace full list %zu ==>", phashlist->list_id);
@@ -2014,6 +1927,7 @@ get_free_list:
 	D_RW(buf->free_pool)->cur_lists--;
 	//The free_pool may empty now, wait in necessary
 	os_event_reset(buf->free_pool_event);
+
 #if defined (UNIV_PMEMOBJ_PL)	
 #if !defined (UNIV_PMEMOBJ_PART_PL)
 #if !defined (UNIV_TEST_PL)
@@ -2029,15 +1943,65 @@ get_free_list:
 #endif // UNIV_PMEOBJ_PL
 	pmemobj_rwlock_unlock(pop, &(D_RW(buf->free_pool)->lock));
 
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	/* Reset IDLE entries in DPT before propagating pages to disk*/
+//	PMEM_BUF_BLOCK* pblock;
+//	PMEM_BUF_BLOCK_LIST* pfreelist;
+//
+//	PMEM_DPT* pdpt = D_RW(pmw->ptxl->dpt);
+//	assert(pdpt != NULL);
+//	uint64_t key;
+//	bool is_idle = false;
+//	ulint i;
+//	uint32_t copy_back_cnt = 0;
+//
+//	pfreelist = D_RW(first_list);
+//
+//	pmemobj_rwlock_wrlock(pop, &pfreelist->lock);
+//	for (i = 0; i < phashlist->cur_pages; i++) {
+//		pblock = D_RW(D_RW(phashlist->arr)[i]);
+//		key = pblock->id.fold();
+//		is_idle = pm_ptxl_check_and_reset_dpt_entry(pop, pdpt, key);
+//
+//		//if (!is_idle) {
+//		//	copy_back_cnt++;
+//		////	//push back this block to the free block
+//		////	__append_buf_block(
+//		////			pop,
+//		////		   	buf,
+//		////			pfreelist,
+//		////		   	pblock);
+//		////	/*set del mark on this block so that it is ignored in propagation process 
+//		////	 *if we set state free istead of del mark, the read thread cannot read this page
+//		////	 we also keep the phashlist->cur_pages unchanged
+//		////	 * */
+//		////	pblock->state = PMEM_DEL_MARK_BLOCK;
+//		////	if (pblock->sync)
+//		////		phashlist->n_sio_pending--;
+//		////	else
+//		////		phashlist->n_aio_pending--;
+//		//}
+//		//else{
+//		//}
+//	}
+//	//printf("#####  handle full list_id %zu free_list_id %zu n_cp_back %zu\n", phashlist->list_id, pfreelist->list_id, copy_back_cnt);
+//	pmemobj_rwlock_unlock(pop, &pfreelist->lock);
+//#endif //UNIV_PMEMOBJ_PART_PL
+
+	/*(2) Handle flusher */
+#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
+	printf("\n[[1.1] BEGIN handle assign flusher list %zu hashed %zu ===> ", phashlist->list_id, hashed);
+#endif
+	pm_buf_assign_flusher(buf, phashlist);
+#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
+	printf("\n[1.1] END handle assign flusher list %zu]\n", phashlist->list_id);
+#endif
+
+	/* (3) Asign linked-list refs */
 	assert(!TOID_IS_NULL(first_list));
 	//This ref hashed_id used for batch AIO
 	//Hashed id of old list is kept until its batch AIO is completed
 	D_RW(first_list)->hashed_id = hashed;
-	
-	//tdnguyen test
-	//printf("PMEM_INFO first_list id %zu \n", D_RW(first_list)->list_id);
-
-	//Asign linked-list refs 
 	TOID_ASSIGN(D_RW(buf->buckets)[hashed], first_list.oid);
 	TOID_ASSIGN( D_RW(first_list)->next_list, hash_list.oid);
 	TOID_ASSIGN( D_RW(hash_list)->prev_list, first_list.oid);
@@ -2092,8 +2056,8 @@ assign_worker:
 #if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
 			printf("\n in [1.1] try to trigger flusher list_id = %zu\n", phashlist->list_id);
 #endif
-			
 				os_event_set(flusher->is_req_not_empty);
+				//see pm_flusher_worker() --> pm_buf_flush_list()
 			}
 
 			if (flusher->n_requested >= flusher->size) {

@@ -174,6 +174,7 @@ struct mtr_t {
 		trx_t* m_parent_trx;
 		/* array of space id and page id, length is m_n_log_recs*/
 		uint64_t* key_arr;
+		uint64_t* LSN_arr;
 		uint64_t* page_arr;
 		uint64_t* space_arr;
 #endif
@@ -579,6 +580,9 @@ struct mtr_t {
 #if defined (UNIV_PMEMOBJ_PL)
 	void add_key(uint64_t key){
 		m_impl.key_arr[m_impl.m_n_log_recs] = key;
+	}
+	void add_LSN(uint64_t LSN){
+		m_impl.LSN_arr[m_impl.m_n_log_recs] = LSN;
 	}
 	void add_space(uint64_t space_no){
 		m_impl.space_arr[m_impl.m_n_log_recs] = space_no;

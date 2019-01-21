@@ -2210,12 +2210,12 @@ trx_commit(
 #if defined (UNIV_PMEMOBJ_PART_PL)
 		//in this version, just simple set the log block free
 		if (trx->pm_log_block_id != -1){
-			pm_ptxl_set_log_block_state(
+					
+			pm_ptxl_commit(
 					gb_pmw->pop,
 					gb_pmw->ptxl,
 					trx->id,
-					trx->pm_log_block_id,
-				   	PMEM_FREE_LOG_BLOCK);
+					trx->pm_log_block_id);
 		}	
 #else
 #if !defined (UNIV_TEST_PL)

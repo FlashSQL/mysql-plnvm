@@ -228,6 +228,7 @@ POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TX_LOG_HASHED_LINE);
 POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_TX_LOG_BLOCK));
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TX_LOG_BLOCK);
 POBJ_LAYOUT_TOID(my_pmemobj, uint64_t);
+POBJ_LAYOUT_TOID(my_pmemobj, int64_t);
 
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_DPT);
 POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_DPT_HASHED_LINE));
@@ -466,8 +467,11 @@ struct __pmem_tx_log_block {
 	uint64_t				n_log_recs; //the current number of log records 
 	PMEM_LOG_BLOCK_STATE	state;
 
+	uint16_t				count; //number of dirty pages caused by this transaction
+
 	/*update this array first, then update the dirty page table*/
-	TOID(uint64_t)			dp_array; //dirty page array consists of key of entry in dirty page table
+	//TOID(uint64_t)			dp_array; //dirty page array consists of key of entry in dirty page table
+	TOID_ARRAY(TOID(PMEM_DPT_ENTRY_REF))			dp_array; //dirty page array consists of key of entry in dirty page table
 	uint64_t				n_dp_entries; 
 
 	//debug only
@@ -495,17 +499,23 @@ struct __pmem_tx_log_block {
 	
 };
 
-// Dirty Page Entry Ref
+// Dirty Page Entry Ref in the log block
 struct __pmem_dpt_entry_ref {
 	uint64_t	key; //fold of page_id_t.fold() in InnoDB
-	uint64_t	idx; // line_idx * k + entry_idx
+	int64_t		idx; // index of the entry in DPT
+	uint64_t	pageLSN; //latest LSN on this page caused by the host transction, this value used in reclaiming logs
 };
 
 //Dirty Page Table Entry
 struct __pmem_dpt_entry {
-	bool		is_free; //flag
-	uint64_t	key; //fold of page_id_t.fold() in InnoDB
-	uint16_t	count; //number of active transactions
+	bool			is_free; //flag
+	uint64_t		key; //fold of page_id_t.fold() in InnoDB
+	int64_t		eid; //entry id in the DPT
+	uint16_t		count; //number of current active transactions
+	uint64_t		pageLSN;
+
+	TOID(int64_t)	tx_idx_arr; //array of transaction index
+	uint16_t	    n_tx_idx; //array length
 };
 // A DPT hashed line in the DPT
 struct __pmem_dpt_hashed_line {
@@ -623,38 +633,47 @@ pm_ptxl_write(
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
+			uint64_t*			LSN_arr,
 			uint64_t*			space_arr,
 			uint64_t*			page_arr,
 			int64_t			block_id);
 
-/*Called when a transaction commit*/
 void
-pm_ptxl_set_log_block_state(
+pm_ptxl_commit(
 		PMEMobjpool*		pop,
-		PMEM_TX_PART_LOG*		pl,
+		PMEM_TX_PART_LOG*		ptxl,
 		uint64_t tid,
-		int64_t id,
-		PMEM_LOG_BLOCK_STATE state);
+		int64_t bid);
+void 
+pm_ptxl_on_flush_page(
+		PMEMobjpool*		pop,
+		PMEM_TX_PART_LOG*	ptxl,
+		uint64_t			key,
+		uint64_t			pageLSN);
 
-/* Called inside pm_ptxl_write() to handle related dirty page table data structure*/
-int
-__handle_dpt(
-		PMEMobjpool*			pop,
-		PMEM_TX_PART_LOG*		pl,
-		PMEM_TX_LOG_BLOCK*		plog_block,
-		uint64_t				key);
 
-int
+uint64_t
 __update_dpt_entry_on_write_log(
 		PMEMobjpool*		pop,
 		PMEM_DPT*			pdpt,
+		uint64_t			tid,
 		uint64_t			key); 
-int
+
+bool
 __update_dpt_entry_on_commit(
 		PMEMobjpool*		pop,
 		PMEM_DPT*			pdpt,
-		uint64_t			key);
+		PMEM_DPT_ENTRY_REF* pref);
+void 
+__reset_DPT_entry(PMEM_DPT_ENTRY* pe);
+void 
+__reset_tx_log_block(PMEM_TX_LOG_BLOCK* plog_block);
 
+bool
+__check_and_reclaim_tx_log_block(
+		PMEMobjpool*		pop,
+		PMEM_TX_PART_LOG*	ptxl,
+		uint64_t			block_id);
 bool
 pm_ptxl_check_and_reset_dpt_entry(
 		PMEMobjpool*		pop,
@@ -1182,6 +1201,7 @@ pm_buf_write_with_flusher(
 			PMEM_WRAPPER*	pmw,
 		   	page_id_t		page_id,
 		   	page_size_t		size,
+			uint64_t		pageLSN,
 		   	byte*			src_data,
 		   	bool			sync);
 int
