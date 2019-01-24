@@ -343,7 +343,11 @@ struct ReleaseBlocks {
 	void add_dirty_page_to_flush_list(mtr_memo_slot_t* slot) const
 	{
 		ut_ad(m_end_lsn > 0);
+#if defined (UNIV_PMEMOBJ_PL)
+		ut_ad(m_start_lsn >= 0);
+#else //original
 		ut_ad(m_start_lsn > 0);
+#endif
 
 		buf_block_t*	block;
 
@@ -1025,31 +1029,42 @@ mtr_t::Command::execute()
 	//TODO: handle MLOG_MULTI_REC_END, see prepare_write()
 	
 	if (trx != NULL){
-	// PART_PL WRITE LOG
-	const mtr_buf_t::block_t*	front = m_impl->m_log.front();
-	byte* start_log_ptr = (byte*) front->begin(); 	
+		// PART_PL WRITE LOG
+		const mtr_buf_t::block_t*	front = m_impl->m_log.front();
+		byte* start_log_ptr = (byte*) front->begin(); 	
+		//tdnguyen test
+		trx->pm_log_block_id = pm_ptxl_write(
+				gb_pmw->pop,
+				gb_pmw->ptxl,
+				trx->id,
+				start_log_ptr,
+				len,
+				n_recs,
+				m_impl->key_arr,
+				m_impl->LSN_arr,
+				m_impl->space_arr,
+				m_impl->page_arr,
+				trx->pm_log_block_id);
 
-	trx->pm_log_block_id = pm_ptxl_write(
-			gb_pmw->pop,
-			gb_pmw->ptxl,
-			trx->id,
-			start_log_ptr,
-			len,
-			n_recs,
-			m_impl->key_arr,
-			m_impl->LSN_arr,
-			m_impl->space_arr,
-			m_impl->page_arr,
-			trx->pm_log_block_id);
 	}
 	else {
 		//printf("in mtr_t::Command::execute() trx is NULL\n");
 	}
 
-	//simulate the lsn
+	/*simulate the lsn 
+	 * start lsn is the smallest lsn in the LSN_arr
+	 * end_lsn is the largest lsn in the LSN_arr
+	 * */
+	//m_start_lsn = m_impl->LSN_arr[0];
+	//m_end_lsn = m_impl->LSN_arr[n_recs - 1];
 	ulint cur_time = ut_time_us(NULL);
-	m_start_lsn = cur_time;
-	m_end_lsn = m_start_lsn + len;
+	//m_start_lsn = cur_time;
+	m_start_lsn = m_impl->LSN_arr[0] + 1;
+	//m_end_lsn = m_start_lsn + len;
+	m_end_lsn = m_impl->LSN_arr[n_recs - 1] + 1;
+
+	assert(m_start_lsn <= m_end_lsn);
+
 	//(2) add the block to the flush list 
 	if (m_impl->m_made_dirty) {
 		log_flush_order_mutex_enter();
@@ -1072,7 +1087,7 @@ mtr_t::Command::execute()
 // This function just release the resource without writing any logs
 // We save the overhead of : (1) log_mutex_enter(), 
 // (2) log_flush_order_mutex(), and (3) log memcpy()
-void
+	void
 mtr_t::Command::execute()
 {
 	ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);

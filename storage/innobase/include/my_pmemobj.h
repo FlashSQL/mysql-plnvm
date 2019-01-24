@@ -160,6 +160,8 @@ struct __mem_TT;
 typedef struct __mem_TT MEM_TT;
 ///////////////////////////////////////////////////
 //New PL
+//
+// Per-TX logging
 struct __pmem_tx_part_log;
 typedef struct __pmem_tx_part_log PMEM_TX_PART_LOG;
 
@@ -168,8 +170,6 @@ typedef struct __pmem_tx_log_hashed_line PMEM_TX_LOG_HASHED_LINE;
 
 struct __pmem_tx_log_block;
 typedef struct __pmem_tx_log_block PMEM_TX_LOG_BLOCK;
-
-
 
 struct __pmem_dpt;
 typedef struct __pmem_dpt PMEM_DPT;
@@ -182,7 +182,28 @@ typedef struct __pmem_dpt_entry PMEM_DPT_ENTRY;
 
 struct __pmem_dpt_entry_ref;
 typedef struct __pmem_dpt_entry_ref PMEM_DPT_ENTRY_REF;
+// End Per-TX logging
+//
+// Per-Page Logging
+struct __pmem_page_part_log;
+typedef struct __pmem_page_part_log PMEM_PAGE_PART_LOG;
 
+struct __pmem_page_log_hashed_line;
+typedef struct __pmem_page_log_hashed_line PMEM_PAGE_LOG_HASHED_LINE;
+
+struct __pmem_page_log_block;
+typedef struct __pmem_page_log_block PMEM_PAGE_LOG_BLOCK;
+
+struct __pmem_tt;
+typedef struct __pmem_tt PMEM_TT;
+
+struct __pmem_tt_hashed_line;
+typedef struct __pmem_tt_hashed_line PMEM_TT_HASHED_LINE;
+
+struct __pmem_tt_entry;
+typedef struct __pmem_tt_entry PMEM_TT_ENTRY;
+
+// End Per-Page Logging
 
 //////////////////////////////////////////////////
 #endif //UNIV_PMEMOBJ_PL
@@ -222,6 +243,7 @@ POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LSB_HASHTABLE);
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_LIST);
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_REC);
 
+// Per-TX Logging
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TX_PART_LOG);
 POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_TX_LOG_HASHED_LINE));
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TX_LOG_HASHED_LINE);
@@ -237,9 +259,25 @@ POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_DPT_ENTRY));
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_DPT_ENTRY);
 POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_DPT_ENTRY_REF));
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_DPT_ENTRY_REF);
+// End Per-TX Logging
 
-//POBJ_LAYOUT_TOID(my_pmemobj, unsigned char);
-#endif
+// Per-Page Logging
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_PAGE_PART_LOG);
+POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_PAGE_LOG_HASHED_LINE));
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_PAGE_LOG_HASHED_LINE);
+POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_PAGE_LOG_BLOCK));
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_PAGE_LOG_BLOCK);
+//POBJ_LAYOUT_TOID(my_pmemobj, uint64_t);
+//POBJ_LAYOUT_TOID(my_pmemobj, int64_t);
+
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TT);
+POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_TT_HASHED_LINE));
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TT_HASHED_LINE);
+POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_TT_ENTRY));
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TT_ENTRY);
+// End Per-page logging
+//
+#endif // UNIV_PMEMOBJ_PL
 
 #endif //UNIV_PMEMOBJ_LSB
 POBJ_LAYOUT_END(my_pmemobj);
@@ -408,7 +446,9 @@ struct __mem_TT {
 ////////////////////////////////////////////////////
 ////////////////////// NEW PART LOG IMPLEMENT////////////
 //////////////////////////////////////////////////
-//
+
+////////////// Per-Transaction Logging//////////////
+
 /*Implement the PMEM log in the similar way with the PMEM_BUF
  *A sequential bytes are allocated in PMEM to avaoid allocate/deallocate overhead
  * */
@@ -430,12 +470,12 @@ struct __pmem_tx_part_log {
 	uint64_t			n_blocks_per_bucket; //# load_factor, of log block per bucket
 	uint64_t			block_size; //log block size in bytes
 	
-	
-#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+	/*Statistic info*/	
 	uint64_t	pmem_alloc_size;
 	uint64_t	pmem_dpt_size;
 	uint64_t	pmem_tx_log_size;
-#endif
+
+	/*Debug*/
 	FILE* deb_file;
 
 };
@@ -467,7 +507,7 @@ struct __pmem_tx_log_block {
 	uint64_t				n_log_recs; //the current number of log records 
 	PMEM_LOG_BLOCK_STATE	state;
 
-	uint16_t				count; //number of dirty pages caused by this transaction
+	int32_t				count; //number of dirty pages caused by this transaction
 
 	/*update this array first, then update the dirty page table*/
 	//TOID(uint64_t)			dp_array; //dirty page array consists of key of entry in dirty page table
@@ -485,6 +525,14 @@ struct __pmem_tx_log_block {
 	float					all_avg_log_rec_size;
 	uint64_t				all_min_log_rec_size;
 	uint64_t				all_max_log_rec_size;
+	
+	uint64_t				all_max_log_buf_size;
+	uint64_t				all_avg_log_buf_size;
+
+	uint64_t				all_max_n_recs;
+	uint64_t				all_avg_n_recs;
+	uint64_t				all_max_n_pagerefs;
+
 	float					all_avg_block_lifetime;
 
 	//Per log block info, only available in the lifetime of transaction. Reset after trx commit/abort
@@ -493,6 +541,8 @@ struct __pmem_tx_log_block {
 	uint64_t				avg_log_rec_size; // average log records size in this block
 	uint64_t				min_log_rec_size; // minimum log record size in this block
 	uint64_t				max_log_rec_size; // maximum log record size in this block 
+
+	uint64_t				avg_pageref_size;
 	ulint					lifetime; //time of the first access to this block, usage: ut_time_us(), ut_time_ms(), ut_difftime()
 	ulint					start_time; //time of the first access to this block, usage: ut_time_us(), ut_time_ms(), ut_difftime()
 #endif //UNIV_PMEMOBJ_PART_PL_STAT
@@ -508,14 +558,20 @@ struct __pmem_dpt_entry_ref {
 
 //Dirty Page Table Entry
 struct __pmem_dpt_entry {
+	PMEMrwlock		lock; 
 	bool			is_free; //flag
 	uint64_t		key; //fold of page_id_t.fold() in InnoDB
 	int64_t		eid; //entry id in the DPT
-	uint16_t		count; //number of current active transactions
+	int32_t		count; //number of current active transactions
 	uint64_t		pageLSN;
 
 	TOID(int64_t)	tx_idx_arr; //array of transaction index
 	uint16_t	    n_tx_idx; //array length
+
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+	uint64_t		n_reused; 
+	uint64_t		max_txref_size; 
+#endif
 };
 // A DPT hashed line in the DPT
 struct __pmem_dpt_hashed_line {
@@ -536,7 +592,101 @@ struct __pmem_dpt {
 	uint64_t	n_entries_per_bucket;
 	TOID_ARRAY(TOID(PMEM_DPT_HASHED_LINE)) buckets;
 };
+/////////////// Per-Page Logging ///////////////////
 
+struct __pmem_page_part_log {
+	uint64_t	size; //the total size for the partitioned log
+	// Transaction Table
+	TOID(PMEM_TT) tt; // transaction table	
+
+	/*pmem address*/
+	PMEMoid		data; //log data
+	byte*		p_align; //align
+
+	bool		is_new;
+	/*log data as hash table*/
+	uint64_t			n_buckets; //# of buckets
+	TOID_ARRAY(TOID(PMEM_PAGE_LOG_HASHED_LINE)) buckets;
+
+	uint64_t			n_blocks_per_bucket; //# load_factor, of log block per bucket
+	uint64_t			block_size; //log block size in bytes
+	
+	/*Statistic info*/	
+	uint64_t	pmem_alloc_size;
+	uint64_t	pmem_dpt_size;
+	uint64_t	pmem_tx_log_size;
+
+	/*Debug*/
+	FILE* deb_file;
+};
+/*
+ * A hashed line has array of log blocks share the same hashed value
+ * */
+struct __pmem_page_log_hashed_line {
+	PMEMrwlock		lock;
+	
+	int hashed_id;
+
+	uint64_t n_blocks; //the total log block in bucket
+
+	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
+	//TODO:
+	// checkpoint mechanism
+
+};
+/*
+ * One log block per-page
+ * Follow the implementation of PMEM_BUF_BLOCK
+ * */
+struct __pmem_page_log_block {
+	PMEMrwlock		lock;
+	bool			is_free; //flag
+	uint64_t				bid; //block id
+	uint64_t				key; //fold id
+
+	uint64_t				pmemaddr; //the begin offset to the pmem data in PMEM_PAGE_PART_LOG
+	uint64_t				cur_off; //the current offset (0 - log block size) 
+	uint64_t				n_log_recs; //the current number of log records 
+
+	int32_t				count; //number of active tx
+
+	TOID(int64_t)	tx_idx_arr; //array of transaction index
+	uint16_t	    n_tx_idx; //array length
+
+	/*LSN */
+	uint64_t		pageLSN; // pageLSN of the NVM-page
+	uint64_t		firstLSN; // LSN of the first log rec
+	uint64_t		lastLSN; // LSN of the last log record
+};
+
+/*Transaction Table Entry*/
+
+struct __pmem_tt_entry {
+	PMEMrwlock		lock;
+	uint64_t				eid; //block id
+	uint64_t				tid; //transaction id
+	PMEM_LOG_BLOCK_STATE	state;
+
+	int32_t				count; //number of dirty pages caused by this transaction
+
+	TOID(int64_t)			dp_bid_array; //dirty page array consists of key of entry in dirty page table
+	uint64_t				n_dp_entries; 
+};
+
+struct __pmem_tt_hashed_line {
+	uint64_t hashed_id;
+	uint64_t n_entries; //the total log block in bucket
+	TOID_ARRAY(TOID(PMEM_TT_ENTRY)) arr;
+
+};
+
+struct __pmem_tt {
+	uint64_t	n_buckets; 
+	uint64_t	n_entries_per_bucket;
+	TOID_ARRAY(TOID(PMEM_TT_HASHED_LINE)) buckets;
+};
+
+/////////////// End Per-Page Logging ///////////////////
 
 /////////////// ALLOC / FREE //////////////////////////
 MEM_DPT*
@@ -596,6 +746,7 @@ free_pmemrec(
 		);
 
 ////////////// NEW PARTITIONED LOG ////////////////////
+////////// PER-TX LOGGING/////////////////////////
 void
 pm_wrapper_tx_log_alloc_or_open(
 		PMEM_WRAPPER*	pmw,
@@ -652,10 +803,10 @@ pm_ptxl_on_flush_page(
 		uint64_t			pageLSN);
 
 
-uint64_t
+int64_t
 __update_dpt_entry_on_write_log(
 		PMEMobjpool*		pop,
-		PMEM_DPT*			pdpt,
+		PMEM_TX_PART_LOG*	ptxl,
 		uint64_t			tid,
 		uint64_t			key); 
 
@@ -673,12 +824,17 @@ bool
 __check_and_reclaim_tx_log_block(
 		PMEMobjpool*		pop,
 		PMEM_TX_PART_LOG*	ptxl,
-		uint64_t			block_id);
+		int64_t			block_id);
 bool
 pm_ptxl_check_and_reset_dpt_entry(
 		PMEMobjpool*		pop,
 		PMEM_DPT*			pdpt,
 		uint64_t			key);
+
+//for debugging
+void 
+__print_blocks_state(FILE* f,
+		PMEM_TX_PART_LOG* ptxl);
 
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 void
@@ -692,6 +848,94 @@ __print_DPT(
 		PMEM_DPT*			pdpt,
 		FILE* f);
 #endif
+///////////////////// END PER-TX LOGGING /////////////
+
+////////////////// PER-PAGE LOGGING //////////////////
+
+void
+pm_wrapper_page_log_alloc_or_open(
+		PMEM_WRAPPER*	pmw,
+		uint64_t		n_buckets,
+		uint64_t		n_blocks_per_bucket,
+		uint64_t		block_size);
+
+PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
+		PMEMobjpool*	pop,
+		uint64_t		n_buckets,
+		uint64_t		n_blocks_per_bucket,
+		uint64_t		block_size);
+void 
+pm_page_part_log_bucket_init(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		uint64_t			n_buckets,
+		uint64_t			n_blocks_per_bucket,
+		uint64_t			block_size); 
+
+void 
+__init_tt(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		uint64_t n,
+		uint64_t k);
+
+/*Called when a mini-transaction write log record to log buffer in the traditional InnoDB*/
+int64_t
+pm_ppl_write(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*		ppl,
+			uint64_t			tid,
+			byte*				log_src,
+			uint64_t			size,
+			uint64_t			n_recs,
+			uint64_t*			key_arr,
+			uint64_t*			LSN_arr);
+
+void
+pm_ppl_commit(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		uint64_t tid);
+void 
+pm_ppl_flush_page(
+		PMEMobjpool*		pop,
+		PMEM_TX_PART_LOG*	ppl,
+		uint64_t			key,
+		uint64_t			pageLSN);
+
+int64_t
+__update_tt_entry_on_write_log(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		uint64_t			tid,
+		uint64_t			key); 
+
+//bool
+//__update_tt_entry_on_commit(
+//		PMEMobjpool*		pop,
+//		PMEM_TT*			pdpt,
+//		PMEM_DPT_ENTRY_REF* pref);
+void 
+__reset_TT_entry(PMEM_TT_ENTRY* pe);
+void 
+__reset_page_log_block(PMEM_PAGE_LOG_BLOCK* plog_block);
+
+bool
+__check_and_reclaim_page_log_block(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		int64_t			block_id);
+bool
+pm_ppl_check_and_reset_tt_entry(
+		PMEMobjpool*		pop,
+		PMEM_TT*			ptt,
+		uint64_t			tid);
+
+//for debugging
+void 
+__print_blocks_state(FILE* f,
+		PMEM_PAGE_PART_LOG* ppl);
+///////////////// END PER-PAGE LOGGING //////////////////
 
 ////////////// END NEW PARTITIONED LOG /////////////////
 

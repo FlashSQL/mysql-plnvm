@@ -675,6 +675,7 @@ pm_buf_write_with_flusher(
 	assert(src_data);
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
+	//tdnguyen test
 	pm_ptxl_on_flush_page(pop, pmw->ptxl, page_id.fold(), pageLSN);
 #endif
 

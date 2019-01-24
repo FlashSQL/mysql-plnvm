@@ -21,15 +21,20 @@
 #define PMEM_SUCCESS 0
 #define PMEM_ERROR -1
 
-// Partitioned-Log
+// Partitioned-Log //////////////////////////
+#define JUMP_STEP 1
 #define MAX_DPT_ENTRIES 8192
 #define MAX_TT_ENTRIES 8192
 
 //#define MAX_DPT_LINES 128 
-#define MAX_DPT_LINES 8192 
-#define MAX_DPT_ENTRIES_PER_LINE 64 //max number of DPT entries per hashed line
-#define MAX_TX_PER_PAGE 64 //max number transaction could access on a page at the same time 
-
+//#define MAX_DPT_LINES 8192 
+#define MAX_DPT_LINES 512 
+//#define MAX_DPT_ENTRIES_PER_LINE 64 //max number of DPT entries per hashed line
+#define MAX_DPT_ENTRIES_PER_LINE 1024 //max number of DPT entries per hashed line
+#define MAX_DIRTY_PAGES_PER_TX 64 //max dirty pages  one transaction can modify before it commit
+#define MAX_TX_PER_PAGE 256 //max number transaction could access on a page at the same time 
+//#define MAX_TX_PER_PAGE 64 
+////////////// End Partitioned-Log ////////////
 
 #define TOID_ARRAY(x) TOID(x)
 
