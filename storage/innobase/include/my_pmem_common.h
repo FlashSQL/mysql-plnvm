@@ -34,6 +34,13 @@
 #define MAX_DIRTY_PAGES_PER_TX 64 //max dirty pages  one transaction can modify before it commit
 #define MAX_TX_PER_PAGE 256 //max number transaction could access on a page at the same time 
 //#define MAX_TX_PER_PAGE 64 
+//
+// Per-page logging
+
+#define MAX_TT_LINES 512 
+#define MAX_TT_ENTRIES_PER_LINE 1024 //max number of DPT entries per hashed line
+
+
 ////////////// End Partitioned-Log ////////////
 
 #define TOID_ARRAY(x) TOID(x)
@@ -74,6 +81,12 @@ enum PMEM_LOG_BLOCK_STATE {
     PMEM_FREE_LOG_BLOCK = 1, //the log block is free, a transaction can write its log records
     PMEM_COMMIT_LOG_BLOCK = 2, // the transaction is either commit or abort
     PMEM_ACTIVE_LOG_BLOCK = 3, // the transaction is active
+};
+
+enum PMEM_TX_STATE {
+    PMEM_TX_FREE = 1, 
+    PMEM_TX_COMMIT = 2, 
+    PMEM_TX_ACTIVE = 3,
 };
 
 enum PMEM_LOG_TYPE {

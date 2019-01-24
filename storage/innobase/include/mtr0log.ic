@@ -201,6 +201,10 @@ mlog_write_initial_log_record_low(
 	mtr->add_LSN(ut_time_us(NULL));
 	mtr->add_space(space_id);
 	mtr->add_page(page_no);
+
+	ulint size = mtr->get_log()->size();
+	mtr->add_size(size);
+
 #endif
 	mtr->added_rec();
 	return(log_ptr);

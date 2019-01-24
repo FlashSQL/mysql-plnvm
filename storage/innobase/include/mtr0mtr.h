@@ -177,6 +177,7 @@ struct mtr_t {
 		uint64_t* LSN_arr;
 		uint64_t* page_arr;
 		uint64_t* space_arr;
+		uint64_t* size_arr;
 #endif
 
 		/** memo stack for locks etc. */
@@ -590,6 +591,10 @@ struct mtr_t {
 	void add_page(uint64_t page_no){
 		m_impl.page_arr[m_impl.m_n_log_recs] = page_no;
 	}
+	void add_size(uint64_t size){
+		m_impl.size_arr[m_impl.m_n_log_recs] = size;
+	}
+
 #endif
 	/** Get the buffered redo log of this mini-transaction.
 	@return	redo log */

@@ -1683,7 +1683,7 @@ seek_tt_entry(
 	return tt_entry;
 }
 //////////////// NEW PMEM PARTITION LOG /////////////
-//
+/////////////////// PER-TX LOGGING /////////////////
 void
 pm_wrapper_tx_log_alloc_or_open(
 		PMEM_WRAPPER*	pmw,
@@ -1695,6 +1695,7 @@ pm_wrapper_tx_log_alloc_or_open(
 	PMEM_N_LOG_BUCKETS = n_buckets;
 	PMEM_N_BLOCKS_PER_BUCKET = n_blocks_per_bucket;
 	
+	//Case 1: Alocate new buffer in PMEM
 	if (!pmw->ptxl) {
 		pmw->ptxl = alloc_pmem_tx_part_log(pmw->pop,
 				PMEM_N_LOG_BUCKETS,
@@ -1713,7 +1714,6 @@ pm_wrapper_tx_log_alloc_or_open(
 		printf("Total allocated \t\t %f (MB)\n", (pmw->ptxl->pmem_alloc_size * 1.0)/ (1024*1024));
 		printf(" =================================\n");
 	}
-		//Case 1: Alocate new buffer in PMEM
 	else {
 		//Case 2: Reused a buffer in PMEM
 		printf("!!!!!!! [PMEMOBJ_INFO]: the server restart from a crash but the log buffer is persist\n");
@@ -1729,7 +1729,9 @@ pm_wrapper_tx_log_alloc_or_open(
 	pmw->ptxl->deb_file = fopen("part_log_debug.txt","a");
 }
 
-
+/*
+ * Allocate per-tx logs and DPT
+ * */
 PMEM_TX_PART_LOG* alloc_pmem_tx_part_log(
 		PMEMobjpool*		pop,
 		uint64_t			n_buckets,
@@ -1761,7 +1763,7 @@ PMEM_TX_PART_LOG* alloc_pmem_tx_part_log(
 	ptxl->n_blocks_per_bucket = n_blocks_per_bucket;
 	ptxl->block_size = block_size;
 
-	//dirty page table
+	//(2) dirty page table
 	__init_dpt(pop, ptxl, MAX_DPT_LINES, MAX_DPT_ENTRIES_PER_LINE);
 
 	ptxl->pmem_alloc_size += ptxl->pmem_dpt_size;
@@ -1782,7 +1784,7 @@ PMEM_TX_PART_LOG* alloc_pmem_tx_part_log(
 		return NULL;
 	}
 
-	//(2) init the buckets
+	//(3) init the buckets
 	pm_tx_part_log_bucket_init(pop,
 		   	ptxl,
 		   	n_buckets,
@@ -1971,18 +1973,18 @@ pm_tx_part_log_bucket_init(
 			plog_block->n_dp_entries = 0;
 			POBJ_ALLOC(pop,
 					&plog_block->dp_array,
-					TOID(PMEM_DPT_ENTRY_REF),
-					sizeof(TOID(PMEM_DPT_ENTRY_REF)) * MAX_DIRTY_PAGES_PER_TX,
+					TOID(PMEM_PAGE_REF),
+					sizeof(TOID(PMEM_PAGE_REF)) * MAX_DIRTY_PAGES_PER_TX,
 					NULL,
 					NULL);
 			uint64_t i_temp;
 			for (i_temp = 0; i_temp < MAX_DIRTY_PAGES_PER_TX; i_temp++){
 				POBJ_ZNEW(pop,
 					&D_RW(plog_block->dp_array)[i_temp],
-				PMEM_DPT_ENTRY_REF);	
+				PMEM_PAGE_REF);	
 			}
 
-		pl->pmem_tx_log_size += ( sizeof(TOID(PMEM_DPT_ENTRY_REF)) + sizeof(PMEM_DPT_ENTRY_REF)) * MAX_DIRTY_PAGES_PER_TX;
+		pl->pmem_tx_log_size += ( sizeof(TOID(PMEM_PAGE_REF)) + sizeof(PMEM_PAGE_REF)) * MAX_DIRTY_PAGES_PER_TX;
 
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 			plog_block->all_n_reused = 0;
@@ -2005,7 +2007,7 @@ pm_tx_part_log_bucket_init(
 			plog_block->lifetime = 0;
 #endif
 		}
-	}
+	}//end for each hashed line
 }
 
 /*
@@ -2172,7 +2174,7 @@ pm_ptxl_write(
 		}
 
 		//find the corresponding pageref with this log rec
-		PMEM_DPT_ENTRY_REF* pref;
+		PMEM_PAGE_REF* pref;
 		for (j = 0; j < plog_block->n_dp_entries; j++) {
 			pref = D_RW(D_RW(plog_block->dp_array)[j]);
 
@@ -2422,7 +2424,7 @@ pm_ptxl_commit(
 	PMEM_TX_LOG_BLOCK*	plog_block;
 
 	PMEM_DPT* pdpt = D_RW(ptxl->dpt);
-	PMEM_DPT_ENTRY_REF* pref;
+	PMEM_PAGE_REF* pref;
 
 	n = ptxl->n_buckets;
 	k = ptxl->n_blocks_per_bucket;
@@ -2491,7 +2493,7 @@ void
 __reset_tx_log_block(PMEM_TX_LOG_BLOCK* plog_block)
 {
 	uint64_t i;
-	PMEM_DPT_ENTRY_REF* pref;
+	PMEM_PAGE_REF* pref;
 
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 	plog_block->all_n_reused++;
@@ -2533,7 +2535,7 @@ bool
 __update_dpt_entry_on_commit(
 		PMEMobjpool*		pop,
 		PMEM_DPT*			pdpt,
-		PMEM_DPT_ENTRY_REF* pref) {
+		PMEM_PAGE_REF* pref) {
 
 	ulint hashed;
 	uint32_t n, k, i;
@@ -2878,8 +2880,765 @@ pm_ptxl_check_and_reset_dpt_entry(
 	return false;
 }
 
+////////////////// PERPAGE LOGGING ///////////////
+
+void
+pm_wrapper_page_log_alloc_or_open(
+		PMEM_WRAPPER*	pmw,
+		uint64_t		n_buckets,
+		uint64_t		n_blocks_per_bucket,
+		uint64_t		block_size) {
+
+	PMEM_N_LOG_BUCKETS = n_buckets;
+	PMEM_N_BLOCKS_PER_BUCKET = n_blocks_per_bucket;
+	
+	if (!pmw->ppl) {
+		pmw->ppl = alloc_pmem_page_part_log(pmw->pop,
+				PMEM_N_LOG_BUCKETS,
+				PMEM_N_BLOCKS_PER_BUCKET,
+				block_size);
+
+		if (pmw->ppl == NULL){
+			printf("PMEMOBJ_ERROR: error when allocate buffer in pm_wrapper_page_log_alloc_or_open()\n");
+			exit(0);
+		}
+		printf("\n=================================\n Footprint of PAGE part-log:\n");
+		printf("Log area size \t\t\t %f (MB) \n", (n_buckets * n_blocks_per_bucket * block_size * 1.0)/(1024*1024) );
+		printf("PAGE-Log metadata size \t %f (MB)\n", (pmw->ppl->pmem_page_log_size * 1.0)/(1024*1024));
+		printf("TT size \t\t\t %f (MB)\n", (pmw->ppl->pmem_tt_size * 1.0) / (1024*1024));
+		printf("Total allocated \t\t %f (MB)\n", (pmw->ppl->pmem_alloc_size * 1.0)/ (1024*1024));
+		printf(" =================================\n");
+	}
+	else {
+		//Case 2: Reused a buffer in PMEM
+		printf("!!!!!!! [PMEMOBJ_INFO]: the server restart from a crash but the per-page log buffers are persist\n");
+		//We need to re-align the p_align
+		byte* p;
+		p = static_cast<byte*> (pmemobj_direct(pmw->ppl->data));
+		assert(p);
+		pmw->ppl->p_align = static_cast<byte*> (ut_align(p, block_size));
+	}
+
+	pmw->ppl->deb_file = fopen("part_log_debug.txt","a");
+}
+
+/*
+ * Allocate per-page logs and TT
+ * */
+PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
+		PMEMobjpool*	pop,
+		uint64_t		n_buckets,
+		uint64_t		n_blocks_per_bucket,
+		uint64_t		block_size) {
+
+	char* p;
+	size_t align_size;
+	uint64_t n;
+	
+
+	uint64_t size = n_buckets * n_blocks_per_bucket * block_size;
+
+	TOID(PMEM_PAGE_PART_LOG) pl; 
+
+	POBJ_ZNEW(pop, &pl, PMEM_PAGE_PART_LOG);
+	PMEM_PAGE_PART_LOG* ppl = D_RW(pl);
+
+	ppl->pmem_alloc_size = sizeof(PMEM_PAGE_PART_LOG);
+
+	//(1) Allocate and alignment for the log data
+	//align sizes to a pow of 2
+	assert(ut_is_2pow(block_size));
+	align_size = ut_uint64_align_up(size, block_size);
+
+	ppl->size = align_size;
+
+	ppl->n_buckets = n_buckets;
+	ppl->n_blocks_per_bucket = n_blocks_per_bucket;
+	ppl->block_size = block_size;
+
+	//(2) transaction table
+	__init_tt(pop, ppl, MAX_TT_LINES, MAX_TT_ENTRIES_PER_LINE);
+
+	ppl->pmem_alloc_size += ppl->pmem_tt_size;
+
+	ppl->is_new = true;
+	ppl->data = pm_pop_alloc_bytes(pop, align_size);
+
+	ppl->pmem_alloc_size += align_size;
+
+	//align the pmem address for DIRECT_IO
+	p = static_cast<char*> (pmemobj_direct(ppl->data));
+	assert(p);
+
+	ppl->p_align = static_cast<byte*> (ut_align(p, block_size));
+	pmemobj_persist(pop, ppl->p_align, sizeof(*ppl->p_align));
+
+	if (OID_IS_NULL(ppl->data)){
+		return NULL;
+	}
+	//(3) init the buckets
+	pm_page_part_log_bucket_init(pop,
+		   	ppl,
+		   	n_buckets,
+			n_blocks_per_bucket,
+			block_size);
+
+	ppl->pmem_alloc_size += ppl->pmem_page_log_size;
+
+	pmemobj_persist(pop, ppl, sizeof(*ppl));
+	return ppl;
+}
+
+/*
+ * Init TT with n hashed lines, k entries per line
+ * k is the load factor 
+ * */
+void 
+__init_tt(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		uint64_t				n,
+		uint64_t				k) {
+
+	uint64_t i, j, i_temp;	
+	PMEM_TT* ptt;
+	PMEM_TT_HASHED_LINE *pline;
+	PMEM_TT_ENTRY* pe;
+
+	POBJ_ZNEW(pop, &ppl->tt, PMEM_TT);
+	ptt = D_RW(ppl->tt);
+	assert (ptt);
+	
+	ppl->pmem_tt_size = sizeof(PMEM_TT);
+
+	//allocate the buckets (hashed lines)
+	ptt->n_buckets = n;
+	ptt->n_entries_per_bucket = k;
+
+	POBJ_ALLOC(pop,
+				&ptt->buckets,
+				TOID(PMEM_TT_HASHED_LINE),
+				sizeof(TOID(PMEM_TT_HASHED_LINE)) * n,
+				NULL,
+				NULL);
+	ppl->pmem_tt_size += sizeof(TOID(PMEM_TT_HASHED_LINE)) * n;
+
+	if (TOID_IS_NULL(ptt->buckets)) {
+		fprintf(stderr, "POBJ_ALLOC\n");
+	}
+	//for each hash line
+	for (i = 0; i < n; i++) {
+		POBJ_ZNEW(pop,
+				&D_RW(ptt->buckets)[i],
+				PMEM_TT_HASHED_LINE);
+
+		ppl->pmem_tt_size += sizeof(PMEM_TT_HASHED_LINE);
+		if (TOID_IS_NULL(D_RW(ptt->buckets)[i])) {
+			fprintf(stderr, "POBJ_ALLOC\n");
+		}
+		pline = D_RW(D_RW(ptt->buckets)[i]);
+
+		pline->hashed_id = i;
+		pline->n_entries = k;
+
+		//Allocate the entries
+		POBJ_ALLOC(pop,
+				&pline->arr,
+				TOID(PMEM_TT_ENTRY),
+				sizeof(TOID(PMEM_TT_ENTRY)) * k,
+				NULL,
+				NULL);
+		ppl->pmem_tt_size += sizeof(TOID(PMEM_TT_ENTRY))* k;
+		//for each entry in the line
+		for (j = 0; j < k; j++) {
+			POBJ_ZNEW(pop,
+					&D_RW(pline->arr)[j],
+					PMEM_TT_ENTRY);
+			ppl->pmem_tt_size += sizeof(PMEM_TT_ENTRY);
+			if (TOID_IS_NULL(D_RW(pline->arr)[j])) {
+				fprintf(stderr, "POBJ_ZNEW\n");
+			}
+			pe = D_RW(D_RW(pline->arr)[j]);
+
+			pe->state = PMEM_TX_FREE;
+			pe->tid = 0;
+			pe->eid = i * k + j;
+			pe->count = 0;
+
+			//dp bid array
+			POBJ_ALLOC(pop,
+					&pe->dp_arr,
+					TOID(PMEM_PAGE_REF),
+					sizeof(TOID(PMEM_PAGE_REF)) * MAX_DIRTY_PAGES_PER_TX,
+					NULL,
+					NULL);
+			ppl->pmem_tt_size += sizeof(int64_t) * MAX_DIRTY_PAGES_PER_TX;
+
+			for (i_temp = 0; i_temp < MAX_DIRTY_PAGES_PER_TX; i_temp++){
+				POBJ_ZNEW(pop,
+					&D_RW(pe->dp_arr)[i_temp],
+				PMEM_PAGE_REF);	
+
+				D_RW(D_RW(pe->dp_arr)[i_temp])->key = 0;
+				D_RW(D_RW(pe->dp_arr)[i_temp])->idx = -1;
+				D_RW(D_RW(pe->dp_arr)[i_temp])->pageLSN = 0;
+			}
+			pe->n_dp_entries = 0;
+		} //end for each entry
+	}// end for each line
+}
 
 
+void 
+pm_page_part_log_bucket_init(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		pl,
+		uint64_t			n_buckets,
+		uint64_t			n_blocks_per_bucket,
+		uint64_t			block_size) {
+
+	uint64_t i, j, n, k;
+	uint64_t cur_bucket;
+	size_t offset;
+
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+
+	offset = 0;
+	cur_bucket = 0;
+
+	n = n_buckets;
+	k = n_blocks_per_bucket;
+
+	//allocate the pointer array buckets
+	POBJ_ALLOC(pop,
+			&pl->buckets,
+			TOID(PMEM_PAGE_LOG_HASHED_LINE),
+			sizeof(TOID(PMEM_PAGE_LOG_HASHED_LINE)) * n,
+			NULL,
+			NULL);
+	if (TOID_IS_NULL(pl->buckets)) {
+		fprintf(stderr, "POBJ_ALLOC\n");
+	}
+
+	pl->pmem_page_log_size = sizeof(TOID(PMEM_PAGE_LOG_HASHED_LINE)) * n;
+
+	//for each hashed line
+	for (i = 0; i < n; i++) {
+		POBJ_ZNEW(pop,
+				&D_RW(pl->buckets)[i],
+				PMEM_PAGE_LOG_HASHED_LINE);
+		if (TOID_IS_NULL(D_RW(pl->buckets)[i])) {
+			fprintf(stderr, "POBJ_ZNEW\n");
+		}
+
+		pl->pmem_page_log_size += sizeof(PMEM_PAGE_LOG_HASHED_LINE);
+		pline = D_RW(D_RW(pl->buckets)[i]);
+
+		pline->hashed_id = i;
+		pline->n_blocks = k;
+
+		//Allocate the log blocks
+		POBJ_ALLOC(pop,
+				&pline->arr,
+				TOID(PMEM_PAGE_LOG_BLOCK),
+				sizeof(TOID(PMEM_PAGE_LOG_BLOCK)) * k,
+				NULL,
+				NULL);
+		pl->pmem_page_log_size += sizeof(TOID(PMEM_PAGE_LOG_BLOCK)) * k;
+		//for each log block
+		for (j = 0; j < k; j++) {
+			POBJ_ZNEW(pop,
+					&D_RW(pline->arr)[j],
+					PMEM_PAGE_LOG_BLOCK);
+			if (TOID_IS_NULL(D_RW(pline->arr)[j])) {
+				fprintf(stderr, "POBJ_ZNEW\n");
+			}
+			pl->pmem_page_log_size += sizeof(PMEM_PAGE_LOG_BLOCK);
+			plog_block = D_RW(D_RW(pline->arr)[j]);
+
+			plog_block->is_free = true;
+			//assign the pmemaddr similar to the 2D array indexing
+			plog_block->pmemaddr = (i * k + j) * block_size; 
+			plog_block->bid = i * k + j;
+			plog_block->key = 0;
+			plog_block->cur_off = 0;
+			plog_block->n_log_recs = 0;
+			plog_block->count = 0;
+
+			//array of active transaction
+			plog_block->n_tx_idx = 0;
+			POBJ_ALLOC(pop,
+					&plog_block->tx_idx_arr,
+					int64_t,
+					sizeof(int64_t) * MAX_TX_PER_PAGE,
+					NULL,
+					NULL);
+			uint64_t i_temp;
+			for (i_temp = 0; i_temp < MAX_TX_PER_PAGE; i_temp++){
+				D_RW(plog_block->tx_idx_arr)[i_temp] = -1;
+			}
+			pl->pmem_page_log_size +=  sizeof(int64_t) * MAX_TX_PER_PAGE;
+
+		}//end for each log block
+	}//end for each hashed line
+}
+
+/*
+ * Write REDO log records from mtr's heap to PMEM in partitioned-log   
+ *
+ * Return the entry id of TT  write on
+ * */
+int64_t
+pm_ppl_write(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			uint64_t			tid,
+			byte*				log_src,
+			uint64_t			size,
+			uint64_t			n_recs,
+			uint64_t*			key_arr,
+			uint64_t*			LSN_arr,
+			uint64_t*			size_arr,
+			int64_t				entry_id)
+{
+	int64_t ret;
+
+	ulint hashed;
+	ulint i, j;
+
+	uint64_t n, k;
+	uint64_t bucket_id, local_id;
+	uint64_t n_try;
+
+
+	int64_t block_id, new_block_id;
+
+	PMEM_TT* ptt;
+
+	TOID(PMEM_TT_HASHED_LINE) line;
+	PMEM_TT_HASHED_LINE* pline;
+
+	TOID(PMEM_TT_ENTRY) entry;
+	PMEM_TT_ENTRY* pe;
+
+	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+
+	
+	//Starting from TT is easier and faster
+	ptt = D_RW(ppl->tt);
+	assert(ptt != NULL);
+
+	n = ptt->n_buckets;
+	k = ptt->n_entries_per_bucket;
+
+	if (block_id == -1) {
+		//Case A: A first log write of this transaction
+		//Search the right entry to write
+		//(1) Hash the tid
+		PMEM_LOG_HASH_KEY(hashed, tid, n);
+		assert (hashed < n);
+
+		TOID_ASSIGN(line, (D_RW(ptt->buckets)[hashed]).oid);
+		pline = D_RW(line);
+		assert(pline);
+		assert(pline->n_entries == k);
+
+		//(2) Search for the free entry to write on
+		//lock the hash line
+		//pmemobj_rwlock_wrlock(pop, &pline->lock);
+
+		n_try = pline->n_entries;
+		//Choose the starting point as the hashed value, to avoid contention
+		PMEM_LOG_HASH_KEY(i, tid, pline->n_entries);
+		while (i < pline->n_entries){
+			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			TOID_ASSIGN (entry, (D_RW(pline->arr)[i]).oid);
+			pe = D_RW(entry);
+			if (pe->state == PMEM_TX_FREE){
+				//found a free entry to write on
+				pe->state = PMEM_TX_ACTIVE;
+				pe->tid = tid;
+				ret = hashed * k + i;
+				
+				__handle_pm_ppl_write_by_entry(
+						pop,
+						ppl,
+						tid,
+						log_src,
+						size,
+						n_recs,
+						key_arr,
+						LSN_arr,
+						size_arr,
+						pe,
+						true);
+
+				//handle update log
+				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+				return ret;
+			}	
+			n_try--;
+			if (n_try == 0){
+				printf("===> PMEM ERROR, in pm_ppl_write() there is no empty entry to write, allocate more to solve at bucket %zu \n", hashed);
+				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+				assert(0);
+			}
+
+			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			//jump a litte far to avoid contention
+			i = (i + JUMP_STEP) % pline->n_entries;
+			//try again
+		}
+		//unlock the hash line
+		//pmemobj_rwlock_unlock(pop, &pline->lock);
+	}//end Case A
+	else {
+		//Case B: Get the entry from the input id
+		ret = entry_id;
+
+		bucket_id = entry_id / k;
+		local_id = entry_id % k;
+		TOID_ASSIGN(line, (D_RW(ptt->buckets)[bucket_id]).oid);
+		pline = D_RW(line);
+		assert(pline);
+		TOID_ASSIGN (entry, (D_RW(pline->arr)[local_id]).oid);
+		pe = D_RW(entry);
+
+		pmemobj_rwlock_wrlock(pop, &pe->lock);
+		assert(pe->state == PMEM_TX_ACTIVE);
+		assert(pe->tid == tid);
+
+		__handle_pm_ppl_write_by_entry(
+				pop,
+				ppl,
+				tid,
+				log_src,
+				size,
+				n_recs,
+				key_arr,
+				LSN_arr,
+				size_arr,
+				pe,
+				false);
+		pmemobj_rwlock_unlock(pop, &pe->lock);
+		return ret;
+
+	}//end case B
+
+}
+/*
+ * Sub-rountine to handle write log
+ * Called by pm_ppl_write(), the caller has already acquired the lock on the entry
+ * Parameters are similar to pm_ppl_write() excep
+ * pe (in/out): 
+ * pe->count and pageref may change
+ * */
+void __handle_pm_ppl_write_by_entry(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			uint64_t			tid,
+			byte*				log_src,
+			uint64_t			size,
+			uint64_t			n_recs,
+			uint64_t*			key_arr,
+			uint64_t*			LSN_arr,
+			uint64_t*			size_arr,
+			PMEM_TT_ENTRY*		pe,
+			bool				is_new)
+{
+
+	ulint i, j;
+
+	uint64_t key;	
+	uint64_t LSN;	// log record LSN
+	uint64_t rec_size;// log record size
+	uint64_t cur_off;
+	uint64_t eid;
+
+	int64_t blodk_id;
+
+	PMEM_PAGE_REF* pref;
+	// Now the pe point to the entry to write on and the ret is the entry id
+	
+	// for each input log record
+	cur_off = 0;
+	for (i = 0; i < n_recs; i++) {
+		key = key_arr[i];
+		LSN = LSN_arr[i];
+		if (i == n_recs - 1){
+			rec_size = size - size_arr[i];
+		}
+		else{
+			rec_size = size_arr[i + 1] - size_arr[i];
+		}
+		
+		//find the corresponding pageref with this log rec
+		for (j = 0; j < pe->n_dp_entries; j++) {
+			pref = D_RW(D_RW(pe->dp_arr)[j]);
+			if (pref->key == key){
+				//pageref already exist
+				break;
+			}
+		} //end for each pageref in entry
+
+		if (j < pe->n_dp_entries){
+			//pageref already exist, we don't increase count
+			pref->pageLSN = LSN;
+
+			//update log block			
+			__update_page_log_block_on_write(
+					pop,
+					ppl,
+					log_src,
+					cur_off,
+					rec_size,
+					key,
+					LSN,
+					pe->eid,
+					pref->idx);
+		}
+		else {
+			// new pageref, increase the count
+			//find the first free pageref from the beginning to reuse the reclaim index
+			for (j = 0; j < pe->n_dp_entries; j++) {
+				pref = D_RW(D_RW(pe->dp_arr)[j]);
+				if (pref->idx == -1){
+					//found
+					break;
+				}
+			}
+
+			if (j == pe->n_dp_entries){
+				pref = D_RW(D_RW(pe->dp_arr)[j]);
+				pe->n_dp_entries++;
+			}
+
+			//update log block
+			uint64_t new_bid = __update_page_log_block_on_write(
+					pop,
+					ppl,
+					log_src,
+					cur_off,
+					rec_size,
+					key,
+					LSN,
+					pe->eid,
+					-1);
+			
+			pref->key = key;
+			pref->idx = new_bid;
+			pref->pageLSN = LSN;
+			
+			pe->count++;
+		}
+
+		cur_off += rec_size;
+		//next log record
+	}//end for each input log record
+}
+
+/*
+ * Write a log record on per-page partitioned log
+ * log_src (in): pointer to the beginning of array log records in mini-transaction's heap
+ * cur_off (in): start offset of current log record
+ * rec_size (in): size of current log record
+ * key (in): fold of page_no and space 
+ * LSN (in): log record's LSN
+ * eid (in): entry id of the TT entry
+ * bid (in):
+ * -1: no ref
+ *  Otherwise: reference to the log block to write 
+ *
+ *  Return: the bid of the block written
+ * */
+int64_t
+__update_page_log_block_on_write(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			byte*				log_src,
+			uint64_t			cur_off,
+			uint64_t			rec_size,
+			uint64_t			key,
+			uint64_t			LSN,
+			int64_t				eid,
+			int64_t				block_id)
+{
+
+	int64_t ret;
+
+	ulint hashed;
+	ulint i, j;
+
+	uint64_t n, k;
+	uint64_t bucket_id, local_id;
+	uint64_t n_try;
+
+	int64_t idx;
+
+	byte* pdata = ppl->p_align;
+	byte* log_des;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+
+	n = ppl->n_buckets;
+	k = ppl->n_blocks_per_bucket;
+	if (block_id == -1) {
+		//Case A: there is no help from fast access, the log block may exist or not. Search from the beginning
+		PMEM_LOG_HASH_KEY(hashed, key, n);
+		assert (hashed < n);
+
+		TOID_ASSIGN(line, (D_RW(ppl->buckets)[hashed]).oid);
+		pline = D_RW(line);
+		assert(pline);
+		assert(pline->n_blocks == k);
+
+		//(1) search for the exist log block
+		for (i = 0; i < k; i++){
+			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			plog_block = D_RW(D_RW(pline->arr)[i]);
+			if (!plog_block->is_free &&
+				plog_block->key == key){
+				//Case A1: exist block
+				ret = plog_block->bid;
+				
+				//(2) append log
+				log_des = pdata + plog_block->pmemaddr + plog_block->cur_off;
+				__write_log_rec_low(pop,
+						log_des,
+						log_src + cur_off,
+						rec_size);
+				plog_block->cur_off += rec_size;
+				plog_block->n_log_recs++;
+
+				//(3) update metadata
+				plog_block->lastLSN = LSN;
+				//because in this case block_id == -1, there is no txref in this log block
+				//search for the first free to write
+				//for each txref
+				for (j = 0; j < plog_block->n_tx_idx; j++){
+					if(D_RW(plog_block->tx_idx_arr)[j] ==-1){
+						D_RW(plog_block->tx_idx_arr)[j] = eid;
+						break;
+					}	
+
+				}//end for each txref
+
+				if (j == plog_block->n_tx_idx){
+					D_RW(plog_block->tx_idx_arr)[j] = eid;
+					plog_block->n_tx_idx++;
+				}
+				
+				plog_block->count++;
+
+				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+				return ret;
+			}
+			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			//next log block
+		}//end search for exist log block
+
+		//Case A2: If you reach here, then the log block is not exst, write the new one. During the scan, some log block may be reclaimed, search from the begin
+
+		//search for a free block to write on
+		for (i = 0; i < k; i++){
+			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			plog_block = D_RW(D_RW(pline->arr)[i]);
+			if (plog_block->is_free){
+				//found
+				ret = plog_block->bid;
+				//(2) append log
+				log_des = pdata + plog_block->pmemaddr + plog_block->cur_off;
+				__write_log_rec_low(pop,
+						log_des,
+						log_src + cur_off,
+						rec_size);
+				plog_block->cur_off += rec_size;
+				plog_block->n_log_recs++;
+
+				//(3) update metadata
+				plog_block->firstLSN = LSN;
+				plog_block->lastLSN = LSN;
+
+				//Now we sure that the txref is not exist
+				D_RW(plog_block->tx_idx_arr)[0] = eid;
+				plog_block->n_tx_idx = 1;
+
+				plog_block->count=1;
+				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+				return ret;
+			}
+		}//end search for a free block to write on
+	}//end CASE A
+	else {
+		//Case B: fast access mode, similar to case A1
+		ret = block_id;
+
+		bucket_id = block_id / k;
+		local_id = block_id % k;
+		TOID_ASSIGN(line, (D_RW(ppl->buckets)[bucket_id]).oid);
+		pline = D_RW(line);
+		assert(pline);
+		TOID_ASSIGN (log_block, (D_RW(pline->arr)[local_id]).oid);
+		plog_block = D_RW(log_block);
+		assert(plog_block->key == key);
+		assert(!plog_block->is_free);
+
+		pmemobj_rwlock_wrlock(pop, &plog_block->lock);
+		//(2) append log
+		log_des = pdata + plog_block->pmemaddr + plog_block->cur_off;
+		__write_log_rec_low(pop,
+				log_des,
+				log_src + cur_off,
+				rec_size);
+		plog_block->cur_off += rec_size;
+		plog_block->n_log_recs++;
+
+		//(3) update metadata
+		plog_block->lastLSN = LSN;
+
+		//because block_id != -1, the txref must exist, no need to update tx_idx_arr, n_tx_idx, and count
+		pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+		return ret;
+	} //end case B
+}
+
+void
+__write_log_rec_low(
+			PMEMobjpool*			pop,
+			byte*					log_des,
+			byte*					log_src,
+			uint64_t				rec_size)
+{
+	if (rec_size <= CACHELINE_SIZE){
+		//Do not need a transaction for atomicity
+			pmemobj_memcpy_persist(
+				pop, 
+				log_des,
+				log_src,
+				rec_size);
+
+	}
+	else{
+		TX_BEGIN(pop) {
+			TX_MEMCPY(log_des, log_src, rec_size);
+		}TX_ONABORT {
+		}TX_END
+	}
+}
+
+////////////////// END PERPAGE LOGGING ///////////////
+
+
+
+
+
+//////////////////// STATISTIC FUNCTION ////////////////
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 /*
  *Print the dirty page table
@@ -3163,7 +3922,7 @@ ptxl_print_log_block_stat_info (FILE* f, PMEM_TX_LOG_BLOCK* plog_block)
 			plog_block->lifetime
 			);
 }
-#endif
+#endif //UNIV_PMEMOBJ_PART_PL_STAT
 
 
 #endif //UNIV_PMEMOBJ_PL

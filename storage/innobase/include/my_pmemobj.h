@@ -180,8 +180,8 @@ typedef struct __pmem_dpt_hashed_line PMEM_DPT_HASHED_LINE;
 struct __pmem_dpt_entry;
 typedef struct __pmem_dpt_entry PMEM_DPT_ENTRY;
 
-struct __pmem_dpt_entry_ref;
-typedef struct __pmem_dpt_entry_ref PMEM_DPT_ENTRY_REF;
+struct __pmem_page_ref;
+typedef struct __pmem_page_ref PMEM_PAGE_REF;
 // End Per-TX logging
 //
 // Per-Page Logging
@@ -257,8 +257,8 @@ POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_DPT_HASHED_LINE));
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_DPT_HASHED_LINE);
 POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_DPT_ENTRY));
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_DPT_ENTRY);
-POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_DPT_ENTRY_REF));
-POBJ_LAYOUT_TOID(my_pmemobj, PMEM_DPT_ENTRY_REF);
+POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_PAGE_REF));
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_PAGE_REF);
 // End Per-TX Logging
 
 // Per-Page Logging
@@ -295,6 +295,7 @@ struct __pmem_wrapper {
 #endif
 #if defined (UNIV_PMEMOBJ_PL)
 	PMEM_TX_PART_LOG* ptxl;
+	PMEM_PAGE_PART_LOG* ppl;
 #endif
 
 #if defined (UNIV_PMEMOBJ_LSB)
@@ -511,7 +512,7 @@ struct __pmem_tx_log_block {
 
 	/*update this array first, then update the dirty page table*/
 	//TOID(uint64_t)			dp_array; //dirty page array consists of key of entry in dirty page table
-	TOID_ARRAY(TOID(PMEM_DPT_ENTRY_REF))			dp_array; //dirty page array consists of key of entry in dirty page table
+	TOID_ARRAY(TOID(PMEM_PAGE_REF))			dp_array; //dirty page array consists of key of entry in dirty page table
 	uint64_t				n_dp_entries; 
 
 	//debug only
@@ -550,7 +551,7 @@ struct __pmem_tx_log_block {
 };
 
 // Dirty Page Entry Ref in the log block
-struct __pmem_dpt_entry_ref {
+struct __pmem_page_ref {
 	uint64_t	key; //fold of page_id_t.fold() in InnoDB
 	int64_t		idx; // index of the entry in DPT
 	uint64_t	pageLSN; //latest LSN on this page caused by the host transction, this value used in reclaiming logs
@@ -613,8 +614,8 @@ struct __pmem_page_part_log {
 	
 	/*Statistic info*/	
 	uint64_t	pmem_alloc_size;
-	uint64_t	pmem_dpt_size;
-	uint64_t	pmem_tx_log_size;
+	uint64_t	pmem_tt_size;
+	uint64_t	pmem_page_log_size;
 
 	/*Debug*/
 	FILE* deb_file;
@@ -665,15 +666,17 @@ struct __pmem_tt_entry {
 	PMEMrwlock		lock;
 	uint64_t				eid; //block id
 	uint64_t				tid; //transaction id
-	PMEM_LOG_BLOCK_STATE	state;
+	PMEM_TX_STATE	state;
 
 	int32_t				count; //number of dirty pages caused by this transaction
 
-	TOID(int64_t)			dp_bid_array; //dirty page array consists of key of entry in dirty page table
+	TOID_ARRAY(TOID(PMEM_PAGE_REF))			dp_arr; //dirty page array consists of key of entry in dirty page table
 	uint64_t				n_dp_entries; 
 };
 
 struct __pmem_tt_hashed_line {
+	PMEMrwlock		lock;
+
 	uint64_t hashed_id;
 	uint64_t n_entries; //the total log block in bucket
 	TOID_ARRAY(TOID(PMEM_TT_ENTRY)) arr;
@@ -785,6 +788,7 @@ pm_ptxl_write(
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
 			uint64_t*			LSN_arr,
+			uint64_t*			size_arr,
 			uint64_t*			space_arr,
 			uint64_t*			page_arr,
 			int64_t			block_id);
@@ -814,7 +818,7 @@ bool
 __update_dpt_entry_on_commit(
 		PMEMobjpool*		pop,
 		PMEM_DPT*			pdpt,
-		PMEM_DPT_ENTRY_REF* pref);
+		PMEM_PAGE_REF* pref);
 void 
 __reset_DPT_entry(PMEM_DPT_ENTRY* pe);
 void 
@@ -883,13 +887,46 @@ __init_tt(
 int64_t
 pm_ppl_write(
 			PMEMobjpool*		pop,
-			PMEM_PAGE_PART_LOG*		ppl,
+			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
 			byte*				log_src,
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
-			uint64_t*			LSN_arr);
+			uint64_t*			LSN_arr,
+			uint64_t*			size_arr,
+			int64_t				block_id);
+
+void __handle_pm_ppl_write_by_entry(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			uint64_t			tid,
+			byte*				log_src,
+			uint64_t			size,
+			uint64_t			n_recs,
+			uint64_t*			key_arr,
+			uint64_t*			LSN_arr,
+			uint64_t*			size_arr,
+			PMEM_TT_ENTRY*		pe,
+			bool				is_new);
+
+int64_t
+__update_page_log_block_on_write(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			byte*				log_src,
+			uint64_t			cur_off,
+			uint64_t			rec_size,
+			uint64_t			key,
+			uint64_t			LSN,
+			int64_t				eid,
+			int64_t				bid);
+void
+__write_log_rec_low(
+			PMEMobjpool*			pop,
+			byte*					log_des,
+			byte*					log_src,
+			uint64_t				rec_size);
 
 void
 pm_ppl_commit(
@@ -914,7 +951,7 @@ __update_tt_entry_on_write_log(
 //__update_tt_entry_on_commit(
 //		PMEMobjpool*		pop,
 //		PMEM_TT*			pdpt,
-//		PMEM_DPT_ENTRY_REF* pref);
+//		PMEM_PAGE_REF* pref);
 void 
 __reset_TT_entry(PMEM_TT_ENTRY* pe);
 void 

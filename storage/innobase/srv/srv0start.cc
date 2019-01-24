@@ -1952,12 +1952,22 @@ innobase_start_or_create_for_mysql(void)
 	uint64_t n_blocks_per_bucket = 16384;
 	uint64_t block_size = 4096;
 	//uint64_t block_size = 2048;
+#if defined (UNIV_PMEMOBJ_TX_LOG)
 	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
 								 n_buckets,
 								 n_blocks_per_bucket,
 								 block_size);
-#endif
-#endif	
+#else //per-page logging
+	pm_wrapper_page_log_alloc_or_open(gb_pmw,
+								 n_buckets,
+								 n_blocks_per_bucket,
+								 block_size);
+
+#endif //UNIV_PMEMOBJ_TX_LOG
+#endif // UNIV_PMEMOBJ_PL
+
+#endif // UNIV_PMEMOBJ_LSB
+
 	//[TODO] Recovery handler
 #endif /* UNIV_PMEMOBJ_BUF */
 

@@ -579,6 +579,7 @@ mtr_t::start(bool sync, bool read_only)
 	m_impl.LSN_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 	m_impl.space_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 	m_impl.page_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
+	m_impl.size_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 #endif //UNIV_PMEMOBJ_PL
 
 	ut_d(m_impl.m_magic_n = MTR_MAGIC_N);
@@ -609,6 +610,7 @@ mtr_t::Command::release_resources()
 	free(m_impl->LSN_arr);
 	free(m_impl->space_arr);
 	free(m_impl->page_arr);
+	free(m_impl->size_arr);
 #endif //UNIV_PMEMOBJ_PL
 
 	m_impl->m_state = MTR_STATE_COMMITTED;
@@ -1033,6 +1035,7 @@ mtr_t::Command::execute()
 		const mtr_buf_t::block_t*	front = m_impl->m_log.front();
 		byte* start_log_ptr = (byte*) front->begin(); 	
 		//tdnguyen test
+#if defined (UNIV_PMEMOBJ_TX_LOG)
 		trx->pm_log_block_id = pm_ptxl_write(
 				gb_pmw->pop,
 				gb_pmw->ptxl,
@@ -1042,10 +1045,23 @@ mtr_t::Command::execute()
 				n_recs,
 				m_impl->key_arr,
 				m_impl->LSN_arr,
+				m_impl->size_arr,
 				m_impl->space_arr,
 				m_impl->page_arr,
 				trx->pm_log_block_id);
-
+#else
+		trx->pm_log_block_id = pm_ppl_write(
+				gb_pmw->pop,
+				gb_pmw->ppl,
+				trx->id,
+				start_log_ptr,
+				len,
+				n_recs,
+				m_impl->key_arr,
+				m_impl->LSN_arr,
+				m_impl->size_arr,
+				trx->pm_log_block_id);
+#endif //UNIV_PMEMOBJ_TX_LOG
 	}
 	else {
 		//printf("in mtr_t::Command::execute() trx is NULL\n");
