@@ -642,17 +642,17 @@ struct __pmem_page_log_hashed_line {
 struct __pmem_page_log_block {
 	PMEMrwlock		lock;
 	bool			is_free; //flag
-	uint64_t				bid; //block id
-	uint64_t				key; //fold id
+	uint64_t		bid; //block id
+	uint64_t		key; //fold id
 
-	uint64_t				pmemaddr; //the begin offset to the pmem data in PMEM_PAGE_PART_LOG
-	uint64_t				cur_off; //the current offset (0 - log block size) 
-	uint64_t				n_log_recs; //the current number of log records 
+	uint64_t		pmemaddr; //the begin offset to the pmem data in PMEM_PAGE_PART_LOG
+	uint64_t		cur_off; //the current offset (0 - log block size) 
+	uint64_t		n_log_recs; //the current number of log records 
 
-	int32_t				count; //number of active tx
+	int32_t			count; //number of active tx
 
 	TOID(int64_t)	tx_idx_arr; //array of transaction index
-	uint16_t	    n_tx_idx; //array length
+	uint16_t		n_tx_idx; //array length
 
 	/*LSN */
 	uint64_t		pageLSN; // pageLSN of the NVM-page
@@ -667,8 +667,6 @@ struct __pmem_tt_entry {
 	uint64_t				eid; //block id
 	uint64_t				tid; //transaction id
 	PMEM_TX_STATE	state;
-
-	int32_t				count; //number of dirty pages caused by this transaction
 
 	TOID_ARRAY(TOID(PMEM_PAGE_REF))			dp_arr; //dirty page array consists of key of entry in dirty page table
 	uint64_t				n_dp_entries; 
@@ -837,8 +835,11 @@ pm_ptxl_check_and_reset_dpt_entry(
 
 //for debugging
 void 
-__print_blocks_state(FILE* f,
+__print_tx_blocks_state(FILE* f,
 		PMEM_TX_PART_LOG* ptxl);
+void 
+__print_page_blocks_state(FILE* f,
+		PMEM_PAGE_PART_LOG* ppl);
 
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 void
@@ -851,6 +852,10 @@ void
 __print_DPT(
 		PMEM_DPT*			pdpt,
 		FILE* f);
+void
+__print_TT(
+		FILE* f,
+		PMEM_TT*			ptt);
 #endif
 ///////////////////// END PER-TX LOGGING /////////////
 
@@ -930,13 +935,14 @@ __write_log_rec_low(
 
 void
 pm_ppl_commit(
-		PMEMobjpool*		pop,
+		PMEMobjpool*			pop,
 		PMEM_PAGE_PART_LOG*		ppl,
-		uint64_t tid);
+		uint64_t				tid,
+		int64_t					eid);
 void 
 pm_ppl_flush_page(
 		PMEMobjpool*		pop,
-		PMEM_TX_PART_LOG*	ppl,
+		PMEM_PAGE_PART_LOG*	ppl,
 		uint64_t			key,
 		uint64_t			pageLSN);
 
@@ -947,26 +953,26 @@ __update_tt_entry_on_write_log(
 		uint64_t			tid,
 		uint64_t			key); 
 
-//bool
-//__update_tt_entry_on_commit(
-//		PMEMobjpool*		pop,
-//		PMEM_TT*			pdpt,
-//		PMEM_PAGE_REF* pref);
+bool
+__update_page_log_block_on_commit(
+		PMEMobjpool*				pop,
+		PMEM_PAGE_PART_LOG*			ppl,
+		PMEM_PAGE_REF*				pref,
+		int64_t						eid);
 void 
 __reset_TT_entry(PMEM_TT_ENTRY* pe);
 void 
 __reset_page_log_block(PMEM_PAGE_LOG_BLOCK* plog_block);
 
 bool
-__check_and_reclaim_page_log_block(
-		PMEMobjpool*		pop,
-		PMEM_PAGE_PART_LOG*	ppl,
-		int64_t			block_id);
-bool
 pm_ppl_check_and_reset_tt_entry(
 		PMEMobjpool*		pop,
 		PMEM_TT*			ptt,
 		uint64_t			tid);
+
+inline bool
+__is_page_log_block_reclaimable(
+		PMEM_PAGE_LOG_BLOCK* plog_block);
 
 //for debugging
 void 

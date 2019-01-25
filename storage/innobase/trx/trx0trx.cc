@@ -2210,12 +2210,19 @@ trx_commit(
 #if defined (UNIV_PMEMOBJ_PART_PL)
 		//in this version, just simple set the log block free
 		if (trx->pm_log_block_id != -1){
-			//tdnguyen test		
+#if defined (UNIV_PMEMOBJ_TX_LOG) //per-tx logging
 			pm_ptxl_commit(
 					gb_pmw->pop,
 					gb_pmw->ptxl,
 					trx->id,
 					trx->pm_log_block_id);
+#else //per-page logging
+			pm_ppl_commit(
+					gb_pmw->pop,
+					gb_pmw->ppl,
+					trx->id,
+					trx->pm_log_block_id);
+#endif //UNIV_PMEMOBJ_TX_LOG
 		}	
 #else
 #if !defined (UNIV_TEST_PL)

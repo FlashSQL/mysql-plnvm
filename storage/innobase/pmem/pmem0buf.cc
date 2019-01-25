@@ -675,9 +675,12 @@ pm_buf_write_with_flusher(
 	assert(src_data);
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-	//tdnguyen test
+#if defined (UNIV_PMEMOBJ_TX_LOG)
 	pm_ptxl_on_flush_page(pop, pmw->ptxl, page_id.fold(), pageLSN);
-#endif
+#else
+	pm_ppl_flush_page(pop, pmw->ppl, page_id.fold(), pageLSN);
+#endif //UNIV_PMEMOBJ_TX_LOG
+#endif // UNIV_PMEMOBJ_PART_PL
 
 #if defined (UNIV_PMEMOBJ_BLOOM)
 //add the fold() value to the bloom filter

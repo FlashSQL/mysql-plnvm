@@ -37,8 +37,8 @@
 //
 // Per-page logging
 
-#define MAX_TT_LINES 512 
-#define MAX_TT_ENTRIES_PER_LINE 1024 //max number of DPT entries per hashed line
+#define MAX_TT_LINES 128 
+#define MAX_TT_ENTRIES_PER_LINE 128 //max number of DPT entries per hashed line
 
 
 ////////////// End Partitioned-Log ////////////
