@@ -3167,19 +3167,19 @@ pm_page_part_log_bucket_init(
 			plog_block->n_log_recs = 0;
 			plog_block->count = 0;
 
-			//array of active transaction
-			plog_block->n_tx_idx = 0;
-			POBJ_ALLOC(pop,
-					&plog_block->tx_idx_arr,
-					int64_t,
-					sizeof(int64_t) * MAX_TX_PER_PAGE,
-					NULL,
-					NULL);
-			uint64_t i_temp;
-			for (i_temp = 0; i_temp < MAX_TX_PER_PAGE; i_temp++){
-				D_RW(plog_block->tx_idx_arr)[i_temp] = -1;
-			}
-			pl->pmem_page_log_size +=  sizeof(int64_t) * MAX_TX_PER_PAGE;
+			////array of active transaction
+			//plog_block->n_tx_idx = 0;
+			//POBJ_ALLOC(pop,
+			//		&plog_block->tx_idx_arr,
+			//		int64_t,
+			//		sizeof(int64_t) * MAX_TX_PER_PAGE,
+			//		NULL,
+			//		NULL);
+			//uint64_t i_temp;
+			//for (i_temp = 0; i_temp < MAX_TX_PER_PAGE; i_temp++){
+			//	D_RW(plog_block->tx_idx_arr)[i_temp] = -1;
+			//}
+			//pl->pmem_page_log_size +=  sizeof(int64_t) * MAX_TX_PER_PAGE;
 
 		}//end for each log block
 	}//end for each hashed line
@@ -3520,7 +3520,7 @@ __update_page_log_block_on_write(
 				
 				//(2) append log
 				log_des = pdata + plog_block->pmemaddr + plog_block->cur_off;
-				__write_log_rec_low(pop,
+				__pm_write_log_rec_low(pop,
 						log_des,
 						log_src + cur_off,
 						rec_size);
@@ -3532,18 +3532,18 @@ __update_page_log_block_on_write(
 				//because in this case block_id == -1, there is no txref in this log block
 				//search for the first free to write
 				//for each txref
-				for (j = 0; j < plog_block->n_tx_idx; j++){
-					if(D_RW(plog_block->tx_idx_arr)[j] ==-1){
-						D_RW(plog_block->tx_idx_arr)[j] = eid;
-						break;
-					}	
+				//for (j = 0; j < plog_block->n_tx_idx; j++){
+				//	if(D_RW(plog_block->tx_idx_arr)[j] ==-1){
+				//		D_RW(plog_block->tx_idx_arr)[j] = eid;
+				//		break;
+				//	}	
 
-				}//end for each txref
+				//}//end for each txref
 
-				if (j == plog_block->n_tx_idx){
-					D_RW(plog_block->tx_idx_arr)[j] = eid;
-					plog_block->n_tx_idx++;
-				}
+				//if (j == plog_block->n_tx_idx){
+				//	D_RW(plog_block->tx_idx_arr)[j] = eid;
+				//	plog_block->n_tx_idx++;
+				//}
 				//inc number of active tx on this page			
 				plog_block->count++;
 
@@ -3569,7 +3569,7 @@ __update_page_log_block_on_write(
 
 				//(2) append log
 				log_des = pdata + plog_block->pmemaddr + plog_block->cur_off;
-				__write_log_rec_low(pop,
+				__pm_write_log_rec_low(pop,
 						log_des,
 						log_src + cur_off,
 						rec_size);
@@ -3577,12 +3577,11 @@ __update_page_log_block_on_write(
 				plog_block->n_log_recs++;
 
 				//(3) update metadata
-				plog_block->firstLSN = LSN;
 				plog_block->lastLSN = LSN;
 
-				//Now we sure that the txref is not exist
-				D_RW(plog_block->tx_idx_arr)[0] = eid;
-				plog_block->n_tx_idx = 1;
+				////Now we sure that the txref is not exist
+				//D_RW(plog_block->tx_idx_arr)[0] = eid;
+				//plog_block->n_tx_idx = 1;
 
 				plog_block->count=1;
 				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
@@ -3615,7 +3614,7 @@ __update_page_log_block_on_write(
 		pmemobj_rwlock_wrlock(pop, &plog_block->lock);
 		//(2) append log
 		log_des = pdata + plog_block->pmemaddr + plog_block->cur_off;
-		__write_log_rec_low(pop,
+		__pm_write_log_rec_low(pop,
 				log_des,
 				log_src + cur_off,
 				rec_size);
@@ -3632,7 +3631,7 @@ __update_page_log_block_on_write(
 }
 
 void
-__write_log_rec_low(
+__pm_write_log_rec_low(
 			PMEMobjpool*			pop,
 			byte*					log_des,
 			byte*					log_src,
@@ -3798,23 +3797,23 @@ __update_page_log_block_on_commit(
 	}
 
 	//(1) Invalid the txref
-	for (i = 0; i < plog_block->n_tx_idx; i++){
-		if (D_RW(plog_block->tx_idx_arr)[i] == eid){
-			D_RW(plog_block->tx_idx_arr)[i] = -1;
-			break;
-		}
-	}
-	if (i >= plog_block->n_tx_idx){
-		//no txref
-		printf("PMEM ERROR, no txref with eid %zu in log block %zu of bucket %zu, logical error!\n", eid, plog_block->bid, bucket_id);
-		assert(0);
-	}
+	//for (i = 0; i < plog_block->n_tx_idx; i++){
+	//	if (D_RW(plog_block->tx_idx_arr)[i] == eid){
+	//		D_RW(plog_block->tx_idx_arr)[i] = -1;
+	//		break;
+	//	}
+	//}
+	//if (i >= plog_block->n_tx_idx){
+	//	//no txref
+	//	printf("PMEM ERROR, no txref with eid %zu in log block %zu of bucket %zu, logical error!\n", eid, plog_block->bid, bucket_id);
+	//	assert(0);
+	//}
 
 	//(2) Reclaim the log block
 	plog_block->count--;
-	//if (plog_block->count <= 0 &&
-	//		plog_block->lastLSN <= plog_block->pageLSN)
-	if (plog_block->count <= 0)
+	if (plog_block->count <= 0 &&
+			plog_block->lastLSN <= plog_block->pageLSN)
+	//if (plog_block->count <= 0)
 	{
 		__reset_page_log_block(plog_block);
 		pmemobj_rwlock_unlock(pop, &plog_block->lock);
@@ -3845,13 +3844,13 @@ __reset_page_log_block(PMEM_PAGE_LOG_BLOCK* plog_block)
 	plog_block->n_log_recs = 0;
 
 	plog_block->pageLSN = 0;
-	plog_block->firstLSN = 0;
+	plog_block->start_disk_off = 0;
 	plog_block->lastLSN = 0;
 
-	for (i = 0; i < plog_block->n_tx_idx; i++){
-		D_RW(plog_block->tx_idx_arr)[i] = -1;
-	}
-	plog_block->n_tx_idx = 0;
+//	for (i = 0; i < plog_block->n_tx_idx; i++){
+//		D_RW(plog_block->tx_idx_arr)[i] = -1;
+//	}
+//	plog_block->n_tx_idx = 0;
 }
 
 /*
@@ -4228,24 +4227,24 @@ __print_page_blocks_state(
 			for (j = 0; j < k; j++){
 				TOID_ASSIGN (log_block, (D_RW(pline->arr)[j]).oid);
 				plog_block = D_RW(log_block);
-				printf("\t block %zu is_free %zu  is_flushed %zu deltaLSN %zu key %zu n_log_recs %zu size %zu count %zu n_txrefs %zu \n", j, 
+				printf("\t block %zu is_free %zu  is_flushed %zu deltaLSN %zu key %zu n_log_recs %zu size %zu count %zu \n", j, 
 						plog_block->is_free, 
 						(plog_block->pageLSN >= plog_block->lastLSN),
 						(plog_block->lastLSN - plog_block->pageLSN),
 						plog_block->key,
 						plog_block->n_log_recs,
 						plog_block->cur_off,
-						plog_block->count,
-						plog_block->n_tx_idx);
-				fprintf(f, "\t block %zu is_free %zu  is_flushed %zu deltaLSN %zu key %zu n_log_recs %zu size %zu count %zu n_txrefs %zu \n", j, 
+						plog_block->count
+						);
+				fprintf(f, "\t block %zu is_free %zu  is_flushed %zu deltaLSN %zu key %zu n_log_recs %zu size %zu count %zu \n", j, 
 						plog_block->is_free, 
 						(plog_block->pageLSN >= plog_block->lastLSN),
 						(plog_block->lastLSN - plog_block->pageLSN),
 						plog_block->key,
 						plog_block->n_log_recs,
 						plog_block->cur_off,
-						plog_block->count,
-						plog_block->n_tx_idx);
+						plog_block->count
+						);
 			}//end for each log block
 		}
 		printf("bucket %zu:  n_free %zu n_flushed %zu n_active %zu actual_size / size %zu / %zu (%.2f %) avg_size %f max_size %zu\n", i, n_free, n_flushed, n_active, actual_size, ppl->block_size * k, per, avg, max_size);

@@ -232,7 +232,13 @@ void pm_wrapper_buf_close(PMEM_WRAPPER* pmw) {
 #endif 
 	fclose(pmw->pbuf->deb_file);
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+#if defined (UNIV_PMEMOBJ_TX_LOG)
 	ptxl_print_all_stat_info(debug_ptxl_file,  pmw->ptxl);
+#else
+	__print_page_blocks_state(debug_ptxl_file, pmw->ppl);
+	__print_TT(debug_ptxl_file, D_RW(pmw->ppl->tt)); 
+#endif // UNIV_PMEMOBJ_TX_LOG
+
 	//fclose(debug_ptxl_file);
 	fclose(pmw->ptxl->deb_file);
 #endif

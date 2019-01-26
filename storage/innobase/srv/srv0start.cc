@@ -1947,11 +1947,11 @@ innobase_start_or_create_for_mysql(void)
 								 UNIV_PAGE_SIZE);
 #if defined (UNIV_PMEMOBJ_PL)
 	//uint64_t n_buckets = 16;	
-	uint64_t n_buckets = 256;	
-	uint64_t n_blocks_per_bucket = 512;
+	uint64_t n_buckets = 512;	
+	uint64_t n_blocks_per_bucket = 4096;
 	//uint64_t n_blocks_per_bucket = 16384;
 	//uint64_t block_size = 4096;
-	uint64_t block_size = 2048;
+	uint64_t block_size = 1024;
 #if defined (UNIV_PMEMOBJ_TX_LOG)
 	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
 								 n_buckets,

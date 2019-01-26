@@ -647,17 +647,17 @@ struct __pmem_page_log_block {
 
 	uint64_t		pmemaddr; //the begin offset to the pmem data in PMEM_PAGE_PART_LOG
 	uint64_t		cur_off; //the current offset (0 - log block size) 
-	uint64_t		n_log_recs; //the current number of log records 
+	uint32_t		n_log_recs; //the current number of log records 
 
 	int32_t			count; //number of active tx
 
-	TOID(int64_t)	tx_idx_arr; //array of transaction index
-	uint16_t		n_tx_idx; //array length
+//	TOID(int64_t)	tx_idx_arr; //array of transaction index
+//	uint16_t		n_tx_idx; //array length
 
 	/*LSN */
 	uint64_t		pageLSN; // pageLSN of the NVM-page
-	uint64_t		firstLSN; // LSN of the first log rec
 	uint64_t		lastLSN; // LSN of the last log record
+	uint64_t		start_disk_off;// offset of the first log rec of this page on disk
 };
 
 /*Transaction Table Entry*/
@@ -927,7 +927,7 @@ __update_page_log_block_on_write(
 			int64_t				eid,
 			int64_t				bid);
 void
-__write_log_rec_low(
+__pm_write_log_rec_low(
 			PMEMobjpool*			pop,
 			byte*					log_des,
 			byte*					log_src,
