@@ -224,7 +224,7 @@ ulong	srv_pmem_bloom_n_elements	= 10000000;
 double	srv_pmem_bloom_fpr			= 0.01;
 #endif
 
-#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 char*	srv_pmem_home_dir			= NULL;
 ulong	srv_pmem_pool_size			= 8 * 1024;
 ulong	srv_pmem_buf_size			= 4 * 1024;

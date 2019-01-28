@@ -52,7 +52,6 @@ static uint64_t PMEM_N_FLUSH_THREADS;
 static uint64_t PMEM_FLUSHER_WAKE_THRESHOLD=30;
 
 static FILE* debug_file = fopen("part_debug.txt","a");
-static FILE* debug_ptxl_file = fopen("pll_debug.txt","a");
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
 //256 buckets => 8 bits, max 32 spaces => 5 bits => need 3 = 8 - 5 bits
@@ -69,6 +68,7 @@ static double PMEM_BLOOM_FPR;
 #endif //UNIV_PMEMOBJ_BUF
 
 #if defined (UNIV_PMEMOBJ_PL)
+static FILE* debug_ptxl_file = fopen("pll_debug.txt","a");
 static uint64_t PMEM_N_LOG_BUCKETS;
 static uint64_t PMEM_N_BLOCKS_PER_BUCKET;
 static double PMEM_LOG_BUF_FLUSH_PCT;
@@ -134,33 +134,26 @@ typedef struct __pmem_lsb_hash_bucket_t PMEM_LSB_HASH_BUCKET;
 
 struct __pmem_lsb_hashtable_t;
 typedef struct __pmem_lsb_hashtable_t PMEM_LSB_HASHTABLE;
-#endif
+#endif //UNIV_PMEMOBJ_LSB
 
+#if defined (UNIV_PMEMOBJ_BLOOM)
+#define BLOOM_SIZE 5000000
+struct __pmem_bloom_filter;
+typedef struct __pmem_bloom_filter PMEM_BLOOM;
+
+struct __pmem_counting_bloom_filter;
+typedef struct __pmem_counting_bloom_filter PMEM_CBF;
+
+#define BLOOM_MAY_EXIST 0
+#define BLOOM_NOT_EXIST -1
+#endif //UNIV_PMEMOBJ_BLOOM
+
+#endif //UNIV_PMEMOBJ_BUF
+
+////////////////////////////////////////////////
 // PL-NVM
+// /////////////////////////////////////////////
 #if defined (UNIV_PMEMOBJ_PL)
-struct __mem_log_rec;
-typedef struct __mem_log_rec MEM_LOG_REC;
-
-struct __mem_log_list;
-typedef struct __mem_log_list MEM_LOG_LIST;
-
-struct __pmem_log_rec;
-typedef struct __pmem_log_rec PMEM_LOG_REC;
-
-struct __pmem_log_list;
-typedef struct __pmem_log_list PMEM_LOG_LIST;
-
-struct __mem_DPT_entry;
-typedef struct __mem_DPT_entry MEM_DPT_ENTRY;
-
-struct __mem_DPT;
-typedef struct __mem_DPT MEM_DPT;
-
-struct __mem_TT_entry;
-typedef struct __mem_TT_entry MEM_TT_ENTRY;
-
-struct __mem_TT;
-typedef struct __mem_TT MEM_TT;
 ///////////////////////////////////////////////////
 //New PL
 //
@@ -220,19 +213,6 @@ typedef struct __pmem_tt_entry PMEM_TT_ENTRY;
 //////////////////////////////////////////////////
 #endif //UNIV_PMEMOBJ_PL
 
-#if defined (UNIV_PMEMOBJ_BLOOM)
-#define BLOOM_SIZE 5000000
-struct __pmem_bloom_filter;
-typedef struct __pmem_bloom_filter PMEM_BLOOM;
-
-struct __pmem_counting_bloom_filter;
-typedef struct __pmem_counting_bloom_filter PMEM_CBF;
-
-#define BLOOM_MAY_EXIST 0
-#define BLOOM_NOT_EXIST -1
-#endif //UNIV_PMEMOBJ_BLOOM
-
-#endif //UNIV_PMEMOBJ_BUF
 
 POBJ_LAYOUT_BEGIN(my_pmemobj);
 POBJ_LAYOUT_TOID(my_pmemobj, char);
@@ -249,11 +229,11 @@ POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_BUF_BLOCK));
 #if defined(UNIV_PMEMOBJ_LSB)
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LSB);
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LSB_HASHTABLE);
-#endif
+#endif //UNIV_PMEMOBJ_LSB
+
+#endif //UNIV_PMEMOBJ_BUF
 
 #if defined(UNIV_PMEMOBJ_PL)
-POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_LIST);
-POBJ_LAYOUT_TOID(my_pmemobj, PMEM_LOG_REC);
 
 // Per-TX Logging
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TX_PART_LOG);
@@ -294,7 +274,6 @@ POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TT_ENTRY);
 //
 #endif // UNIV_PMEMOBJ_PL
 
-#endif //UNIV_PMEMOBJ_LSB
 POBJ_LAYOUT_END(my_pmemobj);
 
 
@@ -339,125 +318,6 @@ void pm_pop_free(PMEMobjpool* pop);
 //////////////////// PARTITIONED-LOG 2018.11.2/////////////
 
 #if defined (UNIV_PMEMOBJ_PL)
-/*
- * The in-mem log record wrapper, mem_addr is copy from REDO log record of the transaction 
- * */
-struct __mem_log_rec {
-	byte*				mem_addr;/*log content in DRAM*/ 
-	
-	uint64_t			size; //log record size
-
-	page_id_t			pid; //page id		
-	uint64_t			tid; //transaction id
-    uint64_t			lsn;//order of the log record in page
-	bool				is_in_pmem; //true if there is corresponding log record in pmem	
-	//linked pointers
-	//Link to the next/prev log records in the same page
-	MEM_LOG_REC* dpt_prev;
-	MEM_LOG_REC* dpt_next;
-
-	//Link to the next/prev log records in the same transaction
-	MEM_LOG_REC* tt_prev;
-	MEM_LOG_REC* tt_next;
-	//Link to the next/prev log records in trx-page 
-	MEM_LOG_REC* trx_page_prev;
-	MEM_LOG_REC* trx_page_next;
-};
-/*
- * The nvm-resident log record wrapper, can be REDO log or UNDO log
- * */
-struct __pmem_log_rec {
-	PMEMoid				log_data;/*log content in NVDIMM*/	  
-	uint64_t			size; //log record size
-
-	page_id_t			pid; //page id		
-	//uint64_t			tid; //transaction id
-    uint64_t			lsn;//order of the log record in page
-	PMEM_LOG_TYPE type; //log type
-	
-	//linked pointers
-	TOID(PMEM_LOG_REC) prev;
-	TOID(PMEM_LOG_REC) next;
-};
-
-/*
- * The double-linked list
- * */
-struct __mem_log_list {
-	ib_mutex_t			lock; //the mutex lock protect all items
-
-	MEM_LOG_REC*		head;
-	MEM_LOG_REC*		tail;
-	uint64_t			n_items;
-};
-
-struct __pmem_log_list {
-	PMEMrwlock					lock; //this lock protects remain properties
-
-	TOID(PMEM_LOG_REC)		head;
-	TOID(PMEM_LOG_REC)		tail;
-	uint64_t			n_items;
-};
-
-/*
- * The Dirty Page Table Entry
- * Each entry present for a dirty page in DRAM. One dirty page keep the list of its dirty log records
- * Entry = key + data
- * key = page_id
- * data = double-linked list sorted by lsn
- * */
-struct __mem_DPT_entry {
-	//ib_mutex_t			lock; //the mutex lock protect all items
-	PMEMrwlock			pmem_lock; //this lock protects remain properties
-	page_id_t			id;
-	uint64_t			curLSN; //used to generate the next LSN inside its list
-	MEM_LOG_LIST*		list; //sorted list by lsn
-
-	MEM_DPT_ENTRY*		next; //next entry in the bucket
-};
-
-/*
- * The Dirty Page Table, implement as the hash talbe of PMEM_DPT_ENTRY
- * */
-struct __mem_DPT {
-
-	uint64_t			n; //n hashed line
-	MEM_DPT_ENTRY**	buckets;//head of each hashed line
-	MEM_DPT_ENTRY** tails; //tail of each hashed line
-	ib_mutex_t*		hl_locks; //the hashed line mutex lock 
-	PMEMrwlock*			pmem_locks; //this lock protects remain properties
-};
-
-/*
- * The Transaction Table Entry
- * Entry = key + data
- * key = tid
- * data = FIFO double-linked list
- * */
-struct __mem_TT_entry {
-	//ib_mutex_t			lock; //the mutex lock protect all items
-	PMEMrwlock			pmem_lock; //this lock protects remain properties
-	uint64_t			tid; //transaction id
-
-	MEM_LOG_LIST*		list; // transaction FIFO list
-
-	MEM_DPT*			local_dpt;	//local dpt for per-page scanning
-	//Link to the next transaction
-	MEM_TT_ENTRY*		next; //next entry
-};
-
-/*
- * The Transaction Table, implement as the hash table of PMEM_TT_ENTRY
- *
- * */
-struct __mem_TT {
-	uint64_t			n;
-	MEM_TT_ENTRY**		buckets;
-	MEM_TT_ENTRY**		tails;
-	PMEMrwlock*			pmem_locks; //this lock protects remain properties
-
-	unsigned char*		free_bit_arr; // the free bit array, size equals to # of buckets. One entry manage up to 256 log blocks (0 - 255)
-};
 
 ////////////////////////////////////////////////////
 ////////////////////// NEW PART LOG IMPLEMENT////////////
@@ -771,62 +631,6 @@ struct __pmem_tt {
 
 /////////////// End Per-Page Logging ///////////////////
 
-/////////////// ALLOC / FREE //////////////////////////
-MEM_DPT*
-alloc_DPT(uint64_t n);
-
-void
-free_DPT(MEM_DPT* dpt);
-
-
-MEM_TT*
-alloc_TT(uint64_t n);
-
-void
-free_TT(MEM_TT* tt);
-
-MEM_DPT_ENTRY*
-alloc_dpt_entry(
-		page_id_t pid,
-		uint64_t start_lsn);
-
-void
-free_dpt_entry(
-	   	MEM_DPT_ENTRY* entry);
-
-MEM_TT_ENTRY*
-alloc_tt_entry(
-		uint64_t tid
-		);
-
-void
-free_tt_entry(
-	   	MEM_TT_ENTRY* entry);
-
-
-MEM_LOG_REC* 
-pmemlog_alloc_memrec(
-		byte*				mem_addr,
-		uint64_t			size,
-		page_id_t			pid,
-		uint64_t			tid
-		);
-
-void
-free_memrec(
-		MEM_LOG_REC* memrec
-		);
-
-TOID(PMEM_LOG_REC) alloc_pmemrec(
-		PMEMobjpool*	pop,
-		MEM_LOG_REC*	memrec,
-		PMEM_LOG_TYPE	type
-		);
-void 
-free_pmemrec(
-		PMEMobjpool*	pop,
-		TOID(PMEM_LOG_REC)	pmem_rec
-		);
 
 ////////////// NEW PARTITIONED LOG ////////////////////
 ////////// PER-TX LOGGING/////////////////////////
@@ -1108,162 +912,20 @@ __is_page_log_block_reclaimable(
 void 
 __print_blocks_state(FILE* f,
 		PMEM_PAGE_PART_LOG* ppl);
+
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_flusher_coordinator)(
+		void* arg);
+
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_flusher_worker)(
+		void* arg);
+
 ///////////////// END PER-PAGE LOGGING //////////////////
 
 ////////////// END NEW PARTITIONED LOG /////////////////
-
-
-//
-/////////////////////////////////////////////////////
-//////////////////////// CONNECT WITH InnoDB//////////
-
-/////////////// END CONNECT WITH InnoDB /////////////
-
-
-////////////////////// ADD / REMOVE//////////////////
-void add_log_to_DPT(
-		PMEMobjpool*	pop,
-		MEM_DPT* dpt,
-	   	MEM_LOG_REC* rec,
-		bool is_local_dpt);
-
-void 
-add_log_to_global_DPT_entry(
-		PMEMobjpool*	pop,
-		MEM_DPT_ENTRY* entry,
-	   	MEM_LOG_REC* rec);
-
-void 
-add_log_to_local_DPT_entry(
-		PMEMobjpool*	pop,
-		MEM_DPT_ENTRY* entry,
-	   	MEM_LOG_REC* rec);
-
-
-
-
-void 
-pmemlog_add_log_to_TT	(
-				PMEMobjpool*	pop,
-				MEM_TT* tt,
-				MEM_DPT* dpt,
-			   	MEM_LOG_REC* rec);
-
-void
-add_log_to_TT_entry(
-		PMEMobjpool*	pop,
-	   	MEM_TT_ENTRY* entry,
-	   	MEM_LOG_REC* rec);
-
-//remove log records and their pointers in this dpt_entry
-//The pointers are removed from: (1) local dpt, (2) global dpt, and (3) tt entry
-void 
-remove_logs_on_remove_local_dpt_entry(
-		PMEMobjpool*	pop,
-		MEM_DPT*	global_dpt,
-		MEM_DPT_ENTRY*		entry);
-
-void adjust_dpt_entry_on_flush(
-		MEM_DPT_ENTRY*		dpt_entry
-		);
-void
-remove_dpt_entry(
-		PMEMobjpool*		pop,
-		MEM_DPT*			global_dpt,
-		MEM_DPT_ENTRY*		entry,
-		MEM_DPT_ENTRY*		prev_entry,
-		ulint				hashed);
-
-void 
-remove_tt_entry(
-		PMEMobjpool*	pop,
-		MEM_TT*			tt,
-		MEM_DPT*		global_dpt,
-	   	MEM_TT_ENTRY*	entry,
-	   	MEM_TT_ENTRY*	prev_entry,
-		ulint			hashed);
-/////////////////////// END ADD / REMOVE/////////
-//////////////////// COMMIT ////////////////////
-int
-pmemlog_trx_commit(
-		PMEMobjpool*	pop,
-		PMEM_WRAPPER*		pmw,
-	   	trx_t*			trx);
-int
-pmemlog_trx_abort(
-		PMEMobjpool*	pop,
-		PMEM_WRAPPER*		pmw,
-	   	uint64_t		tid);
-
-int
-pm_write_REDO_logs(
-		PMEMobjpool*	pop,
-		PMEM_WRAPPER*		pmw,
-		MEM_DPT_ENTRY*	dpt_entry
-	   	);
-
-void 
-pm_merge_logs_to_loglist(
-		PMEMobjpool*	pop,
-		PMEM_LOG_LIST*	plog_list,
-	   	MEM_DPT_ENTRY*	dpt_entry,
-		PMEM_LOG_TYPE	type,
-		bool			is_global_dpt);
-
-void
-pm_write_REDO_logs_to_pmblock(
-		PMEMobjpool*	pop,
-		PMEM_BUF_BLOCK*	pblock,
-	   	MEM_DPT_ENTRY*	dpt_entry
-	   	); 	
-
-void
-pm_remove_UNDO_log_from_list(
-		PMEMobjpool*	pop,
-		PMEM_LOG_LIST* list,
-		MEM_LOG_REC* memrec);
-
-void
-pm_remove_REDO_log_list_when_flush(
-		PMEMobjpool*	pop,
-		PMEM_LOG_LIST* list);
-
-		
-////////////////////////////////////////////////
-
-
-void add_log_to_pmem_list(PMEM_LOG_LIST* plog_list,
-						 PMEM_LOG_REC* rec);
-
-
-
-void
-pm_copy_logs_pmemlist(
-		PMEMobjpool*	pop,
-		PMEM_BUF*		buf,
-		PMEM_BUF_BLOCK_LIST* des, 
-		PMEM_BUF_BLOCK_LIST* src);
-void 
-pm_swap_blocks(
-		TOID(PMEM_BUF_BLOCK) a,
-		TOID(PMEM_BUF_BLOCK) b);
-
-/////////// UTILITY ////////////////////////////
-
-
-MEM_DPT_ENTRY*
-seek_dpt_entry(
-		MEM_DPT* dpt,
-	   	page_id_t page_id,
-		MEM_DPT_ENTRY* prev_dpt_entry,
-		ulint*	hashed);
-
-MEM_TT_ENTRY*
-seek_tt_entry(
-		MEM_TT*		tt,
-		uint64_t	tid,
-		MEM_TT_ENTRY* prev_tt_entry,
-		ulint*		hashed);
 #endif //UNIV_PMEMOBJ_PL
 //
 ////////////////////// LOG BUFFER /////////////////////////////
@@ -1372,11 +1034,6 @@ struct __pmem_buf_block_t{
 						  the offset of the page in pmem
 						  note that the size of page can be got from page
 						*/
-#if defined (UNIV_PMEMOBJ_PL)
-	//New in PL-NVM
-	TOID(PMEM_LOG_LIST)				undolog_list; //pointer to the UNDO log list
-	TOID(PMEM_LOG_LIST)				redolog_list; //pointer to the REDO log list
-#endif
 };
 
 struct __pmem_buf_block_list_t {
@@ -1467,12 +1124,6 @@ struct __pmem_buf {
 	PMEM_FLUSHER* flusher;	
 
 	PMEM_FILE_MAP* filemap;
-#if defined (UNIV_PMEMOBJ_PL)
-	//New in PL-NVM
-	MEM_TT*		tt; // the global transaction table
-	MEM_DPT*	dpt; //the global dirty page table
-	bool is_pl_disable;
-#endif
 	/// End new in PL-NVM
 	
 #if defined (UNIV_PMEMOBJ_BLOOM)
@@ -1956,18 +1607,6 @@ os_thread_ret_t
 DECLARE_THREAD(pm_flusher_worker)(
 		void* arg);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-extern "C"
-os_thread_ret_t
-DECLARE_THREAD(pm_log_flusher_coordinator)(
-		void* arg);
-
-extern "C"
-os_thread_ret_t
-DECLARE_THREAD(pm_log_flusher_worker)(
-		void* arg);
-
-#endif //UNIV_PMEMOBJ_PART_PL
 
 #ifdef UNIV_DEBUG
 
@@ -2011,12 +1650,6 @@ hash_f1(
 } while(0)
 #endif //UNIV_PMEMOBJ_BUF_PARTITION
 
-#if defined (UNIV_PMEMOBJ_PL)
-#define PMEM_LOG_HASH_KEY(hashed, key, n) do {\
-	hashed = key ^ PMEM_HASH_MASK;\
-	hashed = hashed % n;\
-}while(0)
-#endif //UNIV_PMEMOBJ_PL
 
 #endif //UNIV_PMEMOBJ_BUF
 
@@ -2131,10 +1764,18 @@ uint64_t __fnv_1a (char* key);
 static int __sum_bits_set_char(char c);
 
 #endif //UNIV_PMEMOBJ_BLOOM
+
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 #define STAT_CAL_AVG(new_avg, n, old_avg, val) do {\
 	new_avg = (old_avg * (n-1) + val) / n; \
 }while (0)
 #endif //PMEMOBJ_PART_PL_STAT
 
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_PMEMOBJ_PART_PL)
+#define PMEM_LOG_HASH_KEY(hashed, key, n) do {\
+	hashed = key ^ PMEM_HASH_MASK;\
+	hashed = hashed % n;\
+}while(0)
+
+#endif //UNIV_PMEMOBJ_PL
 #endif /*__PMEMOBJ_H__ */

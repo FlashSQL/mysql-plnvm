@@ -409,6 +409,9 @@ static PSI_mutex_info all_innodb_mutexes[] = {
 	PSI_KEY(pm_list_cleaner_mutex),
 	PSI_KEY(pm_flusher_mutex),
 #endif
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	PSI_KEY(pm_log_flusher_mutex),
+#endif
 	PSI_KEY(page_zip_stat_per_index_mutex),
 	PSI_KEY(purge_sys_pq_mutex),
 	PSI_KEY(recv_sys_mutex),
@@ -495,6 +498,9 @@ static PSI_thread_info	all_innodb_threads[] = {
 #if defined (UNIV_PMEMOBJ_BUF)
 	PSI_KEY(pm_list_cleaner_thread),
 	PSI_KEY(pm_flusher_thread),
+#endif
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	PSI_KEY(pm_log_flusher_thread),
 #endif
 	PSI_KEY(recv_writer_thread),
 	PSI_KEY(srv_error_monitor_thread),
@@ -3711,7 +3717,7 @@ innobase_init(
 		srv_aio_n_slots_per_seg = 256;
 	}
 #endif
-#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 	if (!srv_pmem_home_dir) {
 		srv_pmem_home_dir = (char*) "/mnt/pmem1";
 	}
@@ -19574,7 +19580,7 @@ static MYSQL_SYSVAR_DOUBLE(pmem_bloom_fpr, srv_pmem_bloom_fpr,
   NULL, NULL, 0.001, 0, 1,0);
 #endif
 
-#if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 static MYSQL_SYSVAR_STR(pmem_home_dir, srv_pmem_home_dir,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
   "Path to PMEM home dir.", NULL, NULL, NULL);
@@ -20422,7 +20428,7 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(pmem_bloom_fpr),
 
 #endif
-#if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
   MYSQL_SYSVAR(pmem_home_dir),
   MYSQL_SYSVAR(pmem_pool_size),
   MYSQL_SYSVAR(pmem_buf_size),

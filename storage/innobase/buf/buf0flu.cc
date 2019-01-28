@@ -64,7 +64,7 @@ static const int buf_flush_page_cleaner_priority = -20;
 #if defined(UNIV_TRACE_FLUSH_TIME)
 extern ulint gb_flush_time;
 #endif
-#if defined(UNIV_PMEMOBJ_BUF)
+#if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_PART_PL)
 #include "my_pmemobj.h"
 #include <libpmemobj.h>
 extern PMEM_WRAPPER* gb_pmw;
@@ -1090,8 +1090,6 @@ buf_flush_write_block_low(
 		break;
 	}
 #if defined(UNIV_PMEMOBJ_BUF)
-	
-	//printf("\n [begin pm_buf_write space %zu page %zu==>", bpage->id.space(),bpage->id.page_no());
 
 #if defined(UNIV_PMEMOBJ_LSB)
 	int ret = pm_lsb_write(gb_pmw->pop, gb_pmw->plsb, bpage->id, bpage->size, frame, sync);
@@ -1100,17 +1098,18 @@ buf_flush_write_block_low(
 	int ret = pm_buf_write_with_flusher(gb_pmw->pop, gb_pmw, bpage->id, bpage->size, bpage->newest_modification, frame, sync);
 #else
 	int ret = pm_buf_write(gb_pmw->pop, gb_pmw->pbuf, bpage->id, bpage->size, frame, sync);
-#endif
-		//printf("END  pm_buf_write space %zu page %zu]\n", bpage->id.space(),bpage->id.page_no());
-		//printf(" END pm_buf_write]");
+#endif // UNIV_PMEMOBJ_LSB
 		assert(ret == PMEM_SUCCESS);
 		//we remove this page from LRU
 		//assert(buf_page_io_complete(bpage, true));
 		assert(buf_page_io_complete(bpage,sync));
 		goto skip_write_and_fsync;
-//	}
 	//skip_pm_write:
+#elif defined (UNIV_PMEMOBJ_PART_PL) 
+		// PL-NVM without PB-NVM
+		pm_ppl_flush_page(gb_pmw->pop, gb_pmw->ppl, bpage->id.fold(), bpage->newest_modification);
 #endif /*UNIV_PMEMOBJ_BUF*/
+
 	/* Disable use of double-write buffer for temporary tablespace.
 	Given the nature and load of temporary tablespace doublewrite buffer
 	adds an overhead during flushing. */
@@ -3914,6 +3913,232 @@ FlushObserver::flush()
 	}
 }
 
+/////////////////////// PART LOG IMPLEMENT/////////////
+#if defined (UNIV_PMEMOBJ_PART_PL)
+//Defined in my_pmemobj.h
+
+PMEM_LOG_FLUSHER*
+pm_log_flusher_init(
+				const size_t	size) {
+	PMEM_LOG_FLUSHER* flusher;
+	ulint i;
+
+	flusher = static_cast <PMEM_LOG_FLUSHER*> (
+			ut_zalloc_nokey(sizeof(PMEM_LOG_FLUSHER)));
+
+	mutex_create(LATCH_ID_PM_LOG_FLUSHER, &flusher->mutex);
+
+	flusher->is_log_req_not_empty = os_event_create("flusher_is_log_req_not_empty");
+	flusher->is_log_req_full = os_event_create("flusher_is_log_req_full");
+	flusher->is_log_all_finished = os_event_create("flusher_is_log_all_finished");
+	flusher->is_log_all_closed = os_event_create("flusher_is_log_all_closed");
+	flusher->size = size;
+	flusher->tail = 0;
+	flusher->n_requested = 0;
+	flusher->is_running = false;
+
+	flusher->flush_list_arr = static_cast <PMEM_PAGE_LOG_BUF**> (	calloc(size, sizeof(PMEM_PAGE_LOG_BUF*)));
+	for (i = 0; i < size; i++) {
+		flusher->flush_list_arr[i] = NULL;
+	}	
+
+	return flusher;
+}
+
+void
+pm_log_flusher_close(
+		PMEM_LOG_FLUSHER*	flusher) {
+	ulint i;
+	
+	//wait for all workers finish their work
+	while (flusher->n_workers > 0) {
+		os_thread_sleep(10000);
+	}
+
+	for (i = 0; i < flusher->size; i++) {
+		if (flusher->flush_list_arr[i]){
+			//free(buf->flusher->flush_list_arr[i]);
+			flusher->flush_list_arr[i] = NULL;
+		}
+			
+	}	
+
+	if (flusher->flush_list_arr){
+		free(flusher->flush_list_arr);
+		flusher->flush_list_arr = NULL;
+	}	
+	//printf("free array ok\n");
+
+	mutex_destroy(&flusher->mutex);
+
+	os_event_destroy(flusher->is_log_req_not_empty);
+	os_event_destroy(flusher->is_log_req_full);
+	//os_event_destroy(buf->flusher->is_flush_full);
+
+	os_event_destroy(flusher->is_log_all_finished);
+	os_event_destroy(flusher->is_log_all_closed);
+	//printf("destroys mutex and events ok\n");	
+
+	if(flusher){
+		flusher = NULL;
+		free(flusher);
+	}
+	//printf("free flusher ok\n");
+}
+/*
+ *The coordinator
+ Handle start/stop all workers
+ * */
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_flusher_coordinator)(
+/*===============================================*/
+	void*	arg MY_ATTRIBUTE((unused)))
+			/*!< in: a dummy parameter required by
+			os_thread_create */
+{
+
+
+	my_thread_init();
+
+#ifdef UNIV_PFS_THREAD
+	pfs_register_thread(pm_log_flusher_thread_key);
+#endif /* UNIV_PFS_THREAD */
+
+#ifdef UNIV_DEBUG_THREAD_CREATION
+	ib::info() << "coordinator pm_log_flusher thread running, id "
+		<< os_thread_pf(os_thread_get_curr_id());
+#endif /* UNIV_DEBUG_THREAD_CREATION */
+
+#ifdef UNIV_LINUX
+	/* linux might be able to set different setting for each thread.
+	worth to try to set high priority for page cleaner threads */
+	if (buf_flush_page_cleaner_set_priority(
+		buf_flusher_priority)) {
+
+		ib::info() << "pm_list_cleaner coordinator priority: "
+			<< buf_flush_page_cleaner_priority;
+	} else {
+		ib::info() << "If the mysqld execution user is authorized,"
+		" page cleaner thread priority can be changed."
+		" See the man page of setpriority().";
+	}
+#endif /* UNIV_LINUX */
+
+	PMEM_LOG_FLUSHER* flusher = gb_pmw->ppl->flusher;
+
+	flusher->is_running = true;
+	//ulint ret;
+
+	while (srv_shutdown_state == SRV_SHUTDOWN_NONE) {
+		os_event_wait(flusher->is_log_all_finished);
+
+		if (srv_shutdown_state != SRV_SHUTDOWN_NONE) {
+			break;
+		}
+		//the workers are idle and the server is running, keep waiting
+		os_event_reset(flusher->is_log_all_finished);
+	} //end while thread
+
+	flusher->is_running = false;
+	//trigger waiting workers to stop
+	os_event_set(flusher->is_log_req_not_empty);
+	//wait for all workers closed
+	printf("wait all pm_log workers close...\n");
+	os_event_wait(flusher->is_log_all_closed);
+
+	printf("all pm_log workers closed\n");
+	my_thread_end();
+
+	os_thread_exit();
+
+	OS_THREAD_DUMMY_RETURN;
+}
+
+/*Worker thread of log flusher.
+ * Managed by the coordinator thread
+ * number of threads are equal to the number of cleaner threds from config
+@return a dummy parameter */
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_flusher_worker)(
+/*==========================================*/
+	void*	arg MY_ATTRIBUTE((unused)))
+			/*!< in: a dummy parameter required by
+			os_thread_create */
+{
+	ulint i;
+
+	PMEM_LOG_FLUSHER* flusher = gb_pmw->ppl->flusher;
+
+	PMEM_PAGE_LOG_BUF* plogbuf = NULL;
+
+	my_thread_init();
+
+	mutex_enter(&flusher->mutex);
+	flusher->n_workers++;
+	os_event_reset(flusher->is_log_all_closed);
+	mutex_exit(&flusher->mutex);
+
+	while (true) {
+		//worker thread wait until there is is_requested signal 
+retry:
+		os_event_wait(flusher->is_log_req_not_empty);
+		//looking for a full list in wait-list and flush it
+		mutex_enter(&flusher->mutex);
+		if (flusher->n_requested > 0) {
+			for (i = 0; i < flusher->size; i++) {
+				plogbuf = flusher->flush_list_arr[i];
+				if (plogbuf != NULL)
+				{
+					//***this call aio_batch ***
+					pm_log_flush_log_buf(gb_pmw->pop, gb_pmw->ppl, plogbuf);
+					flusher->n_requested--;
+					os_event_set(flusher->is_log_req_full);
+					//we can set the pointer to null after the pm_buf_flush_list finished
+					flusher->flush_list_arr[i] = NULL;
+					break;
+				}
+			}
+
+		} //end if flusher->n_requested > 0
+
+		if (flusher->n_requested == 0) {
+			if (buf_page_cleaner_is_active) {
+				//buf_page_cleaner is running, start waiting
+				os_event_reset(flusher->is_log_req_not_empty);
+			}
+			else {
+				mutex_exit(&flusher->mutex);
+				break;
+			}
+		}
+		mutex_exit(&flusher->mutex);
+	} //end while thread
+
+	mutex_enter(&flusher->mutex);
+	flusher->n_workers--;
+	if (flusher->n_workers == 0) {
+		printf("The last log worker is closing\n");
+		//os_event_set(flusher->is_all_closed);
+	}
+	mutex_exit(&flusher->mutex);
+
+	my_thread_end();
+
+	os_thread_exit();
+
+	OS_THREAD_DUMMY_RETURN;
+}
+
+#ifdef UNIV_PFS_THREAD
+mysql_pfs_key_t pm_log_flusher_thread_key;
+#endif /* UNIV_PFS_THREAD */
+
+#endif //UNIV_PMEMOBJ_PART_PL
+
+
+//////////////// PB-NVM//////////////////////////
 #if defined (UNIV_PMEMOBJ_BUF)
 
 #if defined (UNIV_PMEMOBJ_BUF_FLUSHER)
@@ -4431,9 +4656,6 @@ static my_bool pm_list_cleaner_disabled_debug;
 #ifdef UNIV_PFS_THREAD
 mysql_pfs_key_t pm_list_cleaner_thread_key;
 mysql_pfs_key_t pm_flusher_thread_key;
-#if defined (UNIV_PMEMOBJ_PART_PL)
-mysql_pfs_key_t pm_log_flusher_thread_key;
-#endif // UNIV_PMEMOBJ_PART_PL
 #endif /* UNIV_PFS_THREAD */
 
 
@@ -4479,9 +4701,6 @@ DECLARE_THREAD(pm_buf_flush_list_cleaner_coordinator)(
 			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,
 				D_RW(gb_pmw->pbuf->spec_list)->cur_pages);
 #endif
-#if defined (UNIV_PMEMOBJ_PART_PL)
-
-#endif
 	} //end while thread
 
 	printf("pm_buf_flush_list_cleaner_coordinator thread  end\n");
@@ -4493,223 +4712,5 @@ DECLARE_THREAD(pm_buf_flush_list_cleaner_coordinator)(
 }
 #endif //UNIV_PMEMOBJ_BUF
 
-/////////////////////// PART LOG IMPLEMENT/////////////
-#if defined (UNIV_PMEMOBJ_PART_PL)
-//Defined in my_pmemobj.h
-
-PMEM_LOG_FLUSHER*
-pm_log_flusher_init(
-				const size_t	size) {
-	PMEM_LOG_FLUSHER* flusher;
-	ulint i;
-
-	flusher = static_cast <PMEM_LOG_FLUSHER*> (
-			ut_zalloc_nokey(sizeof(PMEM_LOG_FLUSHER)));
-
-	mutex_create(LATCH_ID_PM_FLUSHER, &flusher->mutex);
-
-	flusher->is_log_req_not_empty = os_event_create("flusher_is_log_req_not_empty");
-	flusher->is_log_req_full = os_event_create("flusher_is_log_req_full");
-	flusher->is_log_all_finished = os_event_create("flusher_is_log_all_finished");
-	flusher->is_log_all_closed = os_event_create("flusher_is_log_all_closed");
-	flusher->size = size;
-	flusher->tail = 0;
-	flusher->n_requested = 0;
-	flusher->is_running = false;
-
-	flusher->flush_list_arr = static_cast <PMEM_PAGE_LOG_BUF**> (	calloc(size, sizeof(PMEM_PAGE_LOG_BUF*)));
-	for (i = 0; i < size; i++) {
-		flusher->flush_list_arr[i] = NULL;
-	}	
-
-	return flusher;
-}
-
-void
-pm_log_flusher_close(
-		PMEM_LOG_FLUSHER*	flusher) {
-	ulint i;
-	
-	//wait for all workers finish their work
-	while (flusher->n_workers > 0) {
-		os_thread_sleep(10000);
-	}
-
-	for (i = 0; i < flusher->size; i++) {
-		if (flusher->flush_list_arr[i]){
-			//free(buf->flusher->flush_list_arr[i]);
-			flusher->flush_list_arr[i] = NULL;
-		}
-			
-	}	
-
-	if (flusher->flush_list_arr){
-		free(flusher->flush_list_arr);
-		flusher->flush_list_arr = NULL;
-	}	
-	//printf("free array ok\n");
-
-	mutex_destroy(&flusher->mutex);
-
-	os_event_destroy(flusher->is_log_req_not_empty);
-	os_event_destroy(flusher->is_log_req_full);
-	//os_event_destroy(buf->flusher->is_flush_full);
-
-	os_event_destroy(flusher->is_log_all_finished);
-	os_event_destroy(flusher->is_log_all_closed);
-	//printf("destroys mutex and events ok\n");	
-
-	if(flusher){
-		flusher = NULL;
-		free(flusher);
-	}
-	//printf("free flusher ok\n");
-}
-/*
- *The coordinator
- Handle start/stop all workers
- * */
-extern "C"
-os_thread_ret_t
-DECLARE_THREAD(pm_log_flusher_coordinator)(
-/*===============================================*/
-	void*	arg MY_ATTRIBUTE((unused)))
-			/*!< in: a dummy parameter required by
-			os_thread_create */
-{
-
-
-	my_thread_init();
-
-#ifdef UNIV_PFS_THREAD
-	pfs_register_thread(pm_log_flusher_thread_key);
-#endif /* UNIV_PFS_THREAD */
-
-#ifdef UNIV_DEBUG_THREAD_CREATION
-	ib::info() << "coordinator pm_log_flusher thread running, id "
-		<< os_thread_pf(os_thread_get_curr_id());
-#endif /* UNIV_DEBUG_THREAD_CREATION */
-
-#ifdef UNIV_LINUX
-	/* linux might be able to set different setting for each thread.
-	worth to try to set high priority for page cleaner threads */
-	if (buf_flush_page_cleaner_set_priority(
-		buf_flusher_priority)) {
-
-		ib::info() << "pm_list_cleaner coordinator priority: "
-			<< buf_flush_page_cleaner_priority;
-	} else {
-		ib::info() << "If the mysqld execution user is authorized,"
-		" page cleaner thread priority can be changed."
-		" See the man page of setpriority().";
-	}
-#endif /* UNIV_LINUX */
-
-	PMEM_LOG_FLUSHER* flusher = gb_pmw->ppl->flusher;
-
-	flusher->is_running = true;
-	//ulint ret;
-
-	while (srv_shutdown_state == SRV_SHUTDOWN_NONE) {
-		os_event_wait(flusher->is_log_all_finished);
-
-		if (srv_shutdown_state != SRV_SHUTDOWN_NONE) {
-			break;
-		}
-		//the workers are idle and the server is running, keep waiting
-		os_event_reset(flusher->is_log_all_finished);
-	} //end while thread
-
-	flusher->is_running = false;
-	//trigger waiting workers to stop
-	os_event_set(flusher->is_log_req_not_empty);
-	//wait for all workers closed
-	printf("wait all pm_log workers close...\n");
-	os_event_wait(flusher->is_log_all_closed);
-
-	printf("all pm_log workers closed\n");
-	my_thread_end();
-
-	os_thread_exit();
-
-	OS_THREAD_DUMMY_RETURN;
-}
-
-/*Worker thread of log flusher.
- * Managed by the coordinator thread
- * number of threads are equal to the number of cleaner threds from config
-@return a dummy parameter */
-extern "C"
-os_thread_ret_t
-DECLARE_THREAD(pm_log_flusher_worker)(
-/*==========================================*/
-	void*	arg MY_ATTRIBUTE((unused)))
-			/*!< in: a dummy parameter required by
-			os_thread_create */
-{
-	ulint i;
-
-	PMEM_LOG_FLUSHER* flusher = gb_pmw->ppl->flusher;
-
-	PMEM_PAGE_LOG_BUF* plogbuf = NULL;
-
-	my_thread_init();
-
-	mutex_enter(&flusher->mutex);
-	flusher->n_workers++;
-	os_event_reset(flusher->is_log_all_closed);
-	mutex_exit(&flusher->mutex);
-
-	while (true) {
-		//worker thread wait until there is is_requested signal 
-retry:
-		os_event_wait(flusher->is_log_req_not_empty);
-		//looking for a full list in wait-list and flush it
-		mutex_enter(&flusher->mutex);
-		if (flusher->n_requested > 0) {
-			for (i = 0; i < flusher->size; i++) {
-				plogbuf = flusher->flush_list_arr[i];
-				if (plogbuf != NULL)
-				{
-					//***this call aio_batch ***
-					pm_log_flush_log_buf(gb_pmw->pop, gb_pmw->ppl, plogbuf);
-					flusher->n_requested--;
-					os_event_set(flusher->is_log_req_full);
-					//we can set the pointer to null after the pm_buf_flush_list finished
-					flusher->flush_list_arr[i] = NULL;
-					break;
-				}
-			}
-
-		} //end if flusher->n_requested > 0
-
-		if (flusher->n_requested == 0) {
-			if (buf_page_cleaner_is_active) {
-				//buf_page_cleaner is running, start waiting
-				os_event_reset(flusher->is_log_req_not_empty);
-			}
-			else {
-				mutex_exit(&flusher->mutex);
-				break;
-			}
-		}
-		mutex_exit(&flusher->mutex);
-	} //end while thread
-
-	mutex_enter(&flusher->mutex);
-	flusher->n_workers--;
-	if (flusher->n_workers == 0) {
-		printf("The last log worker is closing\n");
-		//os_event_set(flusher->is_all_closed);
-	}
-	mutex_exit(&flusher->mutex);
-
-	my_thread_end();
-
-	os_thread_exit();
-
-	OS_THREAD_DUMMY_RETURN;
-}
-#endif //UNIV_PMEMOBJ_PART_PL
 
 /////////////////////// END PART LOG IMPLEMENT/////////////

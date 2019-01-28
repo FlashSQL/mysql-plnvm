@@ -116,7 +116,7 @@ extern bool srv_lzo_disabled;
 #include "pmem_log.h"
 #endif
 
-#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined(UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined(UNIV_PMEMOBJ_WAL) || defined(UNIV_PMEMOBJ_PART_PL)
 #include <libpmem.h>
 #include <libpmemobj.h>
 #include "my_pmemobj.h"
@@ -182,7 +182,7 @@ FILE* gb_trace_file = fopen("trace_flush.txt","a");
 /** global PMEM_FILE_COLL object*/
 PMEM_FILE_COLL* gb_pfc;
 #endif
-#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 /*global PMEMobjpool*/
 char  PMEM_FILE_PATH [PMEM_MAX_FILE_NAME_LENGTH];
 extern PMEM_WRAPPER* gb_pmw;
@@ -1750,7 +1750,7 @@ innobase_start_or_create_for_mysql(void)
 	ib::info() << "Hello NVM Log from VLDB lab ========\n";
 	gb_pfc = pfc_new(srv_log_file_size);
 #endif
-#if defined (UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 	#ifdef UNIV_PMEMOBJ_LOG
 		ib::info() << "======= Hello PMEMOBJ Log from VLDB lab ========\n";
 	#endif
@@ -1775,6 +1775,7 @@ innobase_start_or_create_for_mysql(void)
 	#ifdef UNIV_PMEMOBJ_WAL
 		ib::info() << "======= Hello PMEMOBJ WAL from VLDB lab ========\n";
 	#endif 
+	#ifdef UNIV_PMEOBJ_BUF
 	ib::info() << "======== pool_size =" << srv_pmem_pool_size << 
 		"MB; srv_pmem_buf_size= " << srv_pmem_buf_size << "MB; " <<
 	    "; n_buckets=" << srv_pmem_buf_n_buckets <<
@@ -1784,6 +1785,9 @@ innobase_start_or_create_for_mysql(void)
 	#endif
 	    "; n_slots_per_seg=" << srv_aio_n_slots_per_seg <<
 	    "; flush_pct=" << srv_pmem_buf_flush_pct <<
+	#endif //UNIV_PMEMOBJ_BUF
+	#ifdef UNIV_PMEMOBJ_PART_PL
+	#endif
 		";\n";
 
 //	gb_pop = pmem_create_PMEMobjpool(srv_log_group_home_dir);
@@ -1945,9 +1949,14 @@ innobase_start_or_create_for_mysql(void)
 	pm_wrapper_buf_alloc_or_open(gb_pmw,
 							     buf_size,
 								 UNIV_PAGE_SIZE);
+#endif // UNIV_PMEMOBJ_LSB
+	//[TODO] Recovery handler
+#endif /* UNIV_PMEMOBJ_BUF */
+
 #if defined (UNIV_PMEMOBJ_PL)
 	//uint64_t n_buckets = 16;	
-	uint64_t n_buckets = 512;	
+	//uint64_t n_buckets = 512;	
+	uint64_t n_buckets = 1024;	
 	uint64_t n_blocks_per_bucket = 4096;
 	//uint64_t n_blocks_per_bucket = 16384;
 	//uint64_t block_size = 4096;
@@ -1956,6 +1965,7 @@ innobase_start_or_create_for_mysql(void)
 	uint64_t n_free_bufs = n_buckets / 4;
 
 	uint64_t n_log_bufs = n_buckets + n_free_bufs;
+	uint64_t n_flush_threads = 32;
 
 #if defined (UNIV_PMEMOBJ_TX_LOG)
 	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
@@ -1971,11 +1981,6 @@ innobase_start_or_create_for_mysql(void)
 
 #endif //UNIV_PMEMOBJ_TX_LOG
 #endif // UNIV_PMEMOBJ_PL
-
-#endif // UNIV_PMEMOBJ_LSB
-
-	//[TODO] Recovery handler
-#endif /* UNIV_PMEMOBJ_BUF */
 
 	recv_sys_create();
 	recv_sys_init(buf_pool_get_curr_size());
@@ -2027,8 +2032,8 @@ innobase_start_or_create_for_mysql(void)
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	//os_thread_create(pm_flusher_coordinator, NULL, NULL);
-	printf("PMEM_INFO: ========>   create %d worker threads for PART-LOG\n", srv_pmem_n_flush_threads);
-	for (i = 0; i < srv_pmem_n_flush_threads; ++i) {
+	printf("PMEM_INFO: ========>   create %d worker threads for PART-LOG\n", n_flush_threads);
+	for (i = 0; i < n_flush_threads; ++i) {
 		os_thread_create(pm_log_flusher_worker, NULL, NULL);
 	}
 	

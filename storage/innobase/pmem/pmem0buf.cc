@@ -1938,65 +1938,8 @@ get_free_list:
 	//The free_pool may empty now, wait in necessary
 	os_event_reset(buf->free_pool_event);
 
-#if defined (UNIV_PMEMOBJ_PL)	
-#if !defined (UNIV_PMEMOBJ_PART_PL)
-#if !defined (UNIV_TEST_PL)
-#if !defined (UNIV_TEST_PL_P2)
-	//New in PL-NVM//////////////////////////////////
-	//Copy pmem blocks that have UNDO log or REDO log
-	pm_copy_logs_pmemlist(pop, buf, D_RW(first_list), D_RW(hashlist));
-
-	//End new in PL-NVM /////////////////////////////
-#endif // UNIV_TEST_PL_P2
-#endif // UNIV_TEST_PL
-#endif // UNIV_PMEMOBJ_PART_PL
-#endif // UNIV_PMEOBJ_PL
 	pmemobj_rwlock_unlock(pop, &(D_RW(buf->free_pool)->lock));
 
-//#if defined (UNIV_PMEMOBJ_PART_PL)
-//	/* Reset IDLE entries in DPT before propagating pages to disk*/
-//	PMEM_BUF_BLOCK* pblock;
-//	PMEM_BUF_BLOCK_LIST* pfreelist;
-//
-//	PMEM_DPT* pdpt = D_RW(pmw->ptxl->dpt);
-//	assert(pdpt != NULL);
-//	uint64_t key;
-//	bool is_idle = false;
-//	ulint i;
-//	uint32_t copy_back_cnt = 0;
-//
-//	pfreelist = D_RW(first_list);
-//
-//	pmemobj_rwlock_wrlock(pop, &pfreelist->lock);
-//	for (i = 0; i < phashlist->cur_pages; i++) {
-//		pblock = D_RW(D_RW(phashlist->arr)[i]);
-//		key = pblock->id.fold();
-//		is_idle = pm_ptxl_check_and_reset_dpt_entry(pop, pdpt, key);
-//
-//		//if (!is_idle) {
-//		//	copy_back_cnt++;
-//		////	//push back this block to the free block
-//		////	__append_buf_block(
-//		////			pop,
-//		////		   	buf,
-//		////			pfreelist,
-//		////		   	pblock);
-//		////	/*set del mark on this block so that it is ignored in propagation process 
-//		////	 *if we set state free istead of del mark, the read thread cannot read this page
-//		////	 we also keep the phashlist->cur_pages unchanged
-//		////	 * */
-//		////	pblock->state = PMEM_DEL_MARK_BLOCK;
-//		////	if (pblock->sync)
-//		////		phashlist->n_sio_pending--;
-//		////	else
-//		////		phashlist->n_aio_pending--;
-//		//}
-//		//else{
-//		//}
-//	}
-//	//printf("#####  handle full list_id %zu free_list_id %zu n_cp_back %zu\n", phashlist->list_id, pfreelist->list_id, copy_back_cnt);
-//	pmemobj_rwlock_unlock(pop, &pfreelist->lock);
-//#endif //UNIV_PMEMOBJ_PART_PL
 
 	/*(2) Handle flusher */
 #if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
