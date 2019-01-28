@@ -22,6 +22,10 @@
 #define PMEM_ERROR -1
 
 // Partitioned-Log //////////////////////////
+#define PMEM_PART_LOG_BUF_THRESHOLD 90 //90%
+#define PMEM_PART_LOG_BUF_SIZE 64*4*1024 // bytes
+
+
 #define JUMP_STEP 1
 #define MAX_DPT_ENTRIES 8192
 #define MAX_TT_ENTRIES 8192
@@ -75,6 +79,11 @@ enum PMEM_BLOCK_STATE {
     PMEM_IN_FLUSH_BLOCK=3,
 	PMEM_PLACE_HOLDER_BLOCK=4,
 	PMEM_DEL_MARK_BLOCK=5
+};
+enum PMEM_LOG_BUF_STATE{
+	PMEM_LOG_BUF_FREE = 1,
+	PMEM_LOG_BUF_IN_USED = 2,
+	PMEM_LOG_BUF_IN_FLUSH = 3,
 };
 
 enum PMEM_LOG_BLOCK_STATE {

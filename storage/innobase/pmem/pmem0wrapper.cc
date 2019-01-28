@@ -133,9 +133,14 @@ void pm_wrapper_free(PMEM_WRAPPER* pmw){
 	//PMEM buf
 	pm_wrapper_buf_close(pmw);
 	pmw->pbuf = NULL;
-#endif
+#endif //UNIV_PMEMOBJ_LSB
 
-#endif 
+#endif //UNIV_PMEMOBJ_BUF
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	pm_wrapper_page_log_close(pmw);
+	pmw->ppl = NULL;
+#endif //UNIV_PMEMOBJ_PART_PL
 
 	if(pmw->pop)
 		pm_pop_free(pmw->pop);

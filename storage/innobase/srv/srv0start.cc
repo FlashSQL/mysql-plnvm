@@ -1952,6 +1952,11 @@ innobase_start_or_create_for_mysql(void)
 	//uint64_t n_blocks_per_bucket = 16384;
 	//uint64_t block_size = 4096;
 	uint64_t block_size = 1024;
+	uint64_t log_buf_size = 64 * 4 * 1024; // n 4-KB
+	uint64_t n_free_bufs = n_buckets / 4;
+
+	uint64_t n_log_bufs = n_buckets + n_free_bufs;
+
 #if defined (UNIV_PMEMOBJ_TX_LOG)
 	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
 								 n_buckets,
@@ -1961,7 +1966,8 @@ innobase_start_or_create_for_mysql(void)
 	pm_wrapper_page_log_alloc_or_open(gb_pmw,
 								 n_buckets,
 								 n_blocks_per_bucket,
-								 block_size);
+								 n_log_bufs,
+								 log_buf_size);
 
 #endif //UNIV_PMEMOBJ_TX_LOG
 #endif // UNIV_PMEMOBJ_PL
@@ -2018,6 +2024,15 @@ innobase_start_or_create_for_mysql(void)
 #endif 
 
 #endif //UNIV_PMEMOBJ_BUF
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//os_thread_create(pm_flusher_coordinator, NULL, NULL);
+	printf("PMEM_INFO: ========>   create %d worker threads for PART-LOG\n", srv_pmem_n_flush_threads);
+	for (i = 0; i < srv_pmem_n_flush_threads; ++i) {
+		os_thread_create(pm_log_flusher_worker, NULL, NULL);
+	}
+	
+#endif 
 
 	srv_start_state_set(SRV_START_STATE_IO);
 
