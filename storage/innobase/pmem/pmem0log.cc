@@ -1229,7 +1229,10 @@ pm_wrapper_page_log_alloc_or_open(
 		uint64_t		n_buckets,
 		uint64_t		n_blocks_per_bucket,
 		uint64_t		n_log_bufs,
-		uint64_t		log_buf_size) {
+		uint64_t		log_buf_size,
+		uint64_t		n_log_files_per_bucket
+		) 
+{
 	
 	// Get const variable from parameter and config value
 	
@@ -1239,6 +1242,8 @@ pm_wrapper_page_log_alloc_or_open(
 	PMEM_LOG_BUF_FLUSH_PCT = 0.9;
 	PMEM_LOG_FLUSHER_WAKE_THRESHOLD = 5;
 	PMEM_N_LOG_FLUSH_THREADS=32;
+
+	PMEM_N_LOG_FILES_PER_BUCKET = n_log_files_per_bucket;
 	
 	if (!pmw->ppl) {
 		pmw->ppl = alloc_pmem_page_part_log(
@@ -1284,6 +1289,18 @@ pm_wrapper_page_log_close(
 	//Free resource allocated in DRAM
 	os_event_destroy(ppl->free_log_pool_event);
 	pm_log_flusher_close(ppl->flusher);
+	
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+#if defined (UNIV_PMEMOBJ_TX_LOG)
+	ptxl_print_all_stat_info(debug_ptxl_file,  pmw->ptxl);
+#else
+	__print_page_blocks_state(debug_ptxl_file, pmw->ppl);
+	__print_TT(debug_ptxl_file, D_RW(pmw->ppl->tt));
+#endif // UNIV_PMEMOBJ_TX_LOG
+
+	//fclose(debug_ptxl_file);
+	fclose(pmw->ptxl->deb_file);
+#endif
 
 	//the resource allocated in NVDIMM are kept
 }
@@ -1327,6 +1344,8 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 	ppl->n_log_bufs = n_log_bufs;
 	ppl->n_buckets = n_buckets;
 	ppl->n_blocks_per_bucket = n_blocks_per_bucket;
+
+	ppl->n_log_files_per_bucket = PMEM_N_LOG_FILES_PER_BUCKET;
 
 	ppl->is_new = true;
 	ppl->data = pm_pop_alloc_bytes(pop, align_size);
@@ -2188,7 +2207,8 @@ __pm_write_log_buf(
 			uint64_t					src_off,
 			uint64_t					rec_size,
 			PMEM_PAGE_LOG_BLOCK*		plog_block,
-			bool						is_first_write){
+			bool						is_first_write)
+{
 
 	byte* log_des;
 	byte* pdata;
@@ -2263,7 +2283,8 @@ get_free_buf:
 void
 pm_log_buf_assign_flusher(
 		PMEM_PAGE_PART_LOG*			ppl,
-		PMEM_PAGE_LOG_BUF*	plogbuf) {
+		PMEM_PAGE_LOG_BUF*	plogbuf) 
+{
 	
 	PMEM_LOG_FLUSHER* flusher = ppl->flusher;
 
@@ -2324,7 +2345,8 @@ void
 pm_log_flush_log_buf(
 		PMEMobjpool*			pop,
 		PMEM_PAGE_PART_LOG*		ppl,
-		PMEM_PAGE_LOG_BUF*		plogbuf) {
+		PMEM_PAGE_LOG_BUF*		plogbuf) 
+{
 
 	PMEM_PAGE_LOG_FREE_POOL* pfree_pool;
 	TOID(PMEM_PAGE_LOG_BUF) logbuf;
@@ -2394,7 +2416,8 @@ pm_ppl_commit(
 		PMEMobjpool*			pop,
 		PMEM_PAGE_PART_LOG*		ppl,
 		uint64_t				tid,
-		int64_t					eid) {
+		int64_t					eid) 
+{
 //return;
 
 	ulint hashed;
@@ -2686,6 +2709,57 @@ pm_ppl_flush_page(
 */
 }
 
+/*
+ * Init a log group in DRAM
+ * Borrow the code from InnoDB 
+ * */
+PMEM_LOG_GROUP*
+pm_log_group_init(
+/*===========*/
+	uint64_t	id,			/*!< in: group id */
+	uint64_t	n_files,		/*!< in: number of log files */
+	uint64_t	file_size,		/*!< in: log file size in bytes */
+	uint64_t	space_id)		/*!< in: space id of the file space
+					which contains the log files of this
+					group */
+{
+	uint64_t i;
+	PMEM_LOG_GROUP*	group;
+	
+	group = static_cast<PMEM_LOG_GROUP*>(ut_malloc_nokey(sizeof(PMEM_LOG_GROUP)));
+
+	group->id = id;
+	group->n_files = n_files;
+	group->format = LOG_HEADER_FORMAT_CURRENT;
+	group->file_size = file_size;
+	group->space_id = space_id;
+	group->state = LOG_GROUP_OK;
+	group->lsn = LOG_START_LSN;
+	group->lsn_offset = LOG_FILE_HDR_SIZE;
+
+	group->file_header_bufs_ptr = static_cast<byte**>(
+		ut_zalloc_nokey(sizeof(byte*) * n_files));
+
+	group->file_header_bufs = static_cast<byte**>(
+		ut_zalloc_nokey(sizeof(byte**) * n_files));
+
+	for (i = 0; i < n_files; i++) {
+		group->file_header_bufs_ptr[i] = static_cast<byte*>(
+			ut_zalloc_nokey(LOG_FILE_HDR_SIZE
+					+ OS_FILE_LOG_BLOCK_SIZE));
+
+		group->file_header_bufs[i] = static_cast<byte*>(
+			ut_align(group->file_header_bufs_ptr[i],
+				 OS_FILE_LOG_BLOCK_SIZE));
+	}
+
+	return group;
+}
+
+//////////////////// LOG FILE FUNCTIONS//////
+
+////////////END LOG FILE FUNCTION
+//
 ////////////////// END PERPAGE LOGGING ///////////////
 
 

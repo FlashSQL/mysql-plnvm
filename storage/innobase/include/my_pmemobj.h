@@ -75,6 +75,10 @@ static double PMEM_LOG_BUF_FLUSH_PCT;
 
 static uint64_t PMEM_LOG_FLUSHER_WAKE_THRESHOLD=5;
 static uint64_t PMEM_N_LOG_FLUSH_THREADS=32;
+//static uint64_t PMEM_N_LOG_FILES_PER_BUCKET=2;
+static uint64_t PMEM_N_LOG_FILES_PER_BUCKET=1;
+static uint64_t PMEM_LOG_FILE_SIZE=4*1024; //in 4-KB pages
+
 #endif //UNIV_PMEMOBJ_PL
 
 struct __pmem_wrapper;
@@ -207,6 +211,10 @@ typedef struct __pmem_tt_hashed_line PMEM_TT_HASHED_LINE;
 
 struct __pmem_tt_entry;
 typedef struct __pmem_tt_entry PMEM_TT_ENTRY;
+
+struct __pmem_log_group;
+typedef struct __pmem_log_group PMEM_LOG_GROUP;
+
 
 // End Per-Page Logging
 
@@ -346,6 +354,7 @@ struct __pmem_tx_part_log {
 	uint64_t			n_blocks_per_bucket; //# load_factor, of log block per bucket
 	uint64_t			block_size; //log block size in bytes
 	
+
 	/*Statistic info*/	
 	uint64_t	pmem_alloc_size;
 	uint64_t	pmem_dpt_size;
@@ -496,6 +505,11 @@ struct __pmem_page_part_log {
 	/*Flusher*/	
 	PMEM_LOG_FLUSHER*	flusher;
 
+	/*DRAM Log File*/	
+	pfs_os_file_t    log_files[1000];
+	uint64_t		 n_log_files_per_bucket;
+	PMEM_LOG_GROUP**	log_groups; //n_buckets groups
+
 	/*Statistic info*/	
 	//log area
 	uint64_t	pmem_alloc_size;
@@ -629,6 +643,25 @@ struct __pmem_tt {
 	TOID_ARRAY(TOID(PMEM_TT_HASHED_LINE)) buckets;
 };
 
+struct __pmem_log_group {
+	uint64_t	id;
+	uint64_t	n_files;
+	uint64_t	format;
+	uint64_t	file_size;
+	uint64_t	space_id;
+
+	log_group_state_t		state;
+
+	/** lsn used to fix coordinates within the log group */
+	lsn_t				lsn;
+	/** the byte offset of the above lsn */
+	lsn_t				lsn_offset;
+	/** unaligned buffers */
+	byte**				file_header_bufs_ptr;
+	/** buffers for each file header in the group */
+	byte**				file_header_bufs;
+};
+
 /////////////// End Per-Page Logging ///////////////////
 
 
@@ -753,7 +786,9 @@ pm_wrapper_page_log_alloc_or_open(
 		uint64_t		n_buckets,
 		uint64_t		n_blocks_per_bucket,
 		uint64_t		n_log_bufs,
-		uint64_t		log_buf_size);
+		uint64_t		log_buf_size,
+		uint64_t		n_log_files_per_bucket
+		);
 
 void
 pm_wrapper_page_log_close(
@@ -907,6 +942,33 @@ pm_ppl_check_and_reset_tt_entry(
 inline bool
 __is_page_log_block_reclaimable(
 		PMEM_PAGE_LOG_BLOCK* plog_block);
+
+/////////////////////// LOG FILES ////////////////////////////
+
+// See srv0start.cc for implementation
+dberr_t
+pm_create_or_open_part_log_files(
+		PMEM_PAGE_PART_LOG*	ppl,
+		char*   logfilename,
+		size_t  dirnamelen,
+		char*&  logfile0);
+
+PMEM_LOG_GROUP*
+pm_log_group_init(
+/*===========*/
+	uint64_t	id,			/*!< in: group id */
+	uint64_t	n_files,		/*!< in: number of log files */
+	uint64_t	file_size,		/*!< in: log file size in bytes */
+	uint64_t	space_id);	
+
+dberr_t
+pm_create_log_file(
+	pfs_os_file_t*	file,
+	const char*	name,
+	uint64_t log_file_size);
+
+/////////////// END LOG FILES ///////////
+
 
 //for debugging
 void 

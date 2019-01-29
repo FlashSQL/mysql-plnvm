@@ -397,6 +397,7 @@ create_log_file(
 #define INIT_LOG_FILE0	(SRV_N_LOG_FILES_MAX + 1)
 
 /*********************************************************************//**
+
 Creates all log files.
 @return DB_SUCCESS or error code */
 static
@@ -1956,7 +1957,7 @@ innobase_start_or_create_for_mysql(void)
 #if defined (UNIV_PMEMOBJ_PL)
 	//uint64_t n_buckets = 16;	
 	//uint64_t n_buckets = 512;	
-	uint64_t n_buckets = 1024;	
+	uint64_t n_buckets = 64;	
 	uint64_t n_blocks_per_bucket = 4096;
 	//uint64_t n_blocks_per_bucket = 16384;
 	//uint64_t block_size = 4096;
@@ -1966,6 +1967,8 @@ innobase_start_or_create_for_mysql(void)
 
 	uint64_t n_log_bufs = n_buckets + n_free_bufs;
 	uint64_t n_flush_threads = 32;
+
+	uint64_t n_log_files_per_bucket = 2;
 
 #if defined (UNIV_PMEMOBJ_TX_LOG)
 	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
@@ -1977,7 +1980,9 @@ innobase_start_or_create_for_mysql(void)
 								 n_buckets,
 								 n_blocks_per_bucket,
 								 n_log_bufs,
-								 log_buf_size);
+								 log_buf_size,
+								 n_log_files_per_bucket
+								 );
 
 #endif //UNIV_PMEMOBJ_TX_LOG
 #endif // UNIV_PMEMOBJ_PL
@@ -2265,6 +2270,16 @@ innobase_start_or_create_for_mysql(void)
 			return(srv_init_abort(DB_ERROR));
 		}
 	}
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	// We create or open PMEM part log files here
+	
+	pm_create_or_open_part_log_files(
+			gb_pmw->ppl,
+			logfilename,
+			dirnamelen,
+			logfile0);
+
+#endif //UNIV_PMEMOBJ_PART_PL
 
 files_checked:
 	/* Open all log files and data files in the system
@@ -2912,7 +2927,7 @@ innobase_shutdown_for_mysql(void)
 			" inside InnoDB at shutdown";
 	}
 
-#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
 	//Print the statistic info
 	pm_buf_stat_print_all(gb_pmw->pbuf);	
@@ -3176,3 +3191,184 @@ srv_get_encryption_data_filename(
 
 	ut_free(path);
 }
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+/*
+ * Create all part-log files if they are not exist
+ * */
+dberr_t
+pm_create_or_open_part_log_files(
+		PMEM_PAGE_PART_LOG*	ppl,
+		char*   logfilename,
+		size_t  dirnamelen,
+		char*&  logfile0)
+{
+	dberr_t err;
+	uint64_t i;
+	uint64_t n_log_files = ppl->n_log_files_per_bucket * ppl->n_buckets;
+
+	uint64_t n_log_files_found = n_log_files;
+
+	
+	if (ppl->is_new){
+		// (1) Create files 
+		for (i = 0; i < n_log_files; i++) {
+			sprintf(logfilename + dirnamelen,
+				"pl_logfile%u", i);
+			//sprintf(logfilename + dirnamelen,
+			//		"pl_logfile%u", i ? i : INIT_LOG_FILE0);
+
+			//err = create_log_file(&ppl->log_files[i], logfilename);
+			err = pm_create_log_file(
+					&ppl->log_files[i],
+				   	logfilename,
+					PMEM_LOG_FILE_SIZE);
+
+			if (err != DB_SUCCESS) {
+				return(err);
+			}
+		}
+	}
+	else {
+		// Open files
+		for (i = 0; i < n_log_files; i++) {
+			os_offset_t	size;
+			sprintf(logfilename + dirnamelen,
+				"pl_logfile%u", i);
+			err = open_log_file(&ppl->log_files[i], logfilename, &size);
+			//err = open_log_file(&files[i], logfilename, &size);
+			if (err != DB_SUCCESS) {
+				printf("PMEM open log file\n");
+				assert(0);
+				return DB_ERROR;
+			}
+
+			ut_a(size != (os_offset_t) -1);
+			if (size & ((1 << UNIV_PAGE_SIZE_SHIFT) - 1)) {
+
+				ib::error() << "Log file " << logfilename
+					<< " size " << size << " is not a"
+					" multiple of innodb_page_size";
+				assert(0);
+				return DB_ERROR;
+			}
+
+			size >>= UNIV_PAGE_SIZE_SHIFT;
+
+			if (i == 0) {
+				PMEM_LOG_FILE_SIZE = size;
+			} else if (size != PMEM_LOG_FILE_SIZE) {
+
+				ib::error() << "Log file " << logfilename
+					<< " is of different size "
+					<< (size << UNIV_PAGE_SIZE_SHIFT)
+					<< " bytes than other log files "
+					<< (PMEM_LOG_FILE_SIZE
+					    << UNIV_PAGE_SIZE_SHIFT)
+					<< " bytes!";
+				assert(0);
+				return DB_ERROR;
+			}
+		} //end for each log files
+		n_log_files_found = i;
+	}
+
+	sprintf(logfilename + dirnamelen, "pl_logfile%u", INIT_LOG_FILE0);
+	
+	// (2) Create the log_space and add it to fil_system_t's hashtable
+	fil_space_t*	log_space = fil_space_create(
+		"pl_redo_log",
+	   	PMEM_LOG_SPACE_FIRST_ID,
+		fsp_flags_set_page_size(0, univ_page_size),
+		FIL_TYPE_LOG);
+	ut_a(fil_validate());
+	ut_a(log_space != NULL);
+
+	// (3) Create the fil_nodes	
+	//if (ppl->is_new){
+	//	// Create the fil_node for the first file
+	//	logfile0 = fil_node_create(
+	//			logfilename, (ulint) PMEM_LOG_FILE_SIZE,
+	//			log_space, false, false);
+	//	ut_a(logfile0);
+	//}
+	//else{
+	//	//Do nothing
+	//}
+	
+	// Create the fil_node for the remain files
+	for (i = 0; i < n_log_files_found; i++) {
+		sprintf(logfilename + dirnamelen, "pl_logfile%u", i);
+		if (!fil_node_create(logfilename,
+				     (ulint) PMEM_LOG_FILE_SIZE,
+				     log_space, false, false)) {
+
+			ib::error()
+				<< "Cannot create file node for log file "
+				<< logfilename;
+
+			return(DB_ERROR);
+		}
+	}
+	
+	//(4) Create log group for each bucket
+	ppl->log_groups = static_cast<PMEM_LOG_GROUP**>(
+			ut_zalloc_nokey(sizeof(PMEM_LOG_GROUP*) * ppl->n_buckets));
+
+	for (i = 0; i < ppl->n_buckets; i++){
+		ppl->log_groups[i] = pm_log_group_init(
+				i, 
+				ppl->n_log_files_per_bucket,
+				PMEM_LOG_FILE_SIZE * UNIV_PAGE_SIZE,
+				PMEM_LOG_SPACE_FIRST_ID);
+	}
+	
+	//(5) open and keep pmem log files opened until shutdown
+	fil_open_log_and_system_tablespace_files();
+
+	return (DB_SUCCESS);
+}
+
+/*
+ * Create the part-log files for each bucket 
+ * We write our own function because the create_log_file() in InnoDB create a 4GB log file that is too large for part-log 
+ *	*/
+dberr_t
+pm_create_log_file(
+/*============*/
+	pfs_os_file_t*	file,	/*!< out: file handle */
+	const char*	name,
+	uint64_t log_file_size)	/*!< in: log file name */
+{
+
+	bool		ret;
+
+	*file = os_file_create(
+		innodb_log_file_key, name,
+		OS_FILE_CREATE|OS_FILE_ON_ERROR_NO_EXIT, OS_FILE_NORMAL,
+		OS_LOG_FILE, srv_read_only_mode, &ret);
+
+	if (!ret) {
+		ib::error() << "Cannot create " << name;
+		return(DB_ERROR);
+	}
+	ib::info() << "Setting log file " << name << " size to "
+		<< (log_file_size >> (20 - UNIV_PAGE_SIZE_SHIFT))
+		<< " MB";
+
+	ret = os_file_set_size(name, *file,
+			       (os_offset_t) log_file_size
+			       << UNIV_PAGE_SIZE_SHIFT,
+			       srv_read_only_mode);
+	if (!ret) {
+		ib::error() << "Cannot set log file " << name << " to size "
+			<< (log_file_size >> (20 - UNIV_PAGE_SIZE_SHIFT))
+			<< " MB";
+		return(DB_ERROR);
+	}
+	ret = os_file_close(*file);
+	ut_a(ret);
+
+	return(DB_SUCCESS);
+}
+#endif //UNIV_PMEMOBJ_PART_PL

@@ -3525,8 +3525,11 @@ thread_exit:
 	PMEM_FLUSHER* flusher = gb_pmw->pbuf->flusher;		
 #endif
 	os_event_set(flusher->is_req_not_empty);
-#endif
+#endif //UNIV_PMEMOBJ_LSB
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	os_event_set(gb_pmw->ppl->flusher->is_log_req_not_empty);
+#endif
 	my_thread_end();
 
 	/* We count the number of threads in os_thread_exit(). A created
