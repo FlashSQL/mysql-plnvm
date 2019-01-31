@@ -1954,21 +1954,25 @@ innobase_start_or_create_for_mysql(void)
 	//[TODO] Recovery handler
 #endif /* UNIV_PMEMOBJ_BUF */
 
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)
 	//uint64_t n_buckets = 16;	
 	//uint64_t n_buckets = 512;	
-	uint64_t n_buckets = 64;	
-	uint64_t n_blocks_per_bucket = 4096;
+	uint64_t n_buckets = 32;	
+	//uint64_t n_blocks_per_bucket = 4096;
+	uint64_t n_blocks_per_bucket = 8192;
 	//uint64_t n_blocks_per_bucket = 16384;
 	//uint64_t block_size = 4096;
 	uint64_t block_size = 1024;
-	uint64_t log_buf_size = 64 * 4 * 1024; // n 4-KB
+
+	uint64_t log_buf_size = 2 * 4 * 1024; // n 4-KB //debug
+	//uint64_t log_buf_size = 64 * 4 * 1024; // n 4-KB
+	
 	uint64_t n_free_bufs = n_buckets / 4;
 
 	uint64_t n_log_bufs = n_buckets + n_free_bufs;
 	uint64_t n_flush_threads = 32;
 
-	uint64_t n_log_files_per_bucket = 2;
+	uint64_t n_log_files_per_bucket = 1;
 
 #if defined (UNIV_PMEMOBJ_TX_LOG)
 	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
@@ -3208,6 +3212,7 @@ pm_create_or_open_part_log_files(
 	uint64_t n_log_files = ppl->n_log_files_per_bucket * ppl->n_buckets;
 
 	uint64_t n_log_files_found = n_log_files;
+	bool success;
 
 	
 	if (ppl->is_new){
@@ -3252,28 +3257,9 @@ pm_create_or_open_part_log_files(
 				assert(0);
 				return DB_ERROR;
 			}
-
-			size >>= UNIV_PAGE_SIZE_SHIFT;
-
-			if (i == 0) {
-				PMEM_LOG_FILE_SIZE = size;
-			} else if (size != PMEM_LOG_FILE_SIZE) {
-
-				ib::error() << "Log file " << logfilename
-					<< " is of different size "
-					<< (size << UNIV_PAGE_SIZE_SHIFT)
-					<< " bytes than other log files "
-					<< (PMEM_LOG_FILE_SIZE
-					    << UNIV_PAGE_SIZE_SHIFT)
-					<< " bytes!";
-				assert(0);
-				return DB_ERROR;
-			}
 		} //end for each log files
 		n_log_files_found = i;
 	}
-
-	sprintf(logfilename + dirnamelen, "pl_logfile%u", INIT_LOG_FILE0);
 	
 	// (2) Create the log_space and add it to fil_system_t's hashtable
 	fil_space_t*	log_space = fil_space_create(
@@ -3283,32 +3269,46 @@ pm_create_or_open_part_log_files(
 		FIL_TYPE_LOG);
 	ut_a(fil_validate());
 	ut_a(log_space != NULL);
+	
+	//copy struct, we want our log_space work independently with the InnoDB spaces
+	ppl->log_space->id = log_space->id;
+	ppl->log_space->name = mem_strdup(log_space->name);
+	ppl->log_space->purpose = log_space->purpose;
+	ppl->log_space->flags = log_space->flags;
+	ppl->log_space->magic_n = FIL_SPACE_MAGIC_N;
+	ppl->log_space->encryption_type = Encryption::NONE;
+	//rw_lock_create(fil_space_latch_key, &ppl->log_space->latch, SYNC_FSP);
+
+	UT_LIST_INIT(ppl->log_space->chain, &fil_node_t::chain);
 
 	// (3) Create the fil_nodes	
-	//if (ppl->is_new){
-	//	// Create the fil_node for the first file
-	//	logfile0 = fil_node_create(
-	//			logfilename, (ulint) PMEM_LOG_FILE_SIZE,
-	//			log_space, false, false);
-	//	ut_a(logfile0);
-	//}
-	//else{
-	//	//Do nothing
-	//}
 	
-	// Create the fil_node for the remain files
 	for (i = 0; i < n_log_files_found; i++) {
 		sprintf(logfilename + dirnamelen, "pl_logfile%u", i);
-		if (!fil_node_create(logfilename,
-				     (ulint) PMEM_LOG_FILE_SIZE,
-				     log_space, false, false)) {
+		fil_node_t* node;
+		node = pm_log_fil_node_create(
+				logfilename,
+				PMEM_LOG_FILE_SIZE,
+				ppl->log_space);
 
-			ib::error()
-				<< "Cannot create file node for log file "
-				<< logfilename;
+		//save the fil_node 
+		//ppl->node_arr[i] = node;	
 
-			return(DB_ERROR);
-		}
+		ppl->node_arr[i]->space = ppl->log_space;
+		//update file handle
+		//if (ppl->node_arr[i]->handle.m_file != ppl->log_files[i].m_file) {
+		//	ppl->log_files[i].m_file = ppl->node_arr[i]->handle.m_file;
+		//}
+		ppl->node_arr[i]->handle = ppl->log_files[i];
+
+		ppl->node_arr[i]->name =  mem_strdup(node->name);
+		ppl->node_arr[i]->sync_event = os_event_create("fsync_event");
+		ppl->node_arr[i]->is_raw_disk = false;
+
+		ppl->node_arr[i]->size = node->size;
+		ppl->node_arr[i]->magic_n = FIL_NODE_MAGIC_N;
+		ppl->node_arr[i]->max_size = node->max_size;
+
 	}
 	
 	//(4) Create log group for each bucket

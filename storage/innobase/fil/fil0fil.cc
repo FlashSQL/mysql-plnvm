@@ -61,7 +61,7 @@ Created 10/25/1995 Heikki Tuuri
 //declare it at storage/innobase/srv/srv0start.cc
 extern PMEM_FILE_COLL* gb_pfc;
 #endif
-#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL)
+#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_DBW) || defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 #include "my_pmem_common.h"
 #include "my_pmemobj.h"
 extern PMEM_WRAPPER* gb_pmw;
@@ -697,6 +697,7 @@ fil_node_create(
 
 	return(node == NULL ? NULL : node->name);
 }
+
 
 /** Open a file node of a tablespace.
 The caller must own the fil_system mutex.
@@ -6689,6 +6690,22 @@ fil_aio_wait(
 		return;
 	}
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if(node->space->purpose == FIL_TYPE_LOG) {
+		if (message != NULL) {
+
+			PMEM_PAGE_LOG_BUF* plogbuf = static_cast<PMEM_PAGE_LOG_BUF*> (message);
+
+			if (plogbuf != NULL && plogbuf->check == PMEM_AIO_CHECK) {
+				pm_handle_finished_log_buf(gb_pmw->pop, gb_pmw->ppl, plogbuf);
+				return;
+			}
+			//this is the InnoDB's REDO log
+		}
+	}
+	//follow the original InnoDB logic
+#endif //UNIV_PMEMOBJ_PART_PL
+
 	srv_set_io_thread_op_info(segment, "complete io for fil node");
 
 	mutex_enter(&fil_system->mutex);
@@ -7171,7 +7188,12 @@ fil_validate(void)
 			n_open += Check::validate(space);
 		}
 	}
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (fil_system->n_open != n_open){
+		printf("==> Error in fil_validate() fil_system->n_open %zu != n_open %zu\n", fil_system->n_open, n_open);
+		assert(0);
+	}
+#endif
 	ut_a(fil_system->n_open == n_open);
 
 	UT_LIST_CHECK(fil_system->LRU);
@@ -8558,3 +8580,148 @@ fil_space_t::release_free_extents(ulint	n_reserved)
 	ut_a(n_reserved_extents >= n_reserved);
 	n_reserved_extents -= n_reserved;
 }
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+/*
+ * Create fil_node by name
+ * Open the file and assign file handle
+ * */
+fil_node_t*
+pm_log_fil_node_create(
+	const char*	name,
+	ulint		size,
+	fil_space_t*	space)
+{
+	fil_node_t* node;
+	bool success;
+	
+	//allocate node and add it to space->chain list
+	node = fil_node_create_low(
+			name, size, space, false, false, ULONG_MAX);
+
+	if (!node->name){
+		ib::error()
+			<< "Cannot create file node for log file "
+			<< name;
+		assert(0);
+		return NULL;
+	}
+
+//	//open file, simple version of fil_node_open_file() in fil0fil.cc
+//	node->handle = os_file_create(
+//			innodb_log_file_key, node->name, OS_FILE_OPEN,
+//			OS_FILE_AIO, OS_LOG_FILE, false, &success);	   
+//
+//	if (!success){
+//		printf("PMEM_ERROR in pm_create_or_open_part_log_files(), cannot open fil_node %s \n ", node->name);
+//		assert(0);
+//	}
+//
+//	node->is_open = true;
+//
+//	fil_system->n_open++;
+//	fil_n_file_opened++;
+
+	return node;
+}
+
+void
+pm_log_fil_io(
+	PMEMobjpool*			pop,
+	PMEM_PAGE_PART_LOG*		ppl,
+	PMEM_PAGE_LOG_BUF*		plogbuf
+	)
+{
+
+	PMEM_LOG_GROUP*		group;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	byte*		pdata;
+	byte*		log_src;
+
+	ulint		start_offset;
+	ulint		end_offset;
+	ulint		area_start;
+	ulint		area_end;
+
+	ulint		next_offset;
+	ulint		write_offset;
+	ulint		write_len;
+
+	ulint		len;
+	ulint		i;
+	
+	fil_space_t*	space;
+	fil_node_t*		node;
+
+	ulint	mode;
+	IORequest		req_type(IORequestLogWrite);
+	dberr_t	err;
+
+	mode = OS_AIO_LOG;
+
+	//pointer to the src logbuf	
+	pdata = ppl->p_align;
+	log_src = pdata + plogbuf->pmemaddr;
+
+	start_offset = 0;
+	end_offset = plogbuf->cur_off;
+
+	//(1) Align the offset with the sector size 512
+	area_start = ut_calc_align_down(start_offset, OS_FILE_LOG_BLOCK_SIZE);
+	area_end = ut_calc_align_down(end_offset, OS_FILE_LOG_BLOCK_SIZE);
+	
+	len = area_end - area_start;
+	ut_ad(len > 0);
+	
+	assert(plogbuf->hashed_id >= 0);	
+
+	group = ppl->log_groups[plogbuf->hashed_id];
+	pline = D_RW(D_RW(ppl->buckets)[plogbuf->hashed_id]);
+
+	next_offset = pline->write_diskaddr;
+	
+	if (next_offset + len > group->file_size){
+		printf("PMEM_INFO log file of line %zu is full\n", plogbuf->hashed_id);
+		assert(0);
+		//TODO: handle the case that the log group is full
+		//write_len = group->file_size - next_offset;
+	}
+	else {
+		write_len = len;
+	}
+	
+	//(2) Write, simulate log_group_write_buf()
+	ut_ad(len % OS_FILE_LOG_BLOCK_SIZE == 0);
+	
+	//write each 4-KB page to disk
+		
+	// page_no is the div of 4-KB page
+	ulint page_no =
+	   	(ulint) (next_offset / univ_page_size.physical());
+	//write offset on page_no
+	write_offset = (ulint) (next_offset % UNIV_PAGE_SIZE);
+
+	space = ppl->log_space;
+	node = ppl->node_arr[plogbuf->hashed_id];
+
+	if (!node->is_open) {
+		bool success;
+		node->handle = os_file_create(
+				innodb_log_file_key, node->name, OS_FILE_OPEN,
+				OS_FILE_AIO, OS_LOG_FILE, false, &success);	   
+		if (!success){
+			printf("Cannot open log file %s handle %zu\n", node->name, node->handle);
+		}
+		node->is_open = true;
+	}
+	
+	err = os_aio(
+		req_type,
+		mode, node->name, node->handle,
+	   	log_src, next_offset, write_len,
+		srv_read_only_mode,
+		node, plogbuf);
+
+}
+#endif //UNIV_PMEMOBJ_PART_PL

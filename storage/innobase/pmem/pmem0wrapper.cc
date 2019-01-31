@@ -92,6 +92,10 @@ PMEM_WRAPPER* pm_wrapper_create(const char* path, const size_t pool_size){
 #if defined (UNIV_PMEMOBJ_BUF)
 	pmw->pbuf = NULL;
 #endif 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	pmw->ppl = NULL;
+#endif
+
 	/*If we have persistent data structures, get them*/
 	if(!pmw->is_new) {
 		pmw->plogbuf = pm_pop_get_logbuf(pop);
@@ -109,6 +113,13 @@ PMEM_WRAPPER* pm_wrapper_create(const char* path, const size_t pool_size){
 			printf("[PMEMOBJ_INFO] the pmem buf is empty. The database is new\n");
 		}	
 #endif 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		pmw->ppl = pm_pop_get_ppl(pop);
+		if(!pmw->ppl){
+			printf("[PMEMOBJ_INFO] the pmem ppl is empty. The database is new\n");
+		}
+		pmw->ppl->is_new = pmw->is_new;
+#endif
 	}
 
 	return pmw;

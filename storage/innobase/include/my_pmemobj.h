@@ -489,7 +489,6 @@ struct __pmem_page_part_log {
 	uint64_t					log_buf_size; //log block size in bytes
 	uint64_t					n_log_bufs;
 	TOID(PMEM_PAGE_LOG_FREE_POOL) free_pool;
-	os_event_t free_log_pool_event; //event for free_pool
 
 	// Transaction Table
 	TOID(PMEM_TT) tt; // transaction table	
@@ -502,6 +501,11 @@ struct __pmem_page_part_log {
 
 	uint64_t			n_blocks_per_bucket; //# load_factor, of log block per bucket
 
+	/* 
+	 * DRAM objects, alloc every time the server start
+	 * */
+
+	os_event_t free_log_pool_event; //event for free_pool
 	/*Flusher*/	
 	PMEM_LOG_FLUSHER*	flusher;
 
@@ -509,7 +513,8 @@ struct __pmem_page_part_log {
 	pfs_os_file_t    log_files[1000];
 	uint64_t		 n_log_files_per_bucket;
 	PMEM_LOG_GROUP**	log_groups; //n_buckets groups
-
+	fil_node_t**		node_arr; // n_buckets fil_nodes
+	fil_space_t*		log_space;
 	/*Statistic info*/	
 	//log area
 	uint64_t	pmem_alloc_size;
@@ -532,6 +537,12 @@ struct __pmem_page_log_hashed_line {
 	TOID(PMEM_PAGE_LOG_BUF)	logbuf;	
 
 	uint64_t		diskaddr; //log file offset, update when flush log, reset when purging file
+	uint64_t		write_diskaddr; //diskaddr that log recs are durable write write_diskaddr < diskaddr
+
+	/* test */
+	uint64_t		recv_diskaddr; //the diskaddr begin the recover, min of log blocks diskaddr
+	uint64_t		recv_off; //the offset begin the recover
+	/*end test */
 
 	uint64_t n_blocks; //the total log block in bucket
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
@@ -555,9 +566,13 @@ struct __pmem_page_log_buf {
 	uint64_t				pmemaddr; //the begin offset to the pmem data in PMEM_PAGE_PART_LOG
 
 	uint64_t				id;
+	int64_t				hashed_id;
+
 	PMEM_LOG_BUF_STATE		state;
 	uint64_t				size;
 	uint64_t				cur_off; //the current offset (0 - log buf size), reset when switching log_buf 
+
+	int					check; //for AIO
 	
 	//link with the list free pool
 	POBJ_LIST_ENTRY(PMEM_PAGE_LOG_BUF) list_entries;
@@ -780,6 +795,9 @@ __print_TT(
 
 ////////////////// PER-PAGE LOGGING //////////////////
 
+PMEM_PAGE_PART_LOG* 
+pm_pop_get_ppl (PMEMobjpool* pop);
+
 void
 pm_wrapper_page_log_alloc_or_open(
 		PMEM_WRAPPER*	pmw,
@@ -868,6 +886,7 @@ __update_page_log_block_on_write(
 			int64_t				eid,
 			int64_t				bid);
 
+/// write log_buf --> full --> assign flusher worker --> handle finish
 static inline void
 __pm_write_log_buf(
 			PMEMobjpool*				pop,
@@ -898,6 +917,31 @@ pm_log_flush_log_buf(
 		PMEM_PAGE_PART_LOG*		ppl,
 		PMEM_PAGE_LOG_BUF*		plogbuf);
 
+void
+pm_handle_finished_log_buf(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_BUF*		plogbuf);
+
+void
+pm_log_fil_io(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_BUF*		plogbuf,
+		fil_node_t*			node,
+		const IORequest&	type,
+		bool			sync,
+		const page_id_t&	page_id,
+		const page_size_t&	page_size,
+		ulint			byte_offset,
+		ulint			len,
+		void*			buf,
+		void*			message);
+void
+pm_log_fil_io(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_BUF*		plogbuf);
 
 
 //////////// COMMIT //////////////////
@@ -967,12 +1011,21 @@ pm_create_log_file(
 	const char*	name,
 	uint64_t log_file_size);
 
+fil_node_t*
+pm_log_fil_node_create(
+	const char*	name,
+	ulint		size,
+	fil_space_t*	space);
 /////////////// END LOG FILES ///////////
 
 
 //for debugging
 void 
 __print_blocks_state(FILE* f,
+		PMEM_PAGE_PART_LOG* ppl);
+void 
+__print_page_log_hashed_lines(
+		FILE* f,
 		PMEM_PAGE_PART_LOG* ppl);
 
 extern "C"

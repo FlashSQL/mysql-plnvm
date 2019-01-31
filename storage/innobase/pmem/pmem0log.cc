@@ -24,6 +24,7 @@
 #if defined (UNIV_PMEMOBJ_PL)
 
 //////////////// NEW PMEM PARTITION LOG /////////////
+
 /////////////////// PER-TX LOGGING /////////////////
 void
 pm_wrapper_tx_log_alloc_or_open(
@@ -1223,6 +1224,22 @@ pm_ptxl_check_and_reset_dpt_entry(
 
 ////////////////// PERPAGE LOGGING ///////////////
 
+PMEM_PAGE_PART_LOG* 
+pm_pop_get_ppl (PMEMobjpool* pop)
+{
+	TOID(PMEM_PAGE_PART_LOG) pl;
+	PMEM_PAGE_PART_LOG* ppl;
+
+	pl = POBJ_FIRST(pop, PMEM_PAGE_PART_LOG);
+	ppl = D_RW(pl);
+	if (ppl == NULL){
+		printf("PMEM ERROR in pm_pop_get_ppl(), ppl is NULL \n");
+		assert(0);
+	}
+
+	return ppl;	
+}
+
 void
 pm_wrapper_page_log_alloc_or_open(
 		PMEM_WRAPPER*	pmw,
@@ -1244,7 +1261,8 @@ pm_wrapper_page_log_alloc_or_open(
 	PMEM_N_LOG_FLUSH_THREADS=32;
 
 	PMEM_N_LOG_FILES_PER_BUCKET = n_log_files_per_bucket;
-	
+	/* Part 1: NVDIMM structures*/	
+
 	if (!pmw->ppl) {
 		pmw->ppl = alloc_pmem_page_part_log(
 				pmw->pop,
@@ -1273,7 +1291,28 @@ pm_wrapper_page_log_alloc_or_open(
 		p = static_cast<byte*> (pmemobj_direct(pmw->ppl->data));
 		assert(p);
 		pmw->ppl->p_align = static_cast<byte*> (ut_align(p, log_buf_size));
+
+		//print the hashed line to check
+		__print_page_log_hashed_lines(debug_ptxl_file, pmw->ppl);
 	}
+
+	/* Part 2: DRAM structures*/	
+
+	// In any case (new alloc or reused) we need to allocate below objects
+
+	// defined in my_pmemobj.h, implement in buf0flu.cc
+	pmw->ppl->flusher = pm_log_flusher_init(PMEM_N_LOG_FLUSH_THREADS);
+
+	pmw->ppl->free_log_pool_event = os_event_create("pm_free_log_pool_event");
+	
+	uint64_t i;
+	pmw->ppl->node_arr = (fil_node_t**) calloc(pmw->ppl->n_buckets, sizeof(fil_node_t*));
+	for (i = 0; i < pmw->ppl->n_buckets; i++){
+		pmw->ppl->node_arr[i] = (fil_node_t*) malloc(sizeof(fil_node_t));
+	}
+
+	pmw->ppl->log_space = (fil_space_t*) malloc(sizeof(fil_space_t));
+
 
 	pmw->ppl->deb_file = fopen("part_log_debug.txt","a");
 }
@@ -1283,6 +1322,7 @@ pm_wrapper_page_log_close(
 		PMEM_WRAPPER*	pmw	)
 {
 	ulint i;
+	fil_node_t* node;
 	
 	PMEM_PAGE_PART_LOG* ppl = pmw->ppl;
 	
@@ -1290,16 +1330,32 @@ pm_wrapper_page_log_close(
 	os_event_destroy(ppl->free_log_pool_event);
 	pm_log_flusher_close(ppl->flusher);
 	
+	//close fil_node and free
+	for (i = 0; i < ppl->n_buckets; i++){
+		//os_file_close(&log_files[i]);
+
+		node = ppl->node_arr[i];
+		//if (node->is_open){
+		//	fil_node_close_file(node);
+		//}
+	}
+	free (ppl->node_arr);
+	free (ppl->log_groups);
+	
+	__print_page_log_hashed_lines(debug_ptxl_file, pmw->ppl);
+
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 #if defined (UNIV_PMEMOBJ_TX_LOG)
 	ptxl_print_all_stat_info(debug_ptxl_file,  pmw->ptxl);
 #else
-	__print_page_blocks_state(debug_ptxl_file, pmw->ppl);
-	__print_TT(debug_ptxl_file, D_RW(pmw->ppl->tt));
+
+	//__print_page_blocks_state(debug_ptxl_file, pmw->ppl);
+	//__print_TT(debug_ptxl_file, D_RW(pmw->ppl->tt));
 #endif // UNIV_PMEMOBJ_TX_LOG
 
 	//fclose(debug_ptxl_file);
-	fclose(pmw->ptxl->deb_file);
+	if (pmw->ptxl != NULL)
+		fclose(pmw->ptxl->deb_file);
 #endif
 
 	//the resource allocated in NVDIMM are kept
@@ -1379,7 +1435,6 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 
 	ppl->pmem_alloc_size += ppl->pmem_page_log_size;
 	//(3) Free Pool
-	ppl->free_log_pool_event = os_event_create("pm_free_log_pool_event");
 	__init_page_log_free_pool(
 			pop,
 			ppl,
@@ -1395,9 +1450,6 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 
 	ppl->pmem_alloc_size += ppl->pmem_tt_size;
 
-	// (5) Flusher
-	// defined in my_pmemobj.h, implement in buf0flu.cc
-	ppl->flusher = pm_log_flusher_init(PMEM_N_LOG_FLUSH_THREADS);
 
 
 	pmemobj_persist(pop, ppl, sizeof(*ppl));
@@ -1556,6 +1608,7 @@ pm_page_part_log_bucket_init(
 		pline->hashed_id = i;
 		pline->n_blocks = k;
 		pline->diskaddr = 0;
+		pline->write_diskaddr = 0;
 
 		//Log buf, after the alloca call, log_buf_id and log_buf_offset increase
 		POBJ_ZNEW(pop, &pline->logbuf, PMEM_PAGE_LOG_BUF);
@@ -1567,12 +1620,16 @@ pm_page_part_log_bucket_init(
 		log_buf_offset += log_buf_size;
 
 		plogbuf->id = log_buf_id;
+
+		//save hashed_id 
+		plogbuf->hashed_id = i;
 		log_buf_id++;
 
 		plogbuf->state = PMEM_LOG_BUF_FREE;
 		plogbuf->size = log_buf_size;
 		plogbuf->cur_off = 0;
 		plogbuf->self = (pline->logbuf).oid;
+		plogbuf->check = PMEM_AIO_CHECK;
 
 		//Allocate the log blocks
 		POBJ_ALLOC(pop,
@@ -1668,10 +1725,13 @@ __init_page_log_free_pool(
 		plogbuf->id = log_buf_id;
 		log_buf_id++;
 
+		plogbuf->hashed_id = -1;
+
 		plogbuf->state = PMEM_LOG_BUF_FREE;
 		plogbuf->size = log_buf_size;
 		plogbuf->cur_off = 0;
 		plogbuf->self = logbuf.oid;
+		plogbuf->check = PMEM_AIO_CHECK;
 
 		//insert to the free pool list
 		POBJ_LIST_INSERT_HEAD(pop, &pfreepool->head, logbuf, list_entries); 
@@ -2027,44 +2087,11 @@ __update_page_log_block_on_write(
 						rec_size,
 						plog_block,
 						false);
-				//pmemobj_rwlock_wrlock(pop, &pline->lock);
-
-				//plogbuf = D_RW(pline->logbuf);
-
-				//log_des = pdata + plogbuf->pmemaddr + plogbuf->cur_off;
-				//__pm_write_log_rec_low(pop,
-				//		log_des,
-				//		log_src + cur_off,
-				//		rec_size);
-				//plogbuf->cur_off += rec_size;
-
-				//if (plogbuf->cur_off > plogbuf->size * PMEM_LOG_BUF_FLUSH_PCT) {
-				//	//simply reset
-				//	plogbuf->cur_off = 0;		
-				//}
-				//	
-				//
-				//pmemobj_rwlock_unlock(pop, &pline->lock);
 
 				plog_block->n_log_recs++;
 
 				//(3) update metadata
 				plog_block->lastLSN = LSN;
-				//because in this case block_id == -1, there is no txref in this log block
-				//search for the first free to write
-				//for each txref
-				//for (j = 0; j < plog_block->n_tx_idx; j++){
-				//	if(D_RW(plog_block->tx_idx_arr)[j] ==-1){
-				//		D_RW(plog_block->tx_idx_arr)[j] = eid;
-				//		break;
-				//	}	
-
-				//}//end for each txref
-
-				//if (j == plog_block->n_tx_idx){
-				//	D_RW(plog_block->tx_idx_arr)[j] = eid;
-				//	plog_block->n_tx_idx++;
-				//}
 				//inc number of active tx on this page			
 				plog_block->count++;
 
@@ -2098,26 +2125,6 @@ __update_page_log_block_on_write(
 						rec_size,
 						plog_block,
 						true);
-				//pmemobj_rwlock_wrlock(pop, &pline->lock);
-
-				////Note that we save the offset and diskaddr for the first write of this block
-				//plogbuf = D_RW(pline->logbuf);
-
-				//plog_block->start_off = plogbuf->cur_off;
-				//plog_block->start_diskaddr = pline->diskaddr;
-
-				//log_des = pdata + plogbuf->pmemaddr + plogbuf->cur_off;
-				//__pm_write_log_rec_low(pop,
-				//		log_des,
-				//		log_src + cur_off,
-				//		rec_size);
-				//plogbuf->cur_off += rec_size;
-				//if (plogbuf->cur_off > plogbuf->size * PMEM_LOG_BUF_FLUSH_PCT) {
-				//	//simply reset
-				//	plogbuf->cur_off = 0;		
-				//}
-
-				//pmemobj_rwlock_unlock(pop, &pline->lock);
 
 				plog_block->n_log_recs++;
 
@@ -2234,7 +2241,9 @@ __pm_write_log_buf(
 			rec_size);
 	plogbuf->cur_off += rec_size;
 
+	////////////////////////////////////////////
 	// (2) Handle full log buf
+	// /////////////////////////////////////////
 	if (plogbuf->cur_off > plogbuf->size * PMEM_LOG_BUF_FLUSH_PCT) {
 
 get_free_buf:
@@ -2260,11 +2269,28 @@ get_free_buf:
 		// (2.2) switch the free log buf with the full log buf
 		TOID_ASSIGN(pline->logbuf, free_buf.oid);
 		D_RW(free_buf)->state = PMEM_LOG_BUF_IN_USED;
+		D_RW(free_buf)->hashed_id = pline->hashed_id; 
+		
+		// (2.3) handle left over after alignment
+		uint64_t end_off = ut_uint64_align_down(
+				plogbuf->cur_off,
+				OS_FILE_LOG_BLOCK_SIZE);
+		uint64_t left_over_size = plogbuf->cur_off - end_off;
+		if (left_over_size > 0){
+
+			byte* src_temp = ppl->p_align + plogbuf->pmemaddr + end_off;
+			byte* des_temp = ppl->p_align + D_RW(free_buf)->pmemaddr + 0;
+			__pm_write_log_rec_low(pop,
+					des_temp,
+					src_temp,
+					left_over_size);
+			D_RW(free_buf)->cur_off = left_over_size;
+		}
 		
 		//move the diskaddr on the line ahead	
-		pline->diskaddr += plogbuf->cur_off;
+		pline->diskaddr += end_off;
 
-		// (2.3) assign a pointer in the flusher to the full log buf, this function return immediately 
+		// (2.4) assign a pointer in the flusher to the full log buf, this function return immediately 
 		pm_log_buf_assign_flusher(ppl, plogbuf);
 
 		//simply reset
@@ -2347,6 +2373,10 @@ pm_log_flush_log_buf(
 		PMEM_PAGE_PART_LOG*		ppl,
 		PMEM_PAGE_LOG_BUF*		plogbuf) 
 {
+	uint64_t i;
+
+	uint64_t min_diskaddr;
+	uint64_t min_off;
 
 	PMEM_PAGE_LOG_FREE_POOL* pfree_pool;
 	TOID(PMEM_PAGE_LOG_BUF) logbuf;
@@ -2354,31 +2384,44 @@ pm_log_flush_log_buf(
 	assert(plogbuf);
 	TOID_ASSIGN(logbuf, plogbuf->self);
 
-	//current version just simply reset the logbuf and return to the free pool
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+	PMEM_PAGE_LOG_BLOCK* plog_block;
+
+	pline = D_RW(D_RW(ppl->buckets)[plogbuf->hashed_id]);
 
 	/*(1) Pre-flush*/
-	
+	//this code just for test, simulate the checkpoint
+	bool is_first = true;
+
+	for (i = 0; i < ppl->n_blocks_per_bucket; i++){
+		plog_block = D_RW(D_RW(pline->arr)[i]);
+
+		if (!plog_block->is_free){
+			if (is_first){
+				is_first = false;
+				min_off = plog_block->start_off;
+				continue;
+			}
+
+			if (min_diskaddr > plog_block->start_diskaddr)
+				min_diskaddr = plog_block->start_diskaddr;
+			if (min_off > plog_block->start_off)
+				min_off = plog_block->start_off;
+		}
+	}
+
+	pline->recv_diskaddr = min_diskaddr;
+	pline->recv_off = min_off;
+
 	/*(2) Flush	*/
-
-	/*(3) Post-flush */
-	//reset the log buf
-	plogbuf->state = PMEM_LOG_BUF_FREE;
-	plogbuf->cur_off = 0;
-	//put back to the free pool
-
-	pfree_pool = D_RW(ppl->free_pool);
-	pmemobj_rwlock_wrlock(pop, &pfree_pool->lock);
-
-	POBJ_LIST_INSERT_TAIL(pop, &pfree_pool->head, logbuf, list_entries);
-	pfree_pool->cur_free_bufs++;
-	//wakeup who is waitting for free_pool available
-	os_event_set(ppl->free_log_pool_event);
-
-	pmemobj_rwlock_unlock(pop, &pfree_pool->lock);
-
+	pm_log_fil_io(pop, ppl, plogbuf);
 }
 
 
+
+/*
+ * Write log rec from transaction's heap to NVDIMM
+ * */
 static inline void
 __pm_write_log_rec_low(
 			PMEMobjpool*			pop,
@@ -2401,6 +2444,50 @@ __pm_write_log_rec_low(
 		}TX_ONABORT {
 		}TX_END
 	}
+}
+
+/*
+ * Call back function from fil_aio_wait() in fil0fil.cc
+ * */
+void
+pm_handle_finished_log_buf(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_BUF*		plogbuf)
+{
+	TOID(PMEM_PAGE_LOG_BUF) logbuf;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	PMEM_PAGE_LOG_FREE_POOL* pfree_pool;
+
+	assert(plogbuf);
+	TOID_ASSIGN(logbuf, plogbuf->self);
+
+	printf("pm_handle_finished_log_buf id %zu hashed %zu\n", plogbuf->id, plogbuf->hashed_id);
+
+	pline = D_RW(D_RW(ppl->buckets)[plogbuf->hashed_id]);
+	assert(pline);
+
+	/*(3) Post-flush */
+	//update the write_diskaddr
+	pline->write_diskaddr = pline->diskaddr;
+
+	//reset the log buf
+	plogbuf->state = PMEM_LOG_BUF_FREE;
+	plogbuf->cur_off = 0;
+	plogbuf->hashed_id = -1;
+
+	//put back to the free pool
+	pfree_pool = D_RW(ppl->free_pool);
+	pmemobj_rwlock_wrlock(pop, &pfree_pool->lock);
+
+	POBJ_LIST_INSERT_TAIL(pop, &pfree_pool->head, logbuf, list_entries);
+	pfree_pool->cur_free_bufs++;
+
+	//wakeup who is waitting for free_pool available
+	os_event_set(ppl->free_log_pool_event);
+
+	pmemobj_rwlock_unlock(pop, &pfree_pool->lock);
 }
 
 /*
@@ -2964,6 +3051,94 @@ __print_tx_blocks_state(FILE* f,
 	fprintf(f, "======================================\n");
 }
 
+/*Print hahsed lines  for debugging*/
+void 
+__print_page_log_hashed_lines(
+		FILE* f,
+		PMEM_PAGE_PART_LOG* ppl)
+{
+	uint64_t i, j, n, k;
+	uint64_t n_free;
+	uint64_t n_flushed;
+	uint64_t n_active;// number of log block that has at least one active tx on per bucket
+	uint64_t max_log_size;
+
+	uint64_t min_start_off;
+	uint64_t min_start_diskaddr;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+
+	n = ppl->n_buckets;
+	k = ppl->n_blocks_per_bucket;
+
+	fprintf(f, "==================Hashed lines info===============\n");
+	printf("======================================\n");
+	max_log_size = 0;
+
+	for (i = 0; i < n; i++){
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+		
+		n_free = 0;
+		n_flushed = 0;
+		n_active = 0;
+		min_start_off = ULONG_MAX;
+		min_start_diskaddr = ULONG_MAX;
+
+		//For each log block
+		for (j = 0; j < k; j++) {
+			plog_block = D_RW(D_RW(pline->arr)[j]);
+			if (plog_block->is_free){
+				n_free++;
+			}
+			else {
+				if (min_start_off > plog_block->start_off)
+					min_start_off = plog_block->start_off;
+				if (min_start_diskaddr > plog_block->start_diskaddr)
+					min_start_diskaddr = plog_block->start_diskaddr;
+				
+				if (plog_block->count > 0)
+					n_active++;
+				if (plog_block->pageLSN <= plog_block->lastLSN)
+					n_flushed++;
+			}
+		} //end for each log block
+		printf( "line %zu diskaddr %zu buf_cur_off %zu recv_diskaddr %zu recv_off %zu min_start_diskaddr %zu min_start_off %zu n_free %zu n_active %zu n_flushed %zu \n",
+				i,
+				pline->diskaddr,
+				D_RW(pline->logbuf)->cur_off,
+				pline->recv_diskaddr,
+				pline->recv_off,
+				min_start_diskaddr,
+				min_start_off,
+				n_free,
+				n_active,
+				n_flushed
+		  	  );	
+		fprintf(f, "line %zu diskaddr %zu buf_cur_off %zu recv_diskaddr %zu recv_off %zu min_start_diskaddr %zu min_start_off %zu n_free %zu n_active %zu n_flushed %zu \n",
+				i,
+				pline->diskaddr,
+				D_RW(pline->logbuf)->cur_off,
+				pline->recv_diskaddr,
+				pline->recv_off,
+				min_start_diskaddr,
+				min_start_off,
+				n_free,
+				n_active,
+				n_flushed
+		  	  );	
+		if (max_log_size < pline->diskaddr + D_RW(pline->logbuf)->cur_off)
+			max_log_size = pline->diskaddr + D_RW(pline->logbuf)->cur_off;
+	}
+	printf("max log size %zu \n", max_log_size);
+	fprintf(f, "max log size %zu \n", max_log_size);
+
+	fprintf(f, "======================================\n");
+	printf("======================================\n");
+}
 /*Print out page block states for debugging*/
 void 
 __print_page_blocks_state(
