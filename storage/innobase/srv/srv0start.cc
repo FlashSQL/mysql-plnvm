@@ -3199,6 +3199,7 @@ srv_get_encryption_data_filename(
 #if defined (UNIV_PMEMOBJ_PART_PL)
 /*
  * Create all part-log files if they are not exist
+ * Only call this function when the server start
  * */
 dberr_t
 pm_create_or_open_part_log_files(
@@ -3215,6 +3216,14 @@ pm_create_or_open_part_log_files(
 	bool success;
 
 	
+	ppl->node_arr = static_cast<fil_node_t**> (calloc(ppl->n_buckets, sizeof(fil_node_t*)));
+	
+	for (i = 0; i < ppl->n_buckets; i++){
+		ppl->node_arr[i] = static_cast<fil_node_t*> (malloc(sizeof(fil_node_t)));
+	}
+
+	ppl->log_space = static_cast<fil_space_t*> (malloc(sizeof(fil_space_t)));
+
 	if (ppl->is_new){
 		// (1) Create files 
 		for (i = 0; i < n_log_files; i++) {
@@ -3324,7 +3333,7 @@ pm_create_or_open_part_log_files(
 	}
 	
 	//(5) open and keep pmem log files opened until shutdown
-	fil_open_log_and_system_tablespace_files();
+	//fil_open_log_and_system_tablespace_files();
 
 	return (DB_SUCCESS);
 }
@@ -3344,9 +3353,9 @@ pm_create_log_file(
 	bool		ret;
 
 	*file = os_file_create(
-		innodb_log_file_key, name,
-		OS_FILE_CREATE|OS_FILE_ON_ERROR_NO_EXIT, OS_FILE_NORMAL,
-		OS_LOG_FILE, srv_read_only_mode, &ret);
+			innodb_log_file_key, name,
+			OS_FILE_CREATE|OS_FILE_ON_ERROR_NO_EXIT, OS_FILE_NORMAL,
+			OS_LOG_FILE, srv_read_only_mode, &ret);
 
 	if (!ret) {
 		ib::error() << "Cannot create " << name;
@@ -3357,9 +3366,9 @@ pm_create_log_file(
 		<< " MB";
 
 	ret = os_file_set_size(name, *file,
-			       (os_offset_t) log_file_size
-			       << UNIV_PAGE_SIZE_SHIFT,
-			       srv_read_only_mode);
+			(os_offset_t) log_file_size
+			<< UNIV_PAGE_SIZE_SHIFT,
+			srv_read_only_mode);
 	if (!ret) {
 		ib::error() << "Cannot set log file " << name << " to size "
 			<< (log_file_size >> (20 - UNIV_PAGE_SIZE_SHIFT))
@@ -3371,4 +3380,48 @@ pm_create_log_file(
 
 	return(DB_SUCCESS);
 }
+/*
+ * Close log files and release resource when the server close
+ * */
+int
+pm_close_and_free_log_files(
+		PMEM_PAGE_PART_LOG*	ppl) 
+{
+	bool ret;
+	uint64_t i, n, k;
+	fil_node_t* node;
+
+	n = ppl->n_buckets;
+	
+	//fil_node, follow the logic of fil_node_close_file() and fil_space_free_low()
+	for (i = 0; i < n; i++){
+		node = ppl->node_arr[i];
+
+		if (node->is_open){
+			ret = os_file_close(node->handle);
+			ut_a(ret);
+			node->is_open = false;
+		}
+		node->space = NULL;
+
+		os_event_destroy(node->sync_event);
+		ut_free(node->name);
+		node->name = NULL;
+		node->handle.m_psi = NULL;
+
+		free(ppl->node_arr[i]);
+	}
+	free (ppl->node_arr);
+
+	//space
+	ut_free(ppl->log_space->name);
+	free (ppl->log_space);
+	
+	//group
+	for (i = 0; i < n; i++){
+		pm_log_group_free(ppl->log_groups[i]);
+	}
+	ut_free(ppl->log_groups);
+}
+
 #endif //UNIV_PMEMOBJ_PART_PL

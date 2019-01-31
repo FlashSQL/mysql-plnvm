@@ -1304,15 +1304,6 @@ pm_wrapper_page_log_alloc_or_open(
 	pmw->ppl->flusher = pm_log_flusher_init(PMEM_N_LOG_FLUSH_THREADS);
 
 	pmw->ppl->free_log_pool_event = os_event_create("pm_free_log_pool_event");
-	
-	uint64_t i;
-	pmw->ppl->node_arr = (fil_node_t**) calloc(pmw->ppl->n_buckets, sizeof(fil_node_t*));
-	for (i = 0; i < pmw->ppl->n_buckets; i++){
-		pmw->ppl->node_arr[i] = (fil_node_t*) malloc(sizeof(fil_node_t));
-	}
-
-	pmw->ppl->log_space = (fil_space_t*) malloc(sizeof(fil_space_t));
-
 
 	pmw->ppl->deb_file = fopen("part_log_debug.txt","a");
 }
@@ -1330,17 +1321,7 @@ pm_wrapper_page_log_close(
 	os_event_destroy(ppl->free_log_pool_event);
 	pm_log_flusher_close(ppl->flusher);
 	
-	//close fil_node and free
-	for (i = 0; i < ppl->n_buckets; i++){
-		//os_file_close(&log_files[i]);
-
-		node = ppl->node_arr[i];
-		//if (node->is_open){
-		//	fil_node_close_file(node);
-		//}
-	}
-	free (ppl->node_arr);
-	free (ppl->log_groups);
+	pm_close_and_free_log_files(pmw->ppl);	
 	
 	__print_page_log_hashed_lines(debug_ptxl_file, pmw->ppl);
 
@@ -2843,6 +2824,23 @@ pm_log_group_init(
 	return group;
 }
 
+void 
+pm_log_group_free(
+		PMEM_LOG_GROUP* group)
+{
+	uint64_t n, i;
+
+	n	= group->n_files;
+	
+	for (i = 0; i < n; i++){
+		ut_free(group->file_header_bufs_ptr[i]);
+		//ut_free(group->file_header_bufs[i]);
+
+	}
+	ut_free (group->file_header_bufs_ptr);
+	ut_free (group->file_header_bufs);
+	ut_free (group);
+}
 //////////////////// LOG FILE FUNCTIONS//////
 
 ////////////END LOG FILE FUNCTION

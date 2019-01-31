@@ -997,6 +997,10 @@ pm_create_or_open_part_log_files(
 		size_t  dirnamelen,
 		char*&  logfile0);
 
+int
+pm_close_and_free_log_files(
+		PMEM_PAGE_PART_LOG*	ppl);
+
 PMEM_LOG_GROUP*
 pm_log_group_init(
 /*===========*/
@@ -1004,6 +1008,10 @@ pm_log_group_init(
 	uint64_t	n_files,		/*!< in: number of log files */
 	uint64_t	file_size,		/*!< in: log file size in bytes */
 	uint64_t	space_id);	
+
+void 
+pm_log_group_free(
+		PMEM_LOG_GROUP* group);
 
 dberr_t
 pm_create_log_file(
