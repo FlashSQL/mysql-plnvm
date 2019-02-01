@@ -1105,7 +1105,9 @@ buf_flush_write_block_low(
 		assert(buf_page_io_complete(bpage,sync));
 		goto skip_write_and_fsync;
 	//skip_pm_write:
-#elif defined (UNIV_PMEMOBJ_PART_PL) 
+#endif /*UNIV_PMEMOBJ_BUF*/
+
+#if defined (UNIV_PMEMOBJ_PART_PL) 
 		// PL-NVM without PB-NVM
 		pm_ppl_flush_page(gb_pmw->pop, gb_pmw->ppl, bpage->id.fold(), bpage->newest_modification);
 #endif /*UNIV_PMEMOBJ_BUF*/

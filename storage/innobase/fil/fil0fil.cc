@@ -6697,7 +6697,11 @@ fil_aio_wait(
 			PMEM_PAGE_LOG_BUF* plogbuf = static_cast<PMEM_PAGE_LOG_BUF*> (message);
 
 			if (plogbuf != NULL && plogbuf->check == PMEM_AIO_CHECK) {
-				pm_handle_finished_log_buf(gb_pmw->pop, gb_pmw->ppl, plogbuf);
+				pm_handle_finished_log_buf(
+						gb_pmw->pop,
+					   	gb_pmw->ppl,
+						node,
+					   	plogbuf);
 				return;
 			}
 			//this is the InnoDB's REDO log

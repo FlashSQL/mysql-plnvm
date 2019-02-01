@@ -23,6 +23,34 @@
 
 #if defined (UNIV_PMEMOBJ_PL)
 
+#if defined (UNIV_PMEMOBJ_PL)
+static FILE* debug_ptxl_file = fopen("pll_debug.txt","a");
+/*Part Log*/
+static uint64_t PMEM_N_LOG_BUCKETS;
+static uint64_t PMEM_N_BLOCKS_PER_BUCKET;
+
+/*Log Buf*/
+static uint64_t PMEM_LOG_BUF_SIZE;
+
+/*Transaction Table*/
+static uint64_t PMEM_TT_N_LINES;
+static uint64_t PMEM_TT_N_ENTRIES_PER_LINE;
+static uint64_t PMEM_TT_MAX_DIRTY_PAGES_PER_TX;
+
+
+/*Flush Log*/
+static double PMEM_LOG_BUF_FLUSH_PCT;
+static uint64_t PMEM_LOG_FLUSHER_WAKE_THRESHOLD=5;
+static uint64_t PMEM_N_LOG_FLUSH_THREADS=32;
+
+/*Log files*/
+//static uint64_t PMEM_LOG_FILE_SIZE=4*1024; //in 4-KB pages (16MB)
+static uint64_t PMEM_LOG_FILE_SIZE=16*1024; //in 4-KB pages (64MB)
+//static uint64_t PMEM_N_LOG_FILES_PER_BUCKET=2;
+static uint64_t PMEM_N_LOG_FILES_PER_BUCKET=1;
+
+
+#endif //UNIV_PMEMOBJ_PL
 //////////////// NEW PMEM PARTITION LOG /////////////
 
 /////////////////// PER-TX LOGGING /////////////////
@@ -244,112 +272,6 @@ pm_tx_part_log_bucket_init(
 		uint64_t			n_blocks_per_bucket,
 		uint64_t			block_size) {
 
-	uint64_t i, j, n, k;
-	uint64_t cur_bucket;
-	size_t offset;
-
-	PMEM_TX_LOG_HASHED_LINE* pline;
-	PMEM_TX_LOG_BLOCK*	plog_block;
-
-	offset = 0;
-	cur_bucket = 0;
-
-	n = n_buckets;
-	k = n_blocks_per_bucket;
-	
-	//allocate the pointer array buckets
-	POBJ_ALLOC(pop,
-			&pl->buckets,
-			TOID(PMEM_TX_LOG_HASHED_LINE),
-			sizeof(TOID(PMEM_TX_LOG_HASHED_LINE)) * n,
-			NULL,
-			NULL);
-	if (TOID_IS_NULL(pl->buckets)) {
-		fprintf(stderr, "POBJ_ALLOC\n");
-	}
-
-	pl->pmem_tx_log_size = sizeof(TOID(PMEM_TX_LOG_HASHED_LINE)) * n;
-	//for each hashed line
-	for (i = 0; i < n; i++) {
-		POBJ_ZNEW(pop,
-				&D_RW(pl->buckets)[i],
-				PMEM_TX_LOG_HASHED_LINE);
-		if (TOID_IS_NULL(D_RW(pl->buckets)[i])) {
-			fprintf(stderr, "POBJ_ZNEW\n");
-		}
-
-		pl->pmem_tx_log_size += sizeof(PMEM_TX_LOG_HASHED_LINE);
-		pline = D_RW(D_RW(pl->buckets)[i]);
-
-		pline->hashed_id = i;
-		pline->n_blocks = k;
-
-		//Allocate the log blocks
-		POBJ_ALLOC(pop,
-				&pline->arr,
-				TOID(PMEM_TX_LOG_BLOCK),
-				sizeof(TOID(PMEM_TX_LOG_BLOCK)) * k,
-				NULL,
-				NULL);
-		pl->pmem_tx_log_size += sizeof(TOID(PMEM_TX_LOG_BLOCK)) * k;
-		//for each log block
-		for (j = 0; j < k; j++) {
-			POBJ_ZNEW(pop,
-					&D_RW(pline->arr)[j],
-					PMEM_TX_LOG_BLOCK);
-			if (TOID_IS_NULL(D_RW(pline->arr)[j])) {
-				fprintf(stderr, "POBJ_ZNEW\n");
-			}
-		pl->pmem_tx_log_size += sizeof(PMEM_TX_LOG_BLOCK);
-			plog_block = D_RW(D_RW(pline->arr)[j]);
-			//assign the pmemaddr similar to the 2D array indexing
-			//plog_block->pmemaddr = (i * k + j) * block_size; 
-			plog_block->bid = i * k + j;
-			plog_block->tid = 0;
-			plog_block->cur_off = 0;
-			plog_block->n_log_recs = 0;
-			plog_block->state = PMEM_FREE_LOG_BLOCK;
-			plog_block->count = 0;
-			
-			//array of dirty pages
-			plog_block->n_dp_entries = 0;
-			POBJ_ALLOC(pop,
-					&plog_block->dp_array,
-					TOID(PMEM_PAGE_REF),
-					sizeof(TOID(PMEM_PAGE_REF)) * MAX_DIRTY_PAGES_PER_TX,
-					NULL,
-					NULL);
-			uint64_t i_temp;
-			for (i_temp = 0; i_temp < MAX_DIRTY_PAGES_PER_TX; i_temp++){
-				POBJ_ZNEW(pop,
-					&D_RW(plog_block->dp_array)[i_temp],
-				PMEM_PAGE_REF);	
-			}
-
-		pl->pmem_tx_log_size += ( sizeof(TOID(PMEM_PAGE_REF)) + sizeof(PMEM_PAGE_REF)) * MAX_DIRTY_PAGES_PER_TX;
-
-#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
-			plog_block->all_n_reused = 0;
-			plog_block->all_avg_log_rec_size = 0;
-			plog_block->all_min_log_rec_size = ULONG_MAX;
-			plog_block->all_max_log_rec_size = 0;
-			plog_block->all_avg_block_lifetime = 0;
-
-			plog_block->all_max_log_buf_size = 0;
-			plog_block->all_avg_log_buf_size = 0;
-			
-			plog_block->all_max_n_recs = 0;
-			plog_block->all_avg_n_recs = 0;
-			plog_block->all_max_n_pagerefs = 0;
-
-			plog_block->n_small_log_recs = 0;
-			plog_block->avg_log_rec_size = 0;
-			plog_block->min_log_rec_size = ULONG_MAX;
-			plog_block->max_log_rec_size = 0;
-			plog_block->lifetime = 0;
-#endif
-		}
-	}//end for each hashed line
 }
 
 /*
@@ -372,16 +294,6 @@ pm_ptxl_write(
 			uint64_t*			space_arr,
 			uint64_t*			page_arr,
 			int64_t				block_id)
-//int64_t
-//pm_ptxl_write(
-//			PMEMobjpool*		pop,
-//			PMEM_TX_PART_LOG*	ptxl,
-//			uint64_t			tid,
-//			byte*				log_src,
-//			uint64_t			size,
-//			uint64_t			n_recs,
-//			uint64_t*			key_arr,
-//			int64_t				block_id)
 {
 	ulint hashed;
 	ulint i, j;
@@ -510,8 +422,8 @@ pm_ptxl_write(
 		assert (key == key_arr[i]);
 
 		
-		if (plog_block->n_dp_entries >= MAX_DIRTY_PAGES_PER_TX){
-			printf("PMEM ERROR, in pm_ptxl_write(), n_dp_entries reach the max capacity %zu, change your setting \n", MAX_DIRTY_PAGES_PER_TX);
+		if (plog_block->n_dp_entries >= PMEM_TT_MAX_DIRTY_PAGES_PER_TX){
+			printf("PMEM ERROR, in pm_ptxl_write(), n_dp_entries reach the max capacity %zu, change your setting \n", PMEM_TT_MAX_DIRTY_PAGES_PER_TX);
 			assert(0);
 		}
 
@@ -1240,27 +1152,37 @@ pm_pop_get_ppl (PMEMobjpool* pop)
 	return ppl;	
 }
 
+/*
+ * Allocate part page log and its components
+ * Read config variable from my.cnf 
+ * */
 void
 pm_wrapper_page_log_alloc_or_open(
-		PMEM_WRAPPER*	pmw,
-		uint64_t		n_buckets,
-		uint64_t		n_blocks_per_bucket,
-		uint64_t		n_log_bufs,
-		uint64_t		log_buf_size,
-		uint64_t		n_log_files_per_bucket
+		PMEM_WRAPPER*	pmw
 		) 
 {
 	
 	// Get const variable from parameter and config value
+	uint64_t n_log_bufs;
+	uint64_t n_free_log_bufs;
+
+	PMEM_N_LOG_BUCKETS = srv_ppl_n_log_buckets;
+	PMEM_N_BLOCKS_PER_BUCKET = srv_ppl_blocks_per_bucket;
+	PMEM_LOG_BUF_SIZE = srv_ppl_log_buf_size;
+	PMEM_TT_N_LINES = srv_ppl_tt_n_lines;
+	PMEM_TT_N_ENTRIES_PER_LINE = srv_ppl_tt_entries_per_line;
+	PMEM_TT_MAX_DIRTY_PAGES_PER_TX = srv_ppl_tt_pages_per_tx;
+/*Flush Log*/
+	PMEM_LOG_BUF_FLUSH_PCT = srv_ppl_log_buf_flush_pct;
+	PMEM_LOG_FLUSHER_WAKE_THRESHOLD = srv_ppl_log_flusher_wake_threshold;
+	PMEM_N_LOG_FLUSH_THREADS = srv_ppl_n_log_flush_threads;
+/*Log files*/
+	PMEM_LOG_FILE_SIZE = srv_ppl_log_file_size; //in 4-KB pages (64MB)
+	PMEM_N_LOG_FILES_PER_BUCKET = srv_ppl_log_files_per_bucket;
 	
-	PMEM_N_LOG_BUCKETS = n_buckets;
-	PMEM_N_BLOCKS_PER_BUCKET = n_blocks_per_bucket;
+	n_free_log_bufs = PMEM_N_LOG_BUCKETS / 4;
+	n_log_bufs = PMEM_N_LOG_BUCKETS + n_free_log_bufs;
 
-	PMEM_LOG_BUF_FLUSH_PCT = 0.9;
-	PMEM_LOG_FLUSHER_WAKE_THRESHOLD = 5;
-	PMEM_N_LOG_FLUSH_THREADS=32;
-
-	PMEM_N_LOG_FILES_PER_BUCKET = n_log_files_per_bucket;
 	/* Part 1: NVDIMM structures*/	
 
 	if (!pmw->ppl) {
@@ -1269,18 +1191,19 @@ pm_wrapper_page_log_alloc_or_open(
 				PMEM_N_LOG_BUCKETS,
 				PMEM_N_BLOCKS_PER_BUCKET,
 				n_log_bufs,
-				log_buf_size);
+				PMEM_LOG_BUF_SIZE);
 
 		if (pmw->ppl == NULL){
 			printf("PMEMOBJ_ERROR: error when allocate buffer in pm_wrapper_page_log_alloc_or_open()\n");
 			exit(0);
 		}
 		printf("\n=================================\n Footprint of PAGE part-log:\n");
-		//printf("Log area size \t\t\t %f (MB) \n", (n_buckets * n_blocks_per_bucket * block_size * 1.0)/(1024*1024) );
-		printf("Log area %zu x %zu (B) = \t\t %f (MB) \n", n_log_bufs, log_buf_size, (n_log_bufs * log_buf_size * 1.0)/(1024*1024) );
-		printf("PAGE-Log metadata: %zu x %zu, size %f (MB)\n", n_buckets, n_blocks_per_bucket, (pmw->ppl->pmem_page_log_size * 1.0)/(1024*1024));
-		printf("TT metadata, %zu x %zu, size \t %f (MB)\n", MAX_TT_LINES, MAX_TT_ENTRIES_PER_LINE, (pmw->ppl->pmem_tt_size * 1.0) / (1024*1024));
-		printf("Total allocated \t\t %f (MB)\n", (pmw->ppl->pmem_alloc_size * 1.0)/ (1024*1024));
+		printf("Log area %zu x %zu (B) = \t\t %f (MB) \n", n_log_bufs, PMEM_LOG_BUF_SIZE, (n_log_bufs * PMEM_LOG_BUF_SIZE * 1.0)/(1024*1024) );
+		printf("PAGE-Log metadata: %zu x %zu = \t %f (MB)\n", PMEM_N_LOG_BUCKETS, PMEM_N_BLOCKS_PER_BUCKET, (pmw->ppl->pmem_page_log_size * 1.0)/(1024*1024));
+		printf("TT metadata, %zu x %zu = \t\t %f (MB)\n", PMEM_TT_N_LINES, PMEM_TT_N_ENTRIES_PER_LINE, (pmw->ppl->pmem_tt_size * 1.0) / (1024*1024));
+		printf("Total NVDIMM allocated = \t\t %f (MB)\n", (pmw->ppl->pmem_alloc_size * 1.0)/ (1024*1024));
+		float log_file_size_MB = PMEM_LOG_FILE_SIZE * 4 * 1024 * 1.0 / (1024 * 1024);
+		printf("Log files %zu x %f (MB) = \t %f (MB)\n", PMEM_N_LOG_BUCKETS, log_file_size_MB, (PMEM_N_LOG_BUCKETS * log_file_size_MB));
 		printf(" =================================\n");
 	}
 	else {
@@ -1290,7 +1213,7 @@ pm_wrapper_page_log_alloc_or_open(
 		byte* p;
 		p = static_cast<byte*> (pmemobj_direct(pmw->ppl->data));
 		assert(p);
-		pmw->ppl->p_align = static_cast<byte*> (ut_align(p, log_buf_size));
+		pmw->ppl->p_align = static_cast<byte*> (ut_align(p, PMEM_LOG_BUF_SIZE));
 
 		//print the hashed line to check
 		__print_page_log_hashed_lines(debug_ptxl_file, pmw->ppl);
@@ -1383,6 +1306,7 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 	ppl->n_blocks_per_bucket = n_blocks_per_bucket;
 
 	ppl->n_log_files_per_bucket = PMEM_N_LOG_FILES_PER_BUCKET;
+	ppl->log_file_size = PMEM_LOG_FILE_SIZE;
 
 	ppl->is_new = true;
 	ppl->data = pm_pop_alloc_bytes(pop, align_size);
@@ -1427,7 +1351,12 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 	ppl->pmem_alloc_size += ppl->pmem_page_log_free_pool_size;
 	
 	//(4) transaction table
-	__init_tt(pop, ppl, MAX_TT_LINES, MAX_TT_ENTRIES_PER_LINE);
+	__init_tt(
+			pop,
+		   	ppl,
+		   	PMEM_TT_N_LINES,
+		   	PMEM_TT_N_ENTRIES_PER_LINE,
+			PMEM_TT_MAX_DIRTY_PAGES_PER_TX);
 
 	ppl->pmem_alloc_size += ppl->pmem_tt_size;
 
@@ -1446,7 +1375,8 @@ __init_tt(
 		PMEMobjpool*			pop,
 		PMEM_PAGE_PART_LOG*		ppl,
 		uint64_t				n,
-		uint64_t				k) {
+		uint64_t				k,
+		uint64_t				pages_per_tx) {
 
 	uint64_t i, j, i_temp;	
 	PMEM_TT* ptt;
@@ -1516,13 +1446,13 @@ __init_tt(
 			POBJ_ALLOC(pop,
 					&pe->dp_arr,
 					TOID(PMEM_PAGE_REF),
-					sizeof(TOID(PMEM_PAGE_REF)) * MAX_DIRTY_PAGES_PER_TX,
+					sizeof(TOID(PMEM_PAGE_REF)) * pages_per_tx,
 					NULL,
 					NULL);
 
-			ppl->pmem_tt_size += sizeof(TOID(PMEM_PAGE_REF)) * MAX_DIRTY_PAGES_PER_TX;
+			ppl->pmem_tt_size += sizeof(TOID(PMEM_PAGE_REF)) * pages_per_tx;
 
-			for (i_temp = 0; i_temp < MAX_DIRTY_PAGES_PER_TX; i_temp++){
+			for (i_temp = 0; i_temp < pages_per_tx; i_temp++){
 				POBJ_ZNEW(pop,
 					&D_RW(pe->dp_arr)[i_temp],
 				PMEM_PAGE_REF);	
@@ -1532,7 +1462,7 @@ __init_tt(
 				D_RW(D_RW(pe->dp_arr)[i_temp])->pageLSN = 0;
 			}
 			pe->n_dp_entries = 0;
-			ppl->pmem_tt_size += sizeof(PMEM_PAGE_REF) * MAX_DIRTY_PAGES_PER_TX;
+			ppl->pmem_tt_size += sizeof(PMEM_PAGE_REF) * pages_per_tx;
 		} //end for each entry
 	}// end for each line
 }
@@ -1636,28 +1566,13 @@ pm_page_part_log_bucket_init(
 			plog_block->key = 0;
 			plog_block->count = 0;
 
-			plog_block->cur_size = 0;
-			plog_block->n_log_recs = 0;
+			//plog_block->cur_size = 0;
+			//plog_block->n_log_recs = 0;
 
 			plog_block->pageLSN = 0;
 			plog_block->lastLSN = 0;
 			plog_block->start_off = 0;
 			plog_block->start_diskaddr = 0;
-
-			////array of active transaction
-			//plog_block->n_tx_idx = 0;
-			//POBJ_ALLOC(pop,
-			//		&plog_block->tx_idx_arr,
-			//		int64_t,
-			//		sizeof(int64_t) * MAX_TX_PER_PAGE,
-			//		NULL,
-			//		NULL);
-			//uint64_t i_temp;
-			//for (i_temp = 0; i_temp < MAX_TX_PER_PAGE; i_temp++){
-			//	D_RW(plog_block->tx_idx_arr)[i_temp] = -1;
-			//}
-			//pl->pmem_page_log_size +=  sizeof(int64_t) * MAX_TX_PER_PAGE;
-
 		}//end for each log block
 	}//end for each hashed line
 }
@@ -2069,7 +1984,7 @@ __update_page_log_block_on_write(
 						plog_block,
 						false);
 
-				plog_block->n_log_recs++;
+				//plog_block->n_log_recs++;
 
 				//(3) update metadata
 				plog_block->lastLSN = LSN;
@@ -2107,7 +2022,7 @@ __update_page_log_block_on_write(
 						plog_block,
 						true);
 
-				plog_block->n_log_recs++;
+				//plog_block->n_log_recs++;
 
 				//(3) update metadata
 				plog_block->lastLSN = LSN;
@@ -2151,23 +2066,7 @@ __update_page_log_block_on_write(
 				rec_size,
 				plog_block,
 				false);
-		//pmemobj_rwlock_wrlock(pop, &pline->lock);
-		//plogbuf = D_RW(pline->logbuf);
-
-		//log_des = pdata + plogbuf->pmemaddr + plogbuf->cur_off;
-		//__pm_write_log_rec_low(pop,
-		//		log_des,
-		//		log_src + cur_off,
-		//		rec_size);
-		//plogbuf->cur_off += rec_size;
-
-		//if (plogbuf->cur_off > plogbuf->size * PMEM_LOG_BUF_FLUSH_PCT) {
-		//	//simply reset
-		//	plogbuf->cur_off = 0;		
-		//}
-
-		//pmemobj_rwlock_unlock(pop, &pline->lock);
-		plog_block->n_log_recs++;
+		//plog_block->n_log_recs++;
 
 		//(3) update metadata
 		plog_block->lastLSN = LSN;
@@ -2205,6 +2104,7 @@ __pm_write_log_buf(
 
 
 	pmemobj_rwlock_wrlock(pop, &pline->lock);
+
 	//when a logbuf is full, we switch the pline->logbuf not the line, so it's not require to check full and goto as in PB-NVM (see pm_buf_write_with_flusher())
 	
 	plogbuf = D_RW(pline->logbuf);
@@ -2215,6 +2115,7 @@ __pm_write_log_buf(
 		plog_block->start_off = plogbuf->cur_off;
 		plog_block->start_diskaddr = pline->diskaddr;
 	}
+
 	log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
 	__pm_write_log_rec_low(pop,
 			log_des,
@@ -2394,8 +2295,17 @@ pm_log_flush_log_buf(
 	pline->recv_diskaddr = min_diskaddr;
 	pline->recv_off = min_off;
 
+#if defined (UNIV_WRITE_LOG_ON_NVM)
+	/*(2) memcpy and reset */
+	//skip write
+	
+	//handle finish
+	pm_handle_finished_log_buf(
+		pop, ppl, plogbuf);	
+#else
 	/*(2) Flush	*/
 	pm_log_fil_io(pop, ppl, plogbuf);
+#endif
 }
 
 
@@ -2434,6 +2344,7 @@ void
 pm_handle_finished_log_buf(
 		PMEMobjpool*			pop,
 		PMEM_PAGE_PART_LOG*		ppl,
+		fil_node_t*				node,
 		PMEM_PAGE_LOG_BUF*		plogbuf)
 {
 	TOID(PMEM_PAGE_LOG_BUF) logbuf;
@@ -2444,12 +2355,17 @@ pm_handle_finished_log_buf(
 	assert(plogbuf);
 	TOID_ASSIGN(logbuf, plogbuf->self);
 
-	printf("pm_handle_finished_log_buf id %zu hashed %zu\n", plogbuf->id, plogbuf->hashed_id);
+	//printf("pm_handle_finished_log_buf id %zu hashed %zu\n", plogbuf->id, plogbuf->hashed_id);
 
 	pline = D_RW(D_RW(ppl->buckets)[plogbuf->hashed_id]);
 	assert(pline);
 
 	/*(3) Post-flush */
+
+	//flush file
+	assert(node->is_open);
+	os_file_flush(node->handle);
+
 	//update the write_diskaddr
 	pline->write_diskaddr = pline->diskaddr;
 
@@ -2630,9 +2546,10 @@ __update_page_log_block_on_commit(
 	//(2) Reclaim the log block
 	plog_block->count--;
 	if (plog_block->count <= 0 &&
-			plog_block->lastLSN <= plog_block->pageLSN)
-	//if (plog_block->count <= 0)
+		plog_block->lastLSN <= plog_block->pageLSN)
 	{
+	//	printf("====> reclaim page block %zu key %zu on commit\n", plog_block->bid, plog_block->key);
+
 		__reset_page_log_block(plog_block);
 		pmemobj_rwlock_unlock(pop, &plog_block->lock);
 		return true;
@@ -2658,18 +2575,13 @@ __reset_page_log_block(PMEM_PAGE_LOG_BLOCK* plog_block)
 	plog_block->key = 0;
 	plog_block->count = 0;
 
-	plog_block->cur_size = 0;
-	plog_block->n_log_recs = 0;
+	//plog_block->cur_size = 0;
+	//plog_block->n_log_recs = 0;
 
 	plog_block->pageLSN = 0;
 	plog_block->lastLSN = 0;
 	plog_block->start_off = 0;
 	plog_block->start_diskaddr = 0;
-
-//	for (i = 0; i < plog_block->n_tx_idx; i++){
-//		D_RW(plog_block->tx_idx_arr)[i] = -1;
-//	}
-//	plog_block->n_tx_idx = 0;
 }
 
 /*
@@ -2724,10 +2636,15 @@ pm_ppl_flush_page(
 
 				//update the pageLSN on flush page
 				plog_block->pageLSN = pageLSN;
-				assert(plog_block->lastLSN <= pageLSN);
-				// (2) Check to recliam this log block
+
+				//we no longer assert here, new log recs are written on page during its flushing time
+				//assert(plog_block->lastLSN <= pageLSN);
+				
+				// (2) Check to reclaim this log block
 				if (plog_block->count <= 0){
-					__reset_page_log_block(plog_block);
+					if (plog_block->lastLSN <= pageLSN){
+						__reset_page_log_block(plog_block);
+					}
 				}
 				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
 				return;
@@ -3104,9 +3021,10 @@ __print_page_log_hashed_lines(
 					n_flushed++;
 			}
 		} //end for each log block
-		printf( "line %zu diskaddr %zu buf_cur_off %zu recv_diskaddr %zu recv_off %zu min_start_diskaddr %zu min_start_off %zu n_free %zu n_active %zu n_flushed %zu \n",
+		printf( "line %zu diskaddr %zu write_diskaddr %zu buf_cur_off %zu recv_diskaddr %zu recv_off %zu min_start_diskaddr %zu min_start_off %zu n_free %zu n_active %zu n_flushed %zu \n",
 				i,
 				pline->diskaddr,
+				pline->write_diskaddr,
 				D_RW(pline->logbuf)->cur_off,
 				pline->recv_diskaddr,
 				pline->recv_off,
@@ -3116,9 +3034,10 @@ __print_page_log_hashed_lines(
 				n_active,
 				n_flushed
 		  	  );	
-		fprintf(f, "line %zu diskaddr %zu buf_cur_off %zu recv_diskaddr %zu recv_off %zu min_start_diskaddr %zu min_start_off %zu n_free %zu n_active %zu n_flushed %zu \n",
+		fprintf(f, "line %zu diskaddr %zu write_diskaddr %zu buf_cur_off %zu recv_diskaddr %zu recv_off %zu min_start_diskaddr %zu min_start_off %zu n_free %zu n_active %zu n_flushed %zu \n",
 				i,
 				pline->diskaddr,
+				pline->write_diskaddr,
 				D_RW(pline->logbuf)->cur_off,
 				pline->recv_diskaddr,
 				pline->recv_off,
@@ -3279,7 +3198,7 @@ void
 ptxl_print_log_block_stat_info (FILE* f, PMEM_TX_LOG_BLOCK* plog_block) 
 {
 	//<block-life info> <trx-life info>
-	fprintf(f, "%zu %zu %.2f %.2f %zu %zu %.2f	%zu %zu %zu %zu %zu %zu %zu %zu %zu %zu \n", 
+	fprintf(f, "%zu %zu %.2f %.2f %zu %zu %.2f	%zu %zu %zu %zu %zu  %zu %zu %zu %zu \n", 
 			plog_block->bid,
 			plog_block->all_n_reused,
 			plog_block->all_avg_small_log_recs,
@@ -3290,7 +3209,7 @@ ptxl_print_log_block_stat_info (FILE* f, PMEM_TX_LOG_BLOCK* plog_block)
 			////// trx-lifetime
 			plog_block->tid,
 			plog_block->cur_off,
-			plog_block->n_log_recs,
+			//plog_block->n_log_recs,
 			plog_block->count,
 			plog_block->state,
 			plog_block->n_small_log_recs,

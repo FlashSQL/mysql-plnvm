@@ -119,13 +119,6 @@ pm_wrapper_buf_alloc_or_open(
 	pm_filemap_init(pmw->pbuf);
 #endif
 
-#if defined (UNIV_PMEMOBJ_PL)
-	//New in PL-NVM
-	pmw->pbuf->dpt = alloc_DPT(MAX_DPT_ENTRIES);
-	pmw->pbuf->tt = alloc_TT(MAX_DPT_ENTRIES);
-	
-	pmw->pbuf->is_pl_disable = true;
-#endif //UNIV_PMEMOBJ_PL
 
 	//In any case (new allocation or resued, we should allocate the flush_events for buckets in DRAM
 	pmw->pbuf->flush_events = (os_event_t*) calloc(PMEM_N_BUCKETS, sizeof(os_event_t));
@@ -577,18 +570,6 @@ pm_buf_block_init(
 	TOID_ASSIGN(block->list, (args->list).oid);
 	block->pmemaddr = args->pmemaddr;
 
-#if defined(UNIV_PMEMOBJ_PL)
-	//New in PL-NVM
-	POBJ_ZNEW(pop, &block->redolog_list, PMEM_LOG_LIST);	
-	TOID_ASSIGN( D_RW(block->redolog_list)->head, OID_NULL);
-	TOID_ASSIGN( D_RW(block->redolog_list)->tail, OID_NULL);
-	D_RW(block->redolog_list)->n_items = 0;
-
-	POBJ_ZNEW(pop, &block->undolog_list, PMEM_LOG_LIST);	
-	TOID_ASSIGN( D_RW(block->undolog_list)->head, OID_NULL);
-	TOID_ASSIGN( D_RW(block->undolog_list)->tail, OID_NULL);
-	D_RW(block->undolog_list)->n_items = 0;
-#endif //UNIV_PMEMOBJ_PL
 
 	pmemobj_persist(pop, &block->id, sizeof(block->id));
 	pmemobj_persist(pop, &block->size, sizeof(block->size));
@@ -597,10 +578,6 @@ pm_buf_block_init(
 	pmemobj_persist(pop, &block->state, sizeof(block->state));
 	pmemobj_persist(pop, &block->list, sizeof(block->list));
 	pmemobj_persist(pop, &block->pmemaddr, sizeof(block->pmemaddr));
-#if defined (UNIV_PMEMOBJ_PL)
-	pmemobj_persist(pop, &block->redolog_list, sizeof(block->redolog_list));
-	pmemobj_persist(pop, &block->undolog_list, sizeof(block->undolog_list));
-#endif //UNIV_PMEMOBJ_PL
 	return 0;
 }
 
@@ -669,13 +646,6 @@ pm_buf_write_with_flusher(
 	assert(buf);
 	assert(src_data);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-#if defined (UNIV_PMEMOBJ_TX_LOG)
-	pm_ptxl_on_flush_page(pop, pmw->ptxl, page_id.fold(), pageLSN);
-#else
-	pm_ppl_flush_page(pop, pmw->ppl, page_id.fold(), pageLSN);
-#endif //UNIV_PMEMOBJ_TX_LOG
-#endif // UNIV_PMEMOBJ_PART_PL
 
 #if defined (UNIV_PMEMOBJ_BLOOM)
 //add the fold() value to the bloom filter

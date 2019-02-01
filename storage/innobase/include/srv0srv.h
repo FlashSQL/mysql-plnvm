@@ -293,6 +293,21 @@ extern ulong	srv_pmem_buf_size;
 extern ulong	srv_pmem_buf_n_buckets;
 extern double	srv_pmem_buf_flush_pct;
 #endif 
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+extern ulong	srv_ppl_n_log_buckets;
+extern ulong	srv_ppl_blocks_per_bucket;
+extern ulong	srv_ppl_log_buf_size;
+extern ulong	srv_ppl_tt_n_lines;
+extern ulong	srv_ppl_tt_entries_per_line;
+extern ulong	srv_ppl_tt_pages_per_tx;
+extern double	srv_ppl_log_buf_flush_pct;
+extern ulong	srv_ppl_log_flusher_wake_threshold;
+extern ulong	srv_ppl_n_log_flush_threads;
+extern ulong	srv_ppl_log_file_size;
+extern ulong	srv_ppl_log_files_per_bucket;
+
+#endif
 extern char*	srv_log_group_home_dir;
 
 #ifndef UNIV_HOTBACKUP

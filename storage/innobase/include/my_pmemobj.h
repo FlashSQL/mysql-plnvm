@@ -67,19 +67,6 @@ static double PMEM_BLOOM_FPR;
 #endif 
 #endif //UNIV_PMEMOBJ_BUF
 
-#if defined (UNIV_PMEMOBJ_PL)
-static FILE* debug_ptxl_file = fopen("pll_debug.txt","a");
-static uint64_t PMEM_N_LOG_BUCKETS;
-static uint64_t PMEM_N_BLOCKS_PER_BUCKET;
-static double PMEM_LOG_BUF_FLUSH_PCT;
-
-static uint64_t PMEM_LOG_FLUSHER_WAKE_THRESHOLD=5;
-static uint64_t PMEM_N_LOG_FLUSH_THREADS=32;
-//static uint64_t PMEM_N_LOG_FILES_PER_BUCKET=2;
-static uint64_t PMEM_N_LOG_FILES_PER_BUCKET=1;
-static uint64_t PMEM_LOG_FILE_SIZE=4*1024; //in 4-KB pages
-
-#endif //UNIV_PMEMOBJ_PL
 
 struct __pmem_wrapper;
 typedef struct __pmem_wrapper PMEM_WRAPPER;
@@ -510,6 +497,7 @@ struct __pmem_page_part_log {
 	PMEM_LOG_FLUSHER*	flusher;
 
 	/*DRAM Log File*/	
+	uint64_t		log_file_size;
 	pfs_os_file_t    log_files[1000];
 	uint64_t		 n_log_files_per_bucket;
 	PMEM_LOG_GROUP**	log_groups; //n_buckets groups
@@ -585,13 +573,11 @@ struct __pmem_page_log_buf {
 struct __pmem_page_log_block {
 	PMEMrwlock		lock;
 	bool			is_free; //flag
-	uint64_t		bid; //block id
+	uint32_t		bid; //block id
 	uint64_t		key; //fold id
 
-	//uint64_t		pmemaddr; //the begin offset to the pmem data in PMEM_PAGE_PART_LOG
-	//uint64_t		cur_off; //the current offset (0 - log block size) 
-	uint64_t		cur_size; //the current offset (0 - log block size) 
-	uint32_t		n_log_recs; //the current number of log records 
+	//uint64_t		cur_size; //the current offset (0 - log block size) 
+	//uint16_t		n_log_recs; //the current number of log records 
 
 	int32_t			count; //number of active tx
 
@@ -601,8 +587,8 @@ struct __pmem_page_log_block {
 	/*LSN */
 	uint64_t		pageLSN; // pageLSN of the NVM-page
 	uint64_t		lastLSN; // LSN of the last log record
-	uint64_t		start_off;// offset of the first log rec of this page on log buffer/ disk
-	uint64_t		start_diskaddr;// diskaddr when the first log rec is written 
+	uint32_t		start_off;// offset of the first log rec of this page on log buffer/ disk
+	uint32_t		start_diskaddr;// diskaddr when the first log rec is written 
 };
 
 struct __pmem_log_flusher {
@@ -800,12 +786,7 @@ pm_pop_get_ppl (PMEMobjpool* pop);
 
 void
 pm_wrapper_page_log_alloc_or_open(
-		PMEM_WRAPPER*	pmw,
-		uint64_t		n_buckets,
-		uint64_t		n_blocks_per_bucket,
-		uint64_t		n_log_bufs,
-		uint64_t		log_buf_size,
-		uint64_t		n_log_files_per_bucket
+		PMEM_WRAPPER*	pmw
 		);
 
 void
@@ -845,7 +826,8 @@ __init_tt(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*		ppl,
 		uint64_t n,
-		uint64_t k);
+		uint64_t k,
+		uint64_t pages_per_tx);
 
 /*Called when a mini-transaction write log record to log buffer in the traditional InnoDB*/
 int64_t
@@ -921,6 +903,7 @@ void
 pm_handle_finished_log_buf(
 		PMEMobjpool*			pop,
 		PMEM_PAGE_PART_LOG*		ppl,
+		fil_node_t*				node,
 		PMEM_PAGE_LOG_BUF*		plogbuf);
 
 void

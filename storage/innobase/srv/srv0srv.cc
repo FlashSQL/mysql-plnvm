@@ -232,6 +232,20 @@ ulong	srv_pmem_buf_n_buckets		= 128;
 double	srv_pmem_buf_flush_pct		= 0.9;
 #endif
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+ulong	srv_ppl_n_log_buckets = 32;
+ulong	srv_ppl_blocks_per_bucket = 8192;
+ulong	srv_ppl_log_buf_size = 262144;
+ulong	srv_ppl_tt_n_lines = 128;
+ulong	srv_ppl_tt_entries_per_line = 128;
+ulong	srv_ppl_tt_pages_per_tx = 64;
+double	srv_ppl_log_buf_flush_pct = 0.9;
+ulong	srv_ppl_log_flusher_wake_threshold = 5;
+ulong	srv_ppl_n_log_flush_threads = 32;
+ulong	srv_ppl_log_file_size = 16384;
+ulong	srv_ppl_log_files_per_bucket = 1;
+
+#endif //UNIV_PMEMOBJ_PART_PL
 char*	srv_log_group_home_dir	= NULL;
 
 ulong	srv_n_log_files		= SRV_N_LOG_FILES_MAX;

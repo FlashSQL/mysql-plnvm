@@ -1955,24 +1955,14 @@ innobase_start_or_create_for_mysql(void)
 #endif /* UNIV_PMEMOBJ_BUF */
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-	//uint64_t n_buckets = 16;	
-	//uint64_t n_buckets = 512;	
-	uint64_t n_buckets = 32;	
-	//uint64_t n_blocks_per_bucket = 4096;
-	uint64_t n_blocks_per_bucket = 8192;
-	//uint64_t n_blocks_per_bucket = 16384;
-	//uint64_t block_size = 4096;
-	uint64_t block_size = 1024;
-
-	uint64_t log_buf_size = 2 * 4 * 1024; // n 4-KB //debug
+	//uint64_t n_buckets = 32;	
+	//uint64_t n_blocks_per_bucket = 8192;
+	//uint64_t block_size = 1024;
 	//uint64_t log_buf_size = 64 * 4 * 1024; // n 4-KB
-	
-	uint64_t n_free_bufs = n_buckets / 4;
-
-	uint64_t n_log_bufs = n_buckets + n_free_bufs;
-	uint64_t n_flush_threads = 32;
-
-	uint64_t n_log_files_per_bucket = 1;
+	//uint64_t n_free_bufs = n_buckets / 4;
+	//uint64_t n_log_bufs = n_buckets + n_free_bufs;
+	//uint64_t n_flush_threads = 32;
+	//uint64_t n_log_files_per_bucket = 1;
 
 #if defined (UNIV_PMEMOBJ_TX_LOG)
 	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
@@ -1980,13 +1970,7 @@ innobase_start_or_create_for_mysql(void)
 								 n_blocks_per_bucket,
 								 block_size);
 #else //per-page logging
-	pm_wrapper_page_log_alloc_or_open(gb_pmw,
-								 n_buckets,
-								 n_blocks_per_bucket,
-								 n_log_bufs,
-								 log_buf_size,
-								 n_log_files_per_bucket
-								 );
+	pm_wrapper_page_log_alloc_or_open(gb_pmw);
 
 #endif //UNIV_PMEMOBJ_TX_LOG
 #endif // UNIV_PMEMOBJ_PL
@@ -2041,8 +2025,8 @@ innobase_start_or_create_for_mysql(void)
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	//os_thread_create(pm_flusher_coordinator, NULL, NULL);
-	printf("PMEM_INFO: ========>   create %d worker threads for PART-LOG\n", n_flush_threads);
-	for (i = 0; i < n_flush_threads; ++i) {
+	printf("PMEM_INFO: ========>   create %d worker threads for PART-LOG\n", srv_ppl_n_log_flush_threads);
+	for (i = 0; i < srv_ppl_n_log_flush_threads; ++i) {
 		os_thread_create(pm_log_flusher_worker, NULL, NULL);
 	}
 	
@@ -3226,9 +3210,14 @@ pm_create_or_open_part_log_files(
 
 	if (ppl->is_new){
 		// (1) Create files 
+		ib::info() << "Setting part-log file size to "
+			<< (srv_ppl_log_file_size >> (20 - UNIV_PAGE_SIZE_SHIFT))
+			<< " MB";
+		ib::info() << "Start creating " << n_log_files << " part-log files ...";
+
 		for (i = 0; i < n_log_files; i++) {
 			sprintf(logfilename + dirnamelen,
-				"pl_logfile%u", i);
+					"pl_logfile%u", i);
 			//sprintf(logfilename + dirnamelen,
 			//		"pl_logfile%u", i ? i : INIT_LOG_FILE0);
 
@@ -3236,12 +3225,14 @@ pm_create_or_open_part_log_files(
 			err = pm_create_log_file(
 					&ppl->log_files[i],
 				   	logfilename,
-					PMEM_LOG_FILE_SIZE);
+					srv_ppl_log_file_size);
 
 			if (err != DB_SUCCESS) {
 				return(err);
 			}
 		}
+
+		ib::info() << "End creating " << n_log_files << "part-log files  ...";
 	}
 	else {
 		// Open files
@@ -3297,7 +3288,7 @@ pm_create_or_open_part_log_files(
 		fil_node_t* node;
 		node = pm_log_fil_node_create(
 				logfilename,
-				PMEM_LOG_FILE_SIZE,
+				srv_ppl_log_file_size,
 				ppl->log_space);
 
 		//save the fil_node 
@@ -3328,7 +3319,7 @@ pm_create_or_open_part_log_files(
 		ppl->log_groups[i] = pm_log_group_init(
 				i, 
 				ppl->n_log_files_per_bucket,
-				PMEM_LOG_FILE_SIZE * UNIV_PAGE_SIZE,
+				srv_ppl_log_file_size * UNIV_PAGE_SIZE,
 				PMEM_LOG_SPACE_FIRST_ID);
 	}
 	
@@ -3361,9 +3352,9 @@ pm_create_log_file(
 		ib::error() << "Cannot create " << name;
 		return(DB_ERROR);
 	}
-	ib::info() << "Setting log file " << name << " size to "
-		<< (log_file_size >> (20 - UNIV_PAGE_SIZE_SHIFT))
-		<< " MB";
+//	ib::info() << "Setting log file " << name << " size to "
+//		<< (log_file_size >> (20 - UNIV_PAGE_SIZE_SHIFT))
+//		<< " MB";
 
 	ret = os_file_set_size(name, *file,
 			(os_offset_t) log_file_size
