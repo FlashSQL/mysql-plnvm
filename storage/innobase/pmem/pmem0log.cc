@@ -25,6 +25,7 @@
 
 #if defined (UNIV_PMEMOBJ_PL)
 static FILE* debug_ptxl_file = fopen("pll_debug.txt","a");
+static FILE* lock_overhead_file = fopen("ppl_lock_overhead.txt","a");
 /*Part Log*/
 static uint64_t PMEM_N_LOG_BUCKETS;
 static uint64_t PMEM_N_BLOCKS_PER_BUCKET;
@@ -355,7 +356,9 @@ pm_ptxl_write(
 			n_try--;
 			if (n_try == 0){
 				printf("===> PMEM ERROR, there is no empty log block to write, allocate more to solve at bucket %zu \n", hashed);
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 				__print_tx_blocks_state(debug_ptxl_file, ptxl);
+#endif
 				assert(0);
 			}
 			//try again
@@ -1215,10 +1218,12 @@ pm_wrapper_page_log_alloc_or_open(
 		assert(p);
 		pmw->ppl->p_align = static_cast<byte*> (ut_align(p, PMEM_LOG_BUF_SIZE));
 
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 		//print the hashed line to check
 		__print_page_log_hashed_lines(debug_ptxl_file, pmw->ppl);
-	}
+#endif
 
+	}
 	/* Part 2: DRAM structures*/	
 
 	// In any case (new alloc or reused) we need to allocate below objects
@@ -1245,23 +1250,13 @@ pm_wrapper_page_log_close(
 	pm_log_flusher_close(ppl->flusher);
 	
 	pm_close_and_free_log_files(pmw->ppl);	
-	
-	__print_page_log_hashed_lines(debug_ptxl_file, pmw->ppl);
-
-#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
-#if defined (UNIV_PMEMOBJ_TX_LOG)
-	ptxl_print_all_stat_info(debug_ptxl_file,  pmw->ptxl);
-#else
-
-	//__print_page_blocks_state(debug_ptxl_file, pmw->ppl);
-	//__print_TT(debug_ptxl_file, D_RW(pmw->ppl->tt));
-#endif // UNIV_PMEMOBJ_TX_LOG
-
-	//fclose(debug_ptxl_file);
-	if (pmw->ptxl != NULL)
-		fclose(pmw->ptxl->deb_file);
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)	
+//	__print_page_log_hashed_lines(debug_ptxl_file, pmw->ppl);
 #endif
 
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	__print_lock_overhead(lock_overhead_file, pmw->ppl);
+#endif	
 	//the resource allocated in NVDIMM are kept
 }
 /*
@@ -1520,6 +1515,12 @@ pm_page_part_log_bucket_init(
 		pline->n_blocks = k;
 		pline->diskaddr = 0;
 		pline->write_diskaddr = 0;
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+		pline->log_write_lock_wait_time = 0;
+		pline->n_log_write = 0;
+		pline->log_flush_lock_wait_time = 0;
+		pline->n_log_flush = 0;
+#endif	
 
 		//Log buf, after the alloca call, log_buf_id and log_buf_offset increase
 		POBJ_ZNEW(pop, &pline->logbuf, PMEM_PAGE_LOG_BUF);
@@ -1737,8 +1738,10 @@ pm_ppl_write(
 			if (n_try == 0){
 				printf("===> PMEM ERROR, in pm_ppl_write() there is no empty entry to write, allocate more to solve at bucket %zu \n", hashed);
 				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 				__print_TT(debug_ptxl_file, ptt);
 				__print_page_blocks_state(debug_ptxl_file, ppl);
+#endif
 
 				assert(0);
 			}
@@ -1827,6 +1830,7 @@ void __handle_pm_ppl_write_by_entry(
 	// Now the pe point to the entry to write on and the ret is the entry id
 
 	//printf("\t BEGIN handle_pm_ppl_write_by_entry tid %zu entry %zu n_recs %zu size %zu pe->npagerefs %zu \n", tid, pe->eid, n_recs, size, pe->n_dp_entries);	
+	
 	// for each input log record
 	cur_off = 0;
 	for (i = 0; i < n_recs; i++) {
@@ -1937,7 +1941,7 @@ __update_page_log_block_on_write(
 
 	uint64_t n, k;
 	uint64_t bucket_id, local_id;
-	uint64_t n_try;
+	int64_t n_try;
 
 	int64_t idx;
 
@@ -1964,8 +1968,11 @@ __update_page_log_block_on_write(
 		assert(pline);
 		assert(pline->n_blocks == k);
 
-		//(1) search for the exist log block
-		for (i = 0; i < k; i++){
+		//(1) search for the exist log block O(k)
+		n_try = k;
+		PMEM_LOG_HASH_KEY(i, key, k);
+		while (n_try > 0){
+		//for (i = 0; i < k; i++){}
 			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
 			plog_block = D_RW(D_RW(pline->arr)[i]);
 			if (!plog_block->is_free &&
@@ -1995,13 +2002,19 @@ __update_page_log_block_on_write(
 				return ret;
 			}
 			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			n_try--;
+			i = (i + 1) % k;
 			//next log block
 		}//end search for exist log block
 
 		//Case A2: If you reach here, then the log block is not exst, write the new one. During the scan, some log block may be reclaimed, search from the begin
 
-		//search for a free block to write on
-		for (i = 0; i < k; i++){
+		//search for a free block to write on O(k)
+		n_try = k;
+		PMEM_LOG_HASH_KEY(i, key, k);
+
+		while( n_try > 0) {
+		//for (i = 0; i < k; i++){}
 			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
 			plog_block = D_RW(D_RW(pline->arr)[i]);
 			if (plog_block->is_free){
@@ -2032,12 +2045,17 @@ __update_page_log_block_on_write(
 				return ret;
 			}
 			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+
+			n_try--;
+			i = (i + 1) % k;
 			//next
 		}//end search for a free block to write on
 
 		//If you reach here, then there is no free block
 		printf("PMEM_ERROR in __update_page_log_block_on_write(), no free log block on hashed %zu\n", hashed);
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 		__print_page_blocks_state(debug_ptxl_file, ppl);
+#endif
 		assert(0);
 		return ret;
 	}//end CASE A
@@ -2101,10 +2119,20 @@ __pm_write_log_buf(
 	byte* pdata;
 	PMEM_PAGE_LOG_FREE_POOL* pfreepool;
 	PMEM_PAGE_LOG_BUF* plogbuf;
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	uint64_t start_time, end_time;
+#endif	
 
-
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	start_time = ut_time_us(NULL);
+#endif	
 	pmemobj_rwlock_wrlock(pop, &pline->lock);
-
+	
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	end_time = ut_time_us(NULL);
+	pline->log_write_lock_wait_time += (end_time - start_time);
+	pline->n_log_write++;
+#endif
 	//when a logbuf is full, we switch the pline->logbuf not the line, so it's not require to check full and goto as in PB-NVM (see pm_buf_write_with_flusher())
 	
 	plogbuf = D_RW(pline->logbuf);
@@ -2132,8 +2160,17 @@ get_free_buf:
 		// (2.1) Get a free log buf
 		pfreepool = D_RW(ppl->free_pool);
 
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	start_time = ut_time_us(NULL);
+#endif	
 		pmemobj_rwlock_wrlock(pop, &pfreepool->lock);
 
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	end_time = ut_time_us(NULL);
+	pline->log_flush_lock_wait_time += (end_time - start_time);
+	pline->n_log_flush++;
+
+#endif	
 		TOID(PMEM_PAGE_LOG_BUF) free_buf = POBJ_LIST_FIRST (&pfreepool->head);
 		if (pfreepool->cur_free_bufs == 0 || 
 				TOID_IS_NULL(free_buf)){
@@ -2602,6 +2639,7 @@ pm_ppl_flush_page(
 	uint32_t n, k, i, j;
 
 	int64_t free_idx;
+	int64_t n_try;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
@@ -2624,34 +2662,39 @@ pm_ppl_flush_page(
 	assert(pline);
 	assert(pline->n_blocks == k);
 	
-	//find the log block by hashing key
-	for (i = 0; i < k; i++){
-			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
-			plog_block = D_RW(D_RW(pline->arr)[i]);
+	//find the log block by hashing key O(k)
+	n_try = k;
+	PMEM_LOG_HASH_KEY(i, key, k);
+	while (n_try > 0){
+		//for (i = 0; i < k; i++){}
+		pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+		plog_block = D_RW(D_RW(pline->arr)[i]);
 
-			if (!plog_block->is_free &&
+		if (!plog_block->is_free &&
 				plog_block->key == key){
-				// Case A: found
-				//(1) no need to check and reclaim the corresponding entries in TT
+			// Case A: found
+			//(1) no need to check and reclaim the corresponding entries in TT
 
-				//update the pageLSN on flush page
-				plog_block->pageLSN = pageLSN;
+			//update the pageLSN on flush page
+			plog_block->pageLSN = pageLSN;
 
-				//we no longer assert here, new log recs are written on page during its flushing time
-				//assert(plog_block->lastLSN <= pageLSN);
-				
-				// (2) Check to reclaim this log block
-				if (plog_block->count <= 0){
-					if (plog_block->lastLSN <= pageLSN){
-						__reset_page_log_block(plog_block);
-					}
+			//we no longer assert here, new log recs are written on page during its flushing time
+			//assert(plog_block->lastLSN <= pageLSN);
+
+			// (2) Check to reclaim this log block
+			if (plog_block->count <= 0){
+				if (plog_block->lastLSN <= pageLSN){
+					__reset_page_log_block(plog_block);
 				}
-				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
-				return;
-
-			}//end found the right log block
-
+			}
 			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			return;
+
+		}//end found the right log block
+
+		pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+		n_try--;
+		i = (i + 1) % k;
 		//next log block
 	}//end find the log blcok by hashing key
 
@@ -2758,10 +2801,63 @@ pm_log_group_free(
 	ut_free (group->file_header_bufs);
 	ut_free (group);
 }
-//////////////////// LOG FILE FUNCTIONS//////
+//////////////////// STATISTIC FUNCTIONS//////
 
-////////////END LOG FILE FUNCTION
-//
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+void
+__print_lock_overhead(FILE* f,
+		PMEM_PAGE_PART_LOG* ppl){
+	
+	uint32_t n, k, i, j;
+	uint64_t max_log_write_lock_wait_time = 0;
+	uint64_t max_log_flush_lock_wait_time = 0;
+
+	double avg_log_write_lock_wait_time = 0;
+	double avg_log_flush_lock_wait_time = 0;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+
+	n = ppl->n_buckets;
+	k = ppl->n_blocks_per_bucket;
+
+	for (i = 0; i < n; i++) {
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+
+		if (pline->log_write_lock_wait_time > max_log_write_lock_wait_time){
+			max_log_write_lock_wait_time = pline->log_write_lock_wait_time;
+		}
+
+	    avg_log_write_lock_wait_time += pline->log_write_lock_wait_time * 1.0 / pline->n_log_write;
+
+		if (pline->log_flush_lock_wait_time > max_log_flush_lock_wait_time){
+			max_log_flush_lock_wait_time = pline->log_flush_lock_wait_time;
+		}
+		
+	    avg_log_flush_lock_wait_time += pline->log_flush_lock_wait_time * 1.0 / pline->n_log_flush;
+
+	} //end for
+
+	avg_log_write_lock_wait_time = avg_log_write_lock_wait_time / n;
+	avg_log_flush_lock_wait_time = avg_log_flush_lock_wait_time / n;
+
+	fprintf(f, "max_log_write_wait(us) max_log_flush_wait(us) avg_log_write_wait avg_log_flush_wait \t %zu \t %f \t %zu \t %f\n", 
+			max_log_write_lock_wait_time,
+			avg_log_write_lock_wait_time,
+			max_log_flush_lock_wait_time,
+			avg_log_flush_lock_wait_time);
+	printf("max_log_write_wait(us) max_log_flush_wait(us) avg_log_write_wait avg_log_flush_wait \t %zu \t %f \t %zu \t %f\n", 
+			max_log_write_lock_wait_time,
+			avg_log_write_lock_wait_time,
+			max_log_flush_lock_wait_time,
+			avg_log_flush_lock_wait_time);
+}
+#endif
+////////////END STATISTIC  FUNCTION
+
 ////////////////// END PERPAGE LOGGING ///////////////
 
 

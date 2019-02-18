@@ -465,24 +465,27 @@ struct __pmem_dpt {
 };
 /////////////// Per-Page Logging ///////////////////
 
+/*
+ * The high-level struc of page-level logging
+ * */
 struct __pmem_page_part_log {
 	PMEMrwlock		lock;
 	/*log buffer area*/
 
-	uint64_t		size; //the total size 
-	PMEMoid			data; //pointer to allocated nvm
-	byte*			p_align; //align
+	uint64_t			size; //the total size 
+	PMEMoid				data; //pointer to allocated nvm
+	byte*				p_align; //align
 
-	uint64_t					log_buf_size; //log block size in bytes
-	uint64_t					n_log_bufs;
-	TOID(PMEM_PAGE_LOG_FREE_POOL) free_pool;
+	uint64_t						log_buf_size; //log block size in bytes
+	uint64_t						n_log_bufs;
+	TOID(PMEM_PAGE_LOG_FREE_POOL)	free_pool;
 
 	// Transaction Table
 	TOID(PMEM_TT) tt; // transaction table	
 
 
 	bool		is_new;
-	/*log data as hash table*/
+	/*log area as hash table*/
 	uint64_t			n_buckets; //# of buckets
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_HASHED_LINE)) buckets;
 
@@ -497,32 +500,32 @@ struct __pmem_page_part_log {
 	PMEM_LOG_FLUSHER*	flusher;
 
 	/*DRAM Log File*/	
-	uint64_t		log_file_size;
-	pfs_os_file_t    log_files[1000];
-	uint64_t		 n_log_files_per_bucket;
+	uint64_t			log_file_size;
+	pfs_os_file_t		log_files[4096];
+	uint64_t			n_log_files_per_bucket;
 	PMEM_LOG_GROUP**	log_groups; //n_buckets groups
 	fil_node_t**		node_arr; // n_buckets fil_nodes
 	fil_space_t*		log_space;
 	/*Statistic info*/	
 	//log area
-	uint64_t	pmem_alloc_size;
+	uint64_t			pmem_alloc_size;
 
 	//metadata
-	uint64_t	pmem_page_log_size;
-	uint64_t	pmem_page_log_free_pool_size;
-	uint64_t	pmem_tt_size;
+	uint64_t			pmem_page_log_size;
+	uint64_t			pmem_page_log_free_pool_size;
+	uint64_t			pmem_tt_size;
 
 	/*Debug*/
-	FILE* deb_file;
+	FILE*				deb_file;
 };
 /*
- * A hashed line has array of log blocks share the same hashed value
+ * A hashed line has array of log blocks share the same hashed value and log buffer
  * */
 struct __pmem_page_log_hashed_line {
 	PMEMrwlock		lock;
 	
 	int hashed_id;
-	TOID(PMEM_PAGE_LOG_BUF)	logbuf;	
+	TOID(PMEM_PAGE_LOG_BUF)	logbuf;	//pointer to log buffer
 
 	uint64_t		diskaddr; //log file offset, update when flush log, reset when purging file
 	uint64_t		write_diskaddr; //diskaddr that log recs are durable write write_diskaddr < diskaddr
@@ -536,7 +539,14 @@ struct __pmem_page_log_hashed_line {
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
 	//TODO:
 	// log file
+	/*Statistic info*/
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	uint64_t log_write_lock_wait_time; //total time lock holding for copying log records to log buffer
+	uint64_t n_log_write; //total copies
 
+	uint64_t log_flush_lock_wait_time; //total time of lock holding for flushing log buffer to disk 
+	uint64_t n_log_flush; //total 
+#endif
 };
 
 struct __pmem_page_log_free_pool {
@@ -621,19 +631,20 @@ pm_log_flusher_close(PMEM_LOG_FLUSHER*	flusher);
 
 struct __pmem_tt_entry {
 	PMEMrwlock		lock;
-	uint64_t				eid; //block id
-	uint64_t				tid; //transaction id
+	uint64_t		eid; //block id
+	uint64_t		tid; //transaction id
 	PMEM_TX_STATE	state;
-
-	TOID_ARRAY(TOID(PMEM_PAGE_REF))			dp_arr; //dirty page array consists of key of entry in dirty page table
-	uint64_t				n_dp_entries; 
+	
+	/*dirty page array consists of (key, bid) pair of dirty pages caused by this transaction*/
+	TOID_ARRAY(TOID(PMEM_PAGE_REF))		dp_arr;
+	uint64_t							n_dp_entries; 
 };
 
 struct __pmem_tt_hashed_line {
 	PMEMrwlock		lock;
 
-	uint64_t hashed_id;
-	uint64_t n_entries; //the total log block in bucket
+	uint64_t		hashed_id;
+	uint64_t		n_entries; //the total log block in bucket
 	TOID_ARRAY(TOID(PMEM_TT_ENTRY)) arr;
 
 };
@@ -753,15 +764,14 @@ pm_ptxl_check_and_reset_dpt_entry(
 		PMEM_DPT*			pdpt,
 		uint64_t			key);
 
-//for debugging
-void 
-__print_tx_blocks_state(FILE* f,
-		PMEM_TX_PART_LOG* ptxl);
+
+#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
 void 
 __print_page_blocks_state(FILE* f,
 		PMEM_PAGE_PART_LOG* ppl);
-
-#if defined (UNIV_PMEMOBJ_PART_PL_STAT)
+void 
+__print_tx_blocks_state(FILE* f,
+		PMEM_TX_PART_LOG* ptxl);
 void
 ptxl_consolidate_stat_info(PMEM_TX_LOG_BLOCK*	plog_block);
 void 
@@ -1009,7 +1019,13 @@ pm_log_fil_node_create(
 	fil_space_t*	space);
 /////////////// END LOG FILES ///////////
 
+//Statistic 
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+void
+__print_lock_overhead(FILE* f,
+		PMEM_PAGE_PART_LOG* ppl);
 
+#endif
 //for debugging
 void 
 __print_blocks_state(FILE* f,

@@ -39,6 +39,10 @@ Created 11/26/1995 Heikki Tuuri
 #include "mtr0mtr.ic"
 #endif /* UNIV_NONINL */
 
+#if defined (UNIV_TRACE_FLUSH_TIME)
+extern volatile int64 gb_write_log_time;
+#endif
+
 #if defined (UNIV_PMEMOBJ_PART_PL)
 #include "my_pmemobj.h"
 extern PMEM_WRAPPER* gb_pmw; 
@@ -1021,6 +1025,9 @@ the resources. */
 void
 mtr_t::Command::execute()
 {
+#if defined (UNIV_TRACE_FLUSH_TIME)
+	ulint start_time = ut_time_us(NULL);
+#endif
 	ulint	len	= m_impl->m_log.size();
 	ulint	n_recs	= m_impl->m_n_log_recs;
 
@@ -1096,6 +1103,13 @@ mtr_t::Command::execute()
 	release_latches();
 
 	release_resources();
+#if defined (UNIV_TRACE_FLUSH_TIME)
+	//trace the time spending for write log rec to log buf
+	ulint end_time = ut_time_us(NULL);
+	ulint exec_time = end_time - start_time;
+	//my_atomic_add64(&gb_write_log_time, exec_time);
+	__sync_fetch_and_add(&gb_write_log_time, exec_time);
+#endif
 }
 #else //old method
 
@@ -1142,6 +1156,9 @@ mtr_t::Command::execute()
 void
 mtr_t::Command::execute()
 {
+#if defined (UNIV_TRACE_FLUSH_TIME)
+	ulint start_time = ut_time_us(NULL);
+#endif
 	ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);
 
 	if (const ulint len = prepare_write()) {
@@ -1168,6 +1185,13 @@ mtr_t::Command::execute()
 	release_latches();
 
 	release_resources();
+#if defined (UNIV_TRACE_FLUSH_TIME)
+	//trace the time spending for write log rec to log buf
+	ulint end_time = ut_time_us(NULL);
+	ulint exec_time = end_time - start_time;
+	//my_atomic_add64(&gb_write_log_time, exec_time);
+	__sync_fetch_and_add(&gb_write_log_time, exec_time);
+#endif
 }
 #endif // UNIV_PMEMOBJ_PL
 
