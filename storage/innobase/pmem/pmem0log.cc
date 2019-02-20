@@ -2844,12 +2844,12 @@ __print_lock_overhead(FILE* f,
 	avg_log_write_lock_wait_time = avg_log_write_lock_wait_time / n;
 	avg_log_flush_lock_wait_time = avg_log_flush_lock_wait_time / n;
 
-	fprintf(f, "max_log_write_wait(us) max_log_flush_wait(us) avg_log_write_wait avg_log_flush_wait \t %zu \t %f \t %zu \t %f\n", 
+	fprintf(f, "max_log_write_wait(us) avg_log_write_wait(us) max_log_flush_wait(us) avg_log_flush_wait \t %zu \t %f \t %zu \t %f\n", 
 			max_log_write_lock_wait_time,
 			avg_log_write_lock_wait_time,
 			max_log_flush_lock_wait_time,
 			avg_log_flush_lock_wait_time);
-	printf("max_log_write_wait(us) max_log_flush_wait(us) avg_log_write_wait avg_log_flush_wait \t %zu \t %f \t %zu \t %f\n", 
+	printf("max_log_write_wait(us) avg_log_write_wait(us) max_log_flush_wait(us) avg_log_flush_wait \t %zu \t %f \t %zu \t %f\n", 
 			max_log_write_lock_wait_time,
 			avg_log_write_lock_wait_time,
 			max_log_flush_lock_wait_time,

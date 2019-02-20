@@ -421,8 +421,13 @@ loop:
 
 	len_upper_limit = LOG_BUF_WRITE_MARGIN + srv_log_write_ahead_size
 			  + (5 * len) / 4;
-
+#if defined (UNIV_PMEMOBJ_WAL)
+	//in PMEMOBJ_WAL, because we do not flush log at commit, we shouldn't keep the log buffer
+	//too large, we flush when its size is x% (25, 50, 75) capacity
+	if (log_sys->buf_free + len_upper_limit > log_sys->buf_size / 2) {
+#else //original
 	if (log_sys->buf_free + len_upper_limit > log_sys->buf_size) {
+#endif
 		log_mutex_exit();
 
 		DEBUG_SYNC_C("log_buf_size_exceeded");
@@ -438,7 +443,6 @@ loop:
 		log_mutex_enter();
 		goto loop;
 	}
-
 	return(log_sys->lsn);
 }
 
@@ -478,11 +482,15 @@ part_loop:
 
 #if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
 	//copy the trasaction's log records to persistent memory
+	//The mfence per copy version
 TX_BEGIN(gb_pmw->pop) {
 	TX_MEMCPY(log->buf + log->buf_free, str, len);
 } TX_ONABORT {
 } TX_END
-	//pmemobj_memcpy_persist(gb_pmw->pop, log->buf + log->buf_free, str, len);
+	
+	//The unsafe version
+	//ut_memcpy(log->buf + log->buf_free, str, len);
+
 	//set the flag here
 	gb_pmw->plogbuf->need_recv = true;
 #else //original
@@ -2007,9 +2015,11 @@ log_checkpoint(
 	}
 
 	log_mutex_exit();
-
+#if defined (UNIV_PMEMOBJ_WAL)
+	//do nothing
+#else //original
 	log_write_up_to(flush_lsn, true);
-
+#endif
 	DBUG_EXECUTE_IF(
 		"using_wa_checkpoint_middle",
 		if (write_always) {

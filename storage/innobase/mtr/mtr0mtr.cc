@@ -41,9 +41,10 @@ Created 11/26/1995 Heikki Tuuri
 
 #if defined (UNIV_TRACE_FLUSH_TIME)
 extern volatile int64 gb_write_log_time;
+extern volatile int64 gb_n_write_log;
 #endif
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL) || defined (UNIV_PMEMOBJ_WAL_ELR)
 #include "my_pmemobj.h"
 extern PMEM_WRAPPER* gb_pmw; 
 #endif /* UNIV_PMEMOBJ_PART_PL */
@@ -1109,6 +1110,7 @@ mtr_t::Command::execute()
 	ulint exec_time = end_time - start_time;
 	//my_atomic_add64(&gb_write_log_time, exec_time);
 	__sync_fetch_and_add(&gb_write_log_time, exec_time);
+	__sync_fetch_and_add(&gb_n_write_log, 1);
 #endif
 }
 #else //old method
@@ -1152,6 +1154,232 @@ mtr_t::Command::execute()
 	release_resources();
 }
 #endif //UNIV_PMEMOBJ_PART_PL
+#elif defined (UNIV_PMEMOBJ_WAL) && defined (UNIV_PMEMOBJ_WAL_ELR)
+	//Early lock release
+void
+mtr_t::Command::execute()
+{
+	ulint len;
+	ulint str_len;
+	ulint len_tem;
+	ulint data_len;
+	ulint n_recs;
+
+	byte* start_cpy;
+	ulint len_cpy;
+
+	log_t*	log	= log_sys;
+	byte*	log_block;
+
+	fil_space_t*	space;
+
+	const mtr_buf_t::block_t*	front = m_impl->m_log.front();
+	byte* start_log_ptr = (byte*) front->begin(); 	
+	byte* str = start_log_ptr;
+
+	ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);
+
+	////Simulate prepare_write()
+	switch (m_impl->m_log_mode) {
+	case MTR_LOG_SHORT_INSERTS:
+		ut_ad(0);
+		/* fall through (write no redo log) */
+	case MTR_LOG_NO_REDO:
+	case MTR_LOG_NONE:
+		ut_ad(m_impl->m_log.size() == 0);
+		log_mutex_enter();
+		m_end_lsn = m_start_lsn = log_sys->lsn;
+		//return(0);
+		len = 0;
+		break;
+	case MTR_LOG_ALL:
+		break;
+	}
+	
+	if (m_impl->m_log_mode == MTR_LOG_ALL) {
+
+		len	= m_impl->m_log.size();
+		n_recs	= m_impl->m_n_log_recs;
+		ut_ad(len > 0);
+		ut_ad(n_recs > 0);
+
+		if (len > log_sys->buf_size / 2) {
+			log_buffer_extend((len + 1) * 2);
+		}
+
+		ut_ad(m_impl->m_n_log_recs == n_recs);
+
+		space = m_impl->m_user_space;
+
+		if (space != NULL && is_system_or_undo_tablespace(space->id)) {
+			/* Omit MLOG_FILE_NAME for predefined tablespaces. */
+			space = NULL;
+		}
+
+		log_mutex_enter();
+
+		if (fil_names_write_if_was_clean(space, m_impl->m_mtr)) {
+			/* This mini-transaction was the first one to modify
+			   this tablespace since the latest checkpoint, so
+			   some MLOG_FILE_NAME records were appended to m_log. */
+			ut_ad(m_impl->m_n_log_recs > n_recs);
+			mlog_catenate_ulint(
+					&m_impl->m_log, MLOG_MULTI_REC_END, MLOG_1BYTE);
+			len = m_impl->m_log.size();
+		} else {
+			/* This was not the first time of dirtying a
+			   tablespace since the latest checkpoint. */
+
+			ut_ad(n_recs == m_impl->m_n_log_recs);
+
+			if (n_recs <= 1) {
+				ut_ad(n_recs == 1);
+
+				/* Flag the single log record as the
+				   only record in this mini-transaction. */
+				*m_impl->m_log.front()->begin()
+					|= MLOG_SINGLE_REC_FLAG;
+			} else {
+				/* Because this mini-transaction comprises
+				   multiple log records, append MLOG_MULTI_REC_END
+				   at the end. */
+
+				mlog_catenate_ulint(
+						&m_impl->m_log, MLOG_MULTI_REC_END,
+						MLOG_1BYTE);
+				len++;
+			}
+		}
+
+		/* check and attempt a checkpoint if exceeding capacity */
+		log_margin_checkpoint_age(len);
+	} // end if (m_impl->m_log_mode == MTR_LOG_ALL)
+
+	////End simulate prepare_write()
+	
+	if (len > 0){
+		//simulate finish_write()	
+		ut_ad(m_impl->m_log_mode == MTR_LOG_ALL);
+		ut_ad(log_mutex_own());
+		ut_ad(m_impl->m_log.size() == len);
+		ut_ad(len > 0);
+
+		if (m_impl->m_log.is_small()) {
+			const mtr_buf_t::block_t*	front = m_impl->m_log.front();
+			ut_ad(len <= front->used());
+
+			m_end_lsn = log_reserve_and_write_fast(
+					front->begin(), len, &m_start_lsn);
+
+			if (m_end_lsn > 0) {
+				goto skip_write;
+			}
+		}
+		/* Open the database log for log_write_low
+		 * This function also check for flush log buffer if lsn + len > log buffer capacity
+		 * 
+		 * */
+		m_start_lsn = log_reserve_and_open(len);
+
+		//simulate log_write_low(), we do the same as log_write_low() except skip memcpy()
+
+		//assign as parameter pass
+		str_len = len;	
+		str = start_log_ptr;
+
+part_loop:
+		data_len = (log->buf_free % OS_FILE_LOG_BLOCK_SIZE) + str_len;
+		if (data_len <= OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_TRL_SIZE) {
+
+			/* The string fits within the current log block */
+
+			len_tem = str_len;
+		} else {
+			data_len = OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_TRL_SIZE;
+
+			len_tem = OS_FILE_LOG_BLOCK_SIZE
+				- (log->buf_free % OS_FILE_LOG_BLOCK_SIZE)
+				- LOG_BLOCK_TRL_SIZE;
+		}
+
+		//save the pointer and the len to be copied later
+		start_cpy = log->buf + log->buf_free;
+		len_cpy = len_tem;
+
+		str_len -= len_tem;
+		str = str + len_tem;
+
+		log_block = static_cast<byte*>(
+				ut_align_down(
+					log->buf + log->buf_free, OS_FILE_LOG_BLOCK_SIZE));
+
+		log_block_set_data_len(log_block, data_len);
+
+		if (data_len == OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_TRL_SIZE) {
+			/* This block became full */
+			log_block_set_data_len(log_block, OS_FILE_LOG_BLOCK_SIZE);
+			log_block_set_checkpoint_no(log_block,
+					log_sys->next_checkpoint_no);
+			len_tem += LOG_BLOCK_HDR_SIZE + LOG_BLOCK_TRL_SIZE;
+
+			log->lsn += len_tem;
+
+			/* Initialize the next block header */
+			log_block_init(log_block + OS_FILE_LOG_BLOCK_SIZE, log->lsn);
+		} else {
+			log->lsn += len_tem;
+		}
+
+		log->buf_free += len_tem;
+
+		ut_ad(log->buf_free <= log->buf_size);
+
+		if (str_len > 0) {
+			goto part_loop;
+		}
+#if defined(UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_WAL)
+		// update the lsn and buf_free
+		gb_pmw->plogbuf->lsn = log->lsn;
+		gb_pmw->plogbuf->buf_free = log->buf_free;	
+#endif /*UNIV_PMEMOBJ_LOG */
+		srv_stats.log_write_requests.inc();
+
+		//end simulate log_write_low() ///
+
+		m_end_lsn = log_close();
+
+	} //end if len > 0
+skip_write:
+		//////  end simulate finish_write() ////////////
+
+	if (m_impl->m_made_dirty) {
+		log_flush_order_mutex_enter();
+	}
+
+	/* It is now safe to release the log mutex because the
+	flush_order mutex will ensure that we are the first one
+	to insert into the flush list. */
+	log_mutex_exit();
+
+	//now we do the memcpy
+	TX_BEGIN(gb_pmw->pop) {
+		TX_MEMCPY(start_cpy, start_log_ptr, len_cpy);
+	} TX_ONABORT {
+	} TX_END
+	gb_pmw->plogbuf->need_recv = true;
+
+	m_impl->m_mtr->m_commit_lsn = m_end_lsn;
+
+	release_blocks();
+
+	if (m_impl->m_made_dirty) {
+		log_flush_order_mutex_exit();
+	}
+
+	release_latches();
+
+	release_resources();
+}
 #else //original
 void
 mtr_t::Command::execute()
@@ -1191,6 +1419,7 @@ mtr_t::Command::execute()
 	ulint exec_time = end_time - start_time;
 	//my_atomic_add64(&gb_write_log_time, exec_time);
 	__sync_fetch_and_add(&gb_write_log_time, exec_time);
+	__sync_fetch_and_add(&gb_n_write_log, 1);
 #endif
 }
 #endif // UNIV_PMEMOBJ_PL

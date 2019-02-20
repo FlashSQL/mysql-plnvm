@@ -176,7 +176,9 @@ static pfs_os_file_t	files[1000];
 #if defined (UNIV_TRACE_FLUSH_TIME)
 ulint gb_flush_time = 0;
 volatile int64 gb_write_log_time = 0;
+volatile int64 gb_n_write_log = 0;
 volatile int64 gb_flush_log_time = 0;
+volatile int64 gb_n_flush_log = 0;
 FILE* gb_trace_file = fopen("trace_flush.txt","a");
 #endif 
 
@@ -2927,7 +2929,11 @@ innobase_shutdown_for_mysql(void)
 #endif
 
 #if defined (UNIV_TRACE_FLUSH_TIME)
-	printf("===>TRACE TIME: flush_time (ms) = %zu write_log (ms)%zu  flush_log (ms) %zu\n", gb_flush_time, gb_write_log_time/1000, gb_flush_log_time/1000);
+	printf("===>TRACE TIME: flush_time (ms) = %zu write_log (ms)%zu  avg_write_log (ms/write) %f flush_log (ms) %zu\n",
+		   	gb_flush_time,
+		   	gb_write_log_time/1000,
+			(gb_write_log_time * 1.0)/1000/gb_n_write_log,
+		   	gb_flush_log_time/1000);
 //Add the method name in the trace out
 #if defined (UNIV_PMEMOBJ_DBW)
 	fprintf(gb_trace_file, "\n===>TRACE_FLUSH_TIME_DBW: total flush time (ms) = %zu", gb_flush_time);
@@ -2942,9 +2948,17 @@ innobase_shutdown_for_mysql(void)
 #elif defined (UNIV_PMEMOBJ_WAL)
 	fprintf(gb_trace_file, "\n===>TRACE TIME WAL_NVM: flush_time (ms) = %zu write_log (ms)%zu  flush_log (ms) %zu", gb_flush_time, gb_write_log_time/1000, gb_flush_log_time/1000);
 #elif defined (UNIV_PMEMOBJ_PART_PL)
-	fprintf(gb_trace_file, "\n===>TRACE TIME PPL: flush_time (ms) = %zu write_log (ms)%zu  flush_log (ms) %zu", gb_flush_time, gb_write_log_time/1000, gb_flush_log_time/1000);
+	fprintf(gb_trace_file, "===>TRACE TIME_PPL: flush_time (ms) = %zu write_log (ms)%zu  avg_write_log (ms/write) %f flush_log (ms) %zu\n",
+		   	gb_flush_time,
+		   	gb_write_log_time/1000,
+			(gb_write_log_time * 1.0)/1000/gb_n_write_log,
+		   	gb_flush_log_time/1000);
 #else
-	fprintf(gb_trace_file, "\n===>TRACE TIME ORI: flush_time (ms) = %zu write_log (ms)%zu  flush_log (ms) %zu", gb_flush_time, gb_write_log_time/1000, gb_flush_log_time/1000);
+	fprintf(gb_trace_file, "===>TRACE TIME_ORI: flush_time (ms) = %zu write_log (ms)%zu  avg_write_log (ms/write) %f flush_log (ms) %zu\n",
+		   	gb_flush_time,
+		   	gb_write_log_time/1000,
+			(gb_write_log_time * 1.0)/1000/gb_n_write_log,
+		   	gb_flush_log_time/1000);
 #endif //defined (UNIV_PMEMOBJ_DBW)
 	fclose(gb_trace_file);
 #endif  //defined (UNIV_TRACE_FLUSH_TIME)
