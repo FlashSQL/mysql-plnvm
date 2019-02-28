@@ -202,7 +202,8 @@ typedef struct __pmem_tt_entry PMEM_TT_ENTRY;
 struct __pmem_log_group;
 typedef struct __pmem_log_group PMEM_LOG_GROUP;
 
-
+struct __pmem_recv_line;
+typedef struct __pmem_recv_line PMEM_RECV_LINE;
 // End Per-Page Logging
 
 //////////////////////////////////////////////////
@@ -525,7 +526,8 @@ struct __pmem_page_log_hashed_line {
 	PMEMrwlock		lock;
 	
 	int hashed_id;
-	TOID(PMEM_PAGE_LOG_BUF)	logbuf;	//pointer to log buffer
+	TOID(PMEM_PAGE_LOG_BUF)	logbuf;	//pointer to current log buffer
+	TOID(PMEM_PAGE_LOG_BUF)	flush_logbuf;	//pointer to flushing log buffer
 
 	uint64_t		diskaddr; //log file offset, update when flush log, reset when purging file
 	uint64_t		write_diskaddr; //diskaddr that log recs are durable write write_diskaddr < diskaddr
@@ -537,8 +539,10 @@ struct __pmem_page_log_hashed_line {
 
 	uint64_t n_blocks; //the total log block in bucket
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
-	//TODO:
-	// log file
+
+	//Recovery, allocate in DRAM when recovery
+	PMEM_RECV_LINE* recv_line;
+
 	/*Statistic info*/
 #if defined(UNIV_PMEMOBJ_PPL_STAT)
 	uint64_t log_write_lock_wait_time; //total time lock holding for copying log records to log buffer
@@ -672,6 +676,12 @@ struct __pmem_log_group {
 	byte**				file_header_bufs_ptr;
 	/** buffers for each file header in the group */
 	byte**				file_header_bufs;
+};
+
+//folow the design of recv_sys_t in InnoDB
+struct __pmem_recv_line {
+	byte*		buf;	/*!< buffer for parsing log records */
+	ulint		len;	/*!< amount of data in buf */
 };
 
 /////////////// End Per-Page Logging ///////////////////
@@ -936,6 +946,13 @@ pm_log_fil_io(
 		PMEM_PAGE_PART_LOG*		ppl,
 		PMEM_PAGE_LOG_BUF*		plogbuf);
 
+ulint
+pm_log_fil_read(
+	PMEMobjpool*			pop,
+	PMEM_PAGE_PART_LOG*		ppl,
+	PMEM_PAGE_LOG_HASHED_LINE*		pline,
+	byte* buf
+	);
 
 //////////// COMMIT //////////////////
 
@@ -952,6 +969,40 @@ pm_ppl_flush_page(
 		uint64_t			key,
 		uint64_t			pageLSN);
 
+////// RECOVERY
+void 
+pm_ppl_recv_init(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl);
+
+void 
+pm_ppl_recv_end(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl);
+
+dberr_t
+pm_ppl_recovery(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		lsn_t flush_lsn);
+
+void 
+pm_ppl_analysis(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl);
+
+void 
+pm_ppl_redo(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl);
+
+bool
+pm_ppl_redo_line(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline);
+
+////////////// END RECOVERY
 int64_t
 __update_tt_entry_on_write_log(
 		PMEMobjpool*		pop,

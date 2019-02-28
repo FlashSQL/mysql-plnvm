@@ -1515,6 +1515,8 @@ pm_page_part_log_bucket_init(
 		pline->n_blocks = k;
 		pline->diskaddr = 0;
 		pline->write_diskaddr = 0;
+
+		TOID_ASSIGN(pline->flush_logbuf, OID_NULL);
 #if defined(UNIV_PMEMOBJ_PPL_STAT)
 		pline->log_write_lock_wait_time = 0;
 		pline->n_log_write = 0;
@@ -1542,6 +1544,7 @@ pm_page_part_log_bucket_init(
 		plogbuf->cur_off = 0;
 		plogbuf->self = (pline->logbuf).oid;
 		plogbuf->check = PMEM_AIO_CHECK;
+
 
 		//Allocate the log blocks
 		POBJ_ALLOC(pop,
@@ -2149,6 +2152,10 @@ __pm_write_log_buf(
 			log_des,
 			log_src + src_off,
 			rec_size);
+	if (plogbuf->cur_off == 0){
+		//this is the first write on this logbuf
+		plogbuf->state = PMEM_LOG_BUF_IN_USED;
+	}
 	plogbuf->cur_off += rec_size;
 
 	////////////////////////////////////////////
@@ -2186,8 +2193,11 @@ get_free_buf:
 		pmemobj_rwlock_unlock(pop, &pfreepool->lock);
 		
 		// (2.2) switch the free log buf with the full log buf
+
+		// save the flushing log buf for recovery
+		TOID_ASSIGN(pline->flush_logbuf, pline->logbuf.oid);
+		//asign new one
 		TOID_ASSIGN(pline->logbuf, free_buf.oid);
-		D_RW(free_buf)->state = PMEM_LOG_BUF_IN_USED;
 		D_RW(free_buf)->hashed_id = pline->hashed_id; 
 		
 		// (2.3) handle left over after alignment
@@ -2204,6 +2214,7 @@ get_free_buf:
 					src_temp,
 					left_over_size);
 			D_RW(free_buf)->cur_off = left_over_size;
+			D_RW(free_buf)->state = PMEM_LOG_BUF_IN_USED;
 		}
 		
 		//move the diskaddr on the line ahead	
@@ -2341,6 +2352,7 @@ pm_log_flush_log_buf(
 		pop, ppl, plogbuf);	
 #else
 	/*(2) Flush	*/
+	plogbuf->state = PMEM_LOG_BUF_IN_FLUSH;
 	pm_log_fil_io(pop, ppl, plogbuf);
 #endif
 }
@@ -2358,7 +2370,7 @@ __pm_write_log_rec_low(
 			uint64_t				rec_size)
 {
 	if (rec_size <= CACHELINE_SIZE){
-		//Do not need a transaction for atomicity
+		//We need persistent copy, Do not need a transaction for atomicity
 			pmemobj_memcpy_persist(
 				pop, 
 				log_des,
@@ -2410,6 +2422,8 @@ pm_handle_finished_log_buf(
 	plogbuf->state = PMEM_LOG_BUF_FREE;
 	plogbuf->cur_off = 0;
 	plogbuf->hashed_id = -1;
+	//reset the ref in line
+	TOID_ASSIGN(pline->flush_logbuf, OID_NULL);
 
 	//put back to the free pool
 	pfree_pool = D_RW(ppl->free_pool);
@@ -2736,6 +2750,11 @@ pm_ppl_flush_page(
 		return;	
 */
 }
+
+//////////// RECOVERY ////////////////
+//see pm_ppl_recovery() in storage/innobase/log/log0recv.cc
+
+/////////// END RECOVERY ////////////
 
 /*
  * Init a log group in DRAM

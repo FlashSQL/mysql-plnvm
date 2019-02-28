@@ -2184,14 +2184,14 @@ srv_master_do_active_tasks(void)
 		MONITOR_SRV_IBUF_MERGE_MICROSECOND, counter_time);
 
 	/* Flush logs if needed */
-#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
-	//We don't need to write + flush log every second
-#else //original
+//#if defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+//	//We don't need to write + flush log every second
+//#else //original
 	srv_main_thread_op_info = "flushing log";
 	srv_sync_log_buffer_in_background();
 	MONITOR_INC_TIME_IN_MICRO_SECS(
 		MONITOR_SRV_LOG_FLUSH_MICROSECOND, counter_time);
-#endif //UNIV_PMEMOBJ_LOG
+//#endif //UNIV_PMEMOBJ_LOG
 
 	/* Now see if various tasks that are performed at defined
 	intervals need to be performed. */
@@ -2286,15 +2286,15 @@ srv_master_do_idle_tasks(void)
 		MONITOR_SRV_DICT_LRU_MICROSECOND, counter_time);
 
 	/* Flush logs if needed */
-#if defined (UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_WAL)
-	//We skip the 1s flush log here
-	//Log will flush at log_checkpoint() and when the log buffer is nearly full
-	//See log_reserve_and_open()
-#else //original
+//#if defined (UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_WAL)
+//	//We skip the 1s flush log here
+//	//Log will flush at log_checkpoint() and when the log buffer is nearly full
+//	//See log_reserve_and_open()
+//#else //original
 	srv_sync_log_buffer_in_background();
 	MONITOR_INC_TIME_IN_MICRO_SECS(
 		MONITOR_SRV_LOG_FLUSH_MICROSECOND, counter_time);
-#endif
+//#endif
 
 	if (srv_shutdown_state > 0) {
 		return;

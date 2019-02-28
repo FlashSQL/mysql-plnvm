@@ -68,10 +68,11 @@ bool	recv_replay_file_ops	= true;
 #include "fut0lst.h"
 #endif /* !UNIV_HOTBACKUP */
 
-#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL)
+#if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 #include "my_pmemobj.h"
 extern PMEM_WRAPPER* gb_pmw;
 #endif
+
 
 /** Log records are stored in the hash table in chunks at most of this size;
 this must be less than UNIV_PAGE_SIZE as it is stored in the buffer pool */
@@ -4033,6 +4034,556 @@ recv_init_crash_recovery_spaces(void)
 
 	return(DB_SUCCESS);
 }
+#if defined (UNIV_PMEMOBJ_PART_PL)
+void 
+pm_ppl_recv_init(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl) {
+
+	uint32_t n, i;
+    uint32_t size;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+
+	n = ppl->n_buckets;
+    
+
+	for (i = 0; i < n; i++) {
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+        
+        // the redo buffer has k times larger than the logbuf 
+        size = 2 * D_RW(pline->logbuf)->size;
+
+        pline->recv_line = (PMEM_RECV_LINE*) malloc(sizeof(PMEM_RECV_LINE));
+
+        pline->recv_line-> buf = static_cast<byte*>(
+        ut_malloc_nokey(size));
+    }
+}
+
+void 
+pm_ppl_recv_end(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl) {
+
+	uint32_t n, i;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	n = ppl->n_buckets;
+
+	for (i = 0; i < n; i++) {
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+
+        free(pline->recv_line->buf);
+        free(pline->recv_line);
+    }
+}
+
+/*
+ * */
+dberr_t
+pm_ppl_recovery(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+        lsn_t flush_lsn
+        ) 
+{
+
+	log_group_t*	group;
+	log_group_t*	max_cp_group;
+	ulint		max_cp_field;
+	lsn_t		checkpoint_lsn;
+	bool		rescan;
+	ib_uint64_t	checkpoint_no;
+	lsn_t		contiguous_lsn;
+	byte*		buf;
+	byte		log_hdr_buf[LOG_FILE_HDR_SIZE];
+	dberr_t		err;
+
+	/*Phase 1: Analysis and prepare data structure for recovery*/
+    
+    //init the temp buffer for REDO, we deallocate at the end of this function
+    pm_ppl_recv_init(pop, ppl);
+
+	/* Initialize red-black tree for fast insertions into the
+	flush_list during recovery process. */
+	buf_flush_init_flush_rbt();
+
+	recv_recovery_on = true;
+	log_mutex_enter();
+
+	/*Original: Get the log group has min checkpoint
+     * Read the checkpoint info from the log group to get checkpoint_lsn and checkpoint_no
+     * */
+    //TODO: we've already save the min checkpoints in each page-level logs
+
+    pm_ppl_analysis(pop, ppl);
+	/*Phase 2: REDO*/
+    //Simulate recv_group_scan_log_recs()
+    pm_ppl_redo(pop, ppl);
+	//rescan = recv_group_scan_log_recs(group, &contiguous_lsn, false);
+    
+    //all error handle code is remove because we assert() in the pm_ppl_redo()
+    // all code related with checkpoint is removed because we don't use checkpoint
+    
+    //at the end of pm_ppl_redo, recv_sys->recovered_lsn is the last offset of the last line
+	log_sys->lsn = recv_sys->recovered_lsn;
+    
+    //we don't need to rescan because we put log recs in HASH table in the first scan
+
+
+	/* Synchronize the uncorrupted log groups to the most up-to-date log
+	group; we also copy checkpoint info to groups */
+
+
+	//ut_memcpy(log_sys->buf, recv_sys->last_block, OS_FILE_LOG_BLOCK_SIZE);
+	//log_sys->buf_free = (ulint) log_sys->lsn % OS_FILE_LOG_BLOCK_SIZE;
+	//log_sys->buf_next_to_write = log_sys->buf_free;
+	//log_sys->write_lsn = log_sys->lsn;
+
+	//log_sys->last_checkpoint_lsn = checkpoint_lsn;
+
+	mutex_enter(&recv_sys->mutex);
+
+	recv_sys->apply_log_recs = TRUE;
+
+	mutex_exit(&recv_sys->mutex);
+
+	log_mutex_exit();
+
+	recv_lsn_checks_on = true;
+
+	/* The database is now ready to start almost normal processing of user
+	transactions: transaction rollbacks and the application of the log
+	records in the hash table can be run in background. */
+
+    //pm_ppl_recv_end(pop, ppl);
+
+	return(DB_SUCCESS);
+
+}
+
+/*
+ * Compute the recv_diskaddr for each lines
+ * */
+void 
+pm_ppl_analysis(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl)
+{
+
+	uint32_t n, k, i, j;
+    uint64_t low_diskaddr;
+    uint64_t low_offset;
+    uint64_t low_watermark;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+
+	n = ppl->n_buckets;
+	k = ppl->n_blocks_per_bucket;
+
+	for (i = 0; i < n; i++) {
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+
+        //low_watermark = D_RW(D_RW(pline->arr)[0])->start_diskaddr + D_RW(D_RW(pline->arr)[0])->start_off;
+        //low_diskaddr = D_RW(D_RW(pline->arr[0]))->start_diskaddr;
+        //low_offset = D_RW(D_RW(pline->arr[0]))->start_off;
+        low_watermark = ULONG_MAX;
+
+        //for each block in the line
+        for (j = 0; j < k; j++){
+		    plog_block = D_RW(D_RW(pline->arr)[j]);
+
+            if (low_watermark > (plog_block->start_diskaddr + plog_block->start_off)){
+
+                low_watermark = (plog_block->start_diskaddr + plog_block->start_off);
+                low_diskaddr = plog_block->start_diskaddr;
+                low_offset = plog_block->start_off;
+            }
+        } //end for each block in the line
+        
+        assert(low_diskaddr <= pline->diskaddr);
+
+        //handle the case that the system crash when the log flush is in the middle 
+        if (pline->write_diskaddr < pline->diskaddr){
+            printf("===> TODO: handle crash in middle log flush case for line %zu \n", i);
+        }
+        pline->recv_diskaddr = low_diskaddr;
+        pline->recv_off = low_offset;
+    } //end for each line
+}
+
+void 
+pm_ppl_redo(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl) {
+
+	uint32_t n, i;
+    bool is_err;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+    //TODO: parallelism REDOing
+	n = ppl->n_buckets;
+	for (i = 0; i < n; i++) {
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+        is_err = pm_ppl_redo_line(pop, ppl, pline);
+
+        if (is_err) {
+            printf("PMEM_ERROR REDO error in line %zu \n", i);
+            assert(0);
+        }
+    }
+
+}
+
+/*
+//Simulate recv_group_scan_log_recs()
+// Read all on-disk log rec from start_lsn to the buffer
+// Apply REDO
+// Return:
+// true: error
+// false: OK
+*/
+bool
+pm_ppl_redo_line(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline) {
+    
+    //for phase 1
+    uint64_t start_addr, cur_addr, end_addr;
+
+    byte* recv_buf;
+    uint64_t recv_buf_len;  //len of the buffer
+    uint64_t recovered_off;
+    
+    //temp variable for memcpy
+    byte* src;
+    byte* des;
+    uint64_t scan_len;
+    
+    //for phase 2
+    byte* ptr;
+    byte* end_ptr;
+	bool		single_rec;
+	mlog_id_t	type;
+	ulint		space;
+	ulint		page_no;
+	byte*		body;
+
+	lsn_t		new_recovered_lsn;
+	lsn_t		old_lsn;
+    uint64_t len;
+
+
+    PMEM_PAGE_LOG_BUF* plogbuf;
+    PMEM_PAGE_LOG_BUF* pflush_logbuf;
+
+
+	store_t		store = STORE_YES;
+
+    recv_buf = pline->recv_line->buf;
+    recv_buf_len = 0;
+
+    ///////////////////////////////////////////////////
+    // (1) Scan phase: Build the recv buffer
+    // ////////////////////////////////////////////////
+    start_addr = pline->recv_diskaddr;
+    cur_addr = start_addr;
+    
+    if (cur_addr < pline->write_diskaddr){
+        //pread from log file on disk to buf
+        printf("PMEM_INFO redo line %zu read from log file \n", pline->hashed_id);        
+
+        scan_len = pm_log_fil_read(pop, ppl, pline, recv_buf);
+        
+        cur_addr += scan_len;
+    }
+    
+    if (cur_addr < pline->diskaddr){
+        //memcpy from flushing log buffer in NVDIMM to buf
+        pflush_logbuf = D_RW(pline->flush_logbuf);
+
+        src = ppl->p_align + pflush_logbuf->pmemaddr;
+        scan_len = pflush_logbuf->cur_off;
+        memcpy(recv_buf + cur_addr, src, scan_len);
+
+        cur_addr += scan_len;
+    }
+    
+    plogbuf = D_RW(pline->logbuf);
+    if (plogbuf->cur_off > 0){
+        //memcpy from log buffer in NVDIMM to recv_buf
+        src = ppl->p_align + plogbuf->pmemaddr;
+        scan_len = plogbuf->cur_off;
+        memcpy(recv_buf + cur_addr, src, scan_len);
+
+        cur_addr += scan_len;
+    }
+
+    end_addr = cur_addr;
+    recv_buf_len = end_addr - start_addr;
+
+    ///////////////////////////////////////////////////
+    // (2) Parse phase:  simulate recv_parse_log_recs()
+    // ////////////////////////////////////////////////
+    
+    //we borrow recv_sys value to make the logic simple
+    recv_sys->recovered_lsn = start_addr;
+    recv_sys->recovered_offset = 0;
+    recv_sys->scanned_lsn = end_addr;
+
+    recovered_off = 0; //alternative of recv_sys->recovered_offset
+    //recovered_off increase for each loop
+loop:
+    ptr = recv_buf + recovered_off;
+    end_ptr = recv_buf + recv_buf_len;
+
+    if (ptr == end_ptr) {
+        return false;
+    }
+
+	switch (*ptr) {
+	case MLOG_CHECKPOINT:
+#ifdef UNIV_LOG_LSN_DEBUG
+	case MLOG_LSN:
+#endif /* UNIV_LOG_LSN_DEBUG */
+	case MLOG_DUMMY_RECORD:
+		single_rec = true;
+		break;
+	default:
+		single_rec = !!(*ptr & MLOG_SINGLE_REC_FLAG);
+	}
+
+	if (single_rec) {
+		old_lsn = recv_sys->recovered_lsn;
+
+		len = recv_parse_log_rec(&type, ptr, end_ptr, &space,
+					 &page_no, true, &body);
+
+		if (len == 0) {
+			return(false);
+		}
+
+		if (recv_sys->found_corrupt_log) {
+			recv_report_corrupt_log(
+				ptr, type, space, page_no);
+			return(true);
+		}
+
+		if (recv_sys->found_corrupt_fs) {
+			return(true);
+		}
+
+		new_recovered_lsn = recv_calc_lsn_on_data_add(old_lsn, len);
+
+		if (new_recovered_lsn > end_addr) {
+            return false;
+        }
+
+		recv_previous_parsed_rec_type = type;
+		recv_previous_parsed_rec_offset = recovered_off;
+		recv_previous_parsed_rec_is_multi = 0;
+		recv_sys->recovered_offset += len;
+        recovered_off += len;
+		recv_sys->recovered_lsn = new_recovered_lsn;
+
+		switch (type) {
+			lsn_t	lsn;
+		case MLOG_DUMMY_RECORD:
+			/* Do nothing */
+			break;
+		case MLOG_CHECKPOINT:
+            printf("PMEM_ERROR: we don't call log_checkpoint() in PPL, check againn");
+            break;
+		case MLOG_FILE_NAME:
+		case MLOG_FILE_DELETE:
+		case MLOG_FILE_CREATE2:
+		case MLOG_FILE_RENAME2:
+		case MLOG_TRUNCATE:
+			/* These were already handled by
+			recv_parse_log_rec() and
+			recv_parse_or_apply_log_rec_body(). */
+			break;
+		default:
+			switch (store) {
+			case STORE_NO:
+				break;
+			case STORE_IF_EXISTS:
+				if (fil_space_get_flags(space)
+				    == ULINT_UNDEFINED) {
+					break;
+				}
+				/* fall through */
+			case STORE_YES:
+				recv_add_to_hash_table(
+					type, space, page_no, body,
+					ptr + len, old_lsn,
+					recv_sys->recovered_lsn);
+			}
+			/* fall through */
+		}
+    } //end if single_rec
+    else {
+	    //Multiple log recs per mtr	
+        /* Check that all the records associated with the single mtr
+		are included within the buffer */
+
+		ulint	total_len	= 0;
+		ulint	n_recs		= 0;
+		bool	only_mlog_file	= true;
+		ulint	mlog_rec_len	= 0;
+
+		for (;;) {
+			len = recv_parse_log_rec(
+				&type, ptr, end_ptr, &space, &page_no,
+				false, &body);
+
+			if (len == 0) {
+				return(false);
+			}
+
+			if (recv_sys->found_corrupt_log
+			    || type == MLOG_CHECKPOINT
+			    || (*ptr & MLOG_SINGLE_REC_FLAG)) {
+				recv_sys->found_corrupt_log = true;
+				recv_report_corrupt_log(
+					ptr, type, space, page_no);
+				return(true);
+			}
+
+			if (recv_sys->found_corrupt_fs) {
+				return(true);
+			}
+
+			recv_previous_parsed_rec_type = type;
+			recv_previous_parsed_rec_offset
+				= recovered_off + total_len;
+			recv_previous_parsed_rec_is_multi = 1;
+
+			/* MLOG_FILE_NAME redo log records doesn't make changes
+			to persistent data. If only MLOG_FILE_NAME redo
+			log record exists then reset the parsing buffer pointer
+			by changing recovered_lsn and recovered_offset. */
+			if (type != MLOG_FILE_NAME && only_mlog_file == true) {
+				only_mlog_file = false;
+			}
+
+			if (only_mlog_file) {
+				new_recovered_lsn = recv_calc_lsn_on_data_add(
+					recv_sys->recovered_lsn, len);
+				mlog_rec_len += len;
+				recovered_off += len;
+				recv_sys->recovered_offset += len;
+				recv_sys->recovered_lsn = new_recovered_lsn;
+			}
+
+			total_len += len;
+			n_recs++;
+
+			ptr += len;
+
+			if (type == MLOG_MULTI_REC_END) {
+                //end of multi-ple recs in mtr 
+				total_len -= mlog_rec_len;
+				break;
+			}
+
+        }//end first for (;;)
+
+		new_recovered_lsn = recv_calc_lsn_on_data_add(
+			recv_sys->recovered_lsn, total_len);
+
+		if (new_recovered_lsn > recv_sys->scanned_lsn) {
+			/* The log record filled a log block, and we require
+			that also the next log block should have been scanned
+			in */
+
+			return(false);
+		}
+
+        ptr = recv_buf + recovered_off;
+
+		for (;;) {
+			old_lsn = recv_sys->recovered_lsn;
+			/* This will apply MLOG_FILE_ records. We
+			had to skip them in the first scan, because we
+			did not know if the mini-transaction was
+			completely recovered (until MLOG_MULTI_REC_END). */
+			len = recv_parse_log_rec(
+				&type, ptr, end_ptr, &space, &page_no,
+				true, &body);
+
+			if (recv_sys->found_corrupt_log
+			    && !recv_report_corrupt_log(
+				    ptr, type, space, page_no)) {
+				return(true);
+			}
+
+			if (recv_sys->found_corrupt_fs) {
+				return(true);
+			}
+
+			ut_a(len != 0);
+			ut_a(!(*ptr & MLOG_SINGLE_REC_FLAG));
+
+			recovered_off += len;
+			recv_sys->recovered_offset += len;
+			recv_sys->recovered_lsn
+				= recv_calc_lsn_on_data_add(old_lsn, len);
+			switch (type) {
+			case MLOG_MULTI_REC_END:
+				/* Found the end mark for the records */
+				goto loop;
+			case MLOG_FILE_NAME:
+			case MLOG_FILE_DELETE:
+			case MLOG_FILE_CREATE2:
+			case MLOG_FILE_RENAME2:
+			case MLOG_INDEX_LOAD:
+			case MLOG_TRUNCATE:
+				/* These were already handled by
+				recv_parse_log_rec() and
+				recv_parse_or_apply_log_rec_body(). */
+				break;
+			default:
+				switch (store) {
+				case STORE_NO:
+					break;
+				case STORE_IF_EXISTS:
+					if (fil_space_get_flags(space)
+					    == ULINT_UNDEFINED) {
+						break;
+					}
+					/* fall through */
+				case STORE_YES:
+					recv_add_to_hash_table(
+						type, space, page_no,
+						body, ptr + len,
+						old_lsn,
+						new_recovered_lsn);
+				}
+			}//end switch
+
+			ptr += len;
+        } //end second for(;;)
+
+    } //end else multiple recs
+
+	goto loop;
+}
+
+
+#endif //UNIV_PMEMOBJ_PART_PL
 
 /** Start recovering from a redo log checkpoint.
 @see recv_recovery_from_checkpoint_finish

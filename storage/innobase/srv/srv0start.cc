@@ -2396,7 +2396,16 @@ files_checked:
 		//gb_pmw->pbuf->is_recovery = true;
 		gb_pmw->pbuf->is_recovery = false;
 #endif
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		if (gb_pmw->ppl->is_new){
+			err = recv_recovery_from_checkpoint_start(flushed_lsn);
+		}			
+		else {
+			err = pm_ppl_recovery(gb_pmw->pop, gb_pmw->ppl, flushed_lsn);
+		}
+#else
 		err = recv_recovery_from_checkpoint_start(flushed_lsn);
+#endif // UNIV_PMEMOBJ_PART_PL
 
 		recv_sys->dblwr.pages.clear();
 

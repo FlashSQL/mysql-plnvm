@@ -8628,7 +8628,9 @@ pm_log_fil_node_create(
 
 	return node;
 }
-
+/*
+ * Write log buffer to disk use Linux AIO
+ * */
 void
 pm_log_fil_io(
 	PMEMobjpool*			pop,
@@ -8727,5 +8729,106 @@ pm_log_fil_io(
 		srv_read_only_mode,
 		node, plogbuf);
 
+}
+
+/*
+ * Read part log file to buffer use Linux AIO when recovery
+ * Read from pline->recv_diskaddr to pline->write_diskaddr
+ * Follow the logic of log_group_read_log_seq()
+ * return: number bytes read
+ * */
+ulint
+pm_log_fil_read(
+	PMEMobjpool*			pop,
+	PMEM_PAGE_PART_LOG*		ppl,
+	PMEM_PAGE_LOG_HASHED_LINE*		pline,
+	byte* buf
+	)
+{
+	PMEM_LOG_GROUP*		group;
+
+	byte*		pdata;
+	byte*		log_src;
+
+	ulint		start_offset;
+	ulint		end_offset;
+	ulint		cur_offset;
+
+	ulint		area_start;
+	ulint		area_end;
+
+	ulint		next_offset;
+	ulint		read_offset;
+	ulint		read_len;
+
+	ulint		len;
+	ulint		i;
+	
+	fil_space_t*	space;
+	fil_node_t*		node;
+
+	ulint	mode;
+	IORequest		req_type(IORequestLogRead);
+	dberr_t	err;
+
+	mode = OS_AIO_LOG;
+	
+	if (pline->recv_diskaddr == pline->write_diskaddr){
+		/*do nothing*/
+		return 0;
+	}	
+
+	group = ppl->log_groups[pline->hashed_id];
+
+	start_offset = pline->recv_diskaddr;
+	end_offset = pline->write_diskaddr;
+
+	space = ppl->log_space;
+	node = ppl->node_arr[pline->hashed_id];
+	if (!node->is_open) {
+		bool success;
+		node->handle = os_file_create(
+				innodb_log_file_key, node->name, OS_FILE_OPEN,
+				OS_FILE_AIO, OS_LOG_FILE, false, &success);	   
+		if (!success){
+			printf("Cannot open log file %s handle %zu\n", node->name, node->handle);
+		}
+		node->is_open = true;
+	}
+
+
+	cur_offset = start_offset;	
+	read_len = 0;
+
+// read each log page from start_offset to end_offset	
+loop:	
+	len = end_offset - cur_offset;
+
+	if ( (cur_offset % group->file_size) + len > group->file_size){
+		//we need to cross-file read
+		len = (ulint) (group->file_size - (cur_offset % group->file_size));
+	}
+		
+	ulint page_no =
+	   	(ulint) (cur_offset / univ_page_size.physical());
+
+	err = os_aio(
+		req_type,
+		mode, node->name, node->handle,
+	   	buf, cur_offset, len,
+		srv_read_only_mode,
+		node, NULL);
+
+	cur_offset += len;	
+	buf += len;
+	read_len += len;
+
+	if (cur_offset < end_offset) {
+		goto loop;
+	}
+
+	assert (read_len == (end_offset - start_offset));
+
+	return read_len;
 }
 #endif //UNIV_PMEMOBJ_PART_PL
