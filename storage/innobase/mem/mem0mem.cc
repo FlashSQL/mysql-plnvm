@@ -235,8 +235,11 @@ mem_heap_validate(
 	const mem_heap_t*	heap)
 {
 	ulint	size = 0;
+    //tdnguyen test
+    mem_block_t* block;
 
-	for (const mem_block_t* block = heap;
+	//for (const mem_block_t* block = heap;
+	for (block = (mem_block_t*)heap;
 		block != NULL;
 		block = UT_LIST_GET_NEXT(list, block)) {
 

@@ -411,6 +411,7 @@ static PSI_mutex_info all_innodb_mutexes[] = {
 #endif
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	PSI_KEY(pm_log_flusher_mutex),
+	PSI_KEY(pm_log_redoer_mutex),
 #endif
 	PSI_KEY(page_zip_stat_per_index_mutex),
 	PSI_KEY(purge_sys_pq_mutex),
@@ -501,6 +502,7 @@ static PSI_thread_info	all_innodb_threads[] = {
 #endif
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	PSI_KEY(pm_log_flusher_thread),
+	PSI_KEY(pm_log_redoer_thread),
 #endif
 	PSI_KEY(recv_writer_thread),
 	PSI_KEY(srv_error_monitor_thread),

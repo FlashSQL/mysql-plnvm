@@ -350,6 +350,10 @@ trx_purge_add_update_undo_to_history(
 			ib::fatal() << "undo->id is " << undo->id;
 		}
 
+//tdnguyen test
+		if (undo->rseg->space == 0 && undo->rseg->page_no == 6){
+			printf("===> PURGE:  page 6, set UNDO page %zu at slot %zu to FIL_NULL (%zu)\n", trx_rsegf_get_nth_undo(rseg_header, undo->id, mtr), undo->id, FIL_NULL);
+		}
 		trx_rsegf_set_nth_undo(rseg_header, undo->id, FIL_NULL, mtr);
 
 		MONITOR_DEC(MONITOR_NUM_UNDO_SLOT_USED);

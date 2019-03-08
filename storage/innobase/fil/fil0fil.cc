@@ -55,6 +55,9 @@ Created 10/25/1995 Heikki Tuuri
 #include "btr0sea.h"
 #include "log0log.h"
 
+//tdnguyen test, remove below include later
+#include "trx0rseg.h"
+
 #ifdef UNIV_NVM_LOG
 //tdnguyen
 #include "pmem_log.h"
@@ -5843,6 +5846,13 @@ fil_io(
 	}
 #else /* UNIV_HOTBACKUP */
 	/* Queue the aio request */
+//tdnguyen test
+	if (page_id.space() == 0){
+		if (page_id.page_no() == 6){
+			pm_ppl_test_write_rseg(req_type, page_id, (byte*) buf, page_size.physical());
+		}
+	}
+//end tdnguyen test
 	err = os_aio(
 		req_type,
 		mode, node->name, node->handle, buf, offset, len,
@@ -5900,6 +5910,100 @@ fil_io(
 
 	return(err);
 }
+
+/*print out info of a RSEG page when it is read/write 
+ * called from fil_io
+ * buf: pointer to the RSEG page
+ * */
+void
+pm_ppl_test_write_rseg(
+		IORequest	req_type,
+		page_id_t	page_id,
+		byte*		buf,
+		ulint		page_size
+		)
+{
+	//trx_rsegf_t*    rseg_header;
+	mtr_t       mtr;
+	ulint p1;
+	ulint last_page_no;
+
+	buf_block_t*	block;
+	buf_block_t*	last_block;
+	page_t*		undo_page;
+	trx_upagef_t*	page_header;
+	trx_usegf_t*	seg_header;
+	trx_ulogf_t*	undo_header;
+
+	ulint		type;
+	ulint		state;
+	trx_id_t	trx_id;
+	ulint		offset;
+	fil_addr_t	last_addr;
+
+	byte* rseg_header = TRX_RSEG + (byte*)buf;
+	
+	//read page_no of the UNDO seg header page
+	p1 = mach_read_ulint(rseg_header + TRX_RSEG_UNDO_SLOTS
+			+ 0 * TRX_RSEG_SLOT_SIZE, MLOG_4BYTES);
+	
+	if (p1 == 0)
+		return;
+	//get the pointer to the UNDO seg header page
+	buf_pool_t* buf_pool = buf_pool_get(page_id);
+	block = (buf_block_t*) buf_page_hash_get_low(buf_pool, page_id_t(page_id.space(), p1));
+	printf("///////////////////////\n");
+	printf("===>> IS_WRITE %zu FIL_IO: is in BP check RSEG page %zu header UNDO page (%zu, %zu) \n", req_type.is_write(), page_id.page_no(), p1, (block!=NULL));
+
+	if (block == NULL) {
+		printf("///////////////////////\n");
+		return;
+	}
+
+	undo_page = (byte*) block->frame;
+
+	if (undo_page == NULL){
+		printf("FIL_IO: block is non-null but frame is NULL??? \n");
+		printf("///////////////////////\n");
+		assert(0);
+		return;
+	}
+	//Now follow the logic in trx_undo_mem_create_at_db_start() to get other info
+	page_header = undo_page + TRX_UNDO_PAGE_HDR;
+	type = mtr_read_ulint(page_header + TRX_UNDO_PAGE_TYPE, MLOG_2BYTES, &mtr);
+
+	seg_header = undo_page + TRX_UNDO_SEG_HDR;
+
+	state = mach_read_from_2(seg_header + TRX_UNDO_STATE);
+
+	offset = mach_read_from_2(seg_header + TRX_UNDO_LAST_LOG);
+
+	undo_header = undo_page + offset;
+
+	trx_id = mach_read_from_8(undo_header + TRX_UNDO_TRX_ID);
+
+	last_addr = flst_get_last(seg_header + TRX_UNDO_PAGE_LIST, &mtr);
+	last_page_no = last_addr.page;
+	
+	last_block = (buf_block_t*) buf_page_hash_get_low(buf_pool, page_id_t(page_id.space(), last_page_no));
+
+	printf("===>> FIL_IO: is in BP check RSEG page %zu last UNDO page(%zu, %zu) \n", page_id.page_no(), last_page_no, (last_block != NULL));
+
+	if(req_type.is_write()){
+		if (p1 ==ULINT32_UNDEFINED){
+			printf(">>>>>>>> WARNING write RSEG page with slot UNDEFINED, slot 0 %zu \n", p1);
+		}
+		printf("FIL_IO: WRITE ROLLBACK SEGMENT page %zu slot 0 UNDO page %zu type %zu state %zu offset %zu trx_id %zu last_addr.page %zu \n\n",
+			   	page_id.page_no(), p1, type, state, offset, trx_id, last_addr.page);
+	}
+	else {
+		printf("FIL_IO: READ ROLLBACK SEGMENT page %zu slot 0 UNDO page %zu type %zu state %zu offset %zu trx_id %zu last_addr.page %zu \n\n",
+			   	page_id.page_no(), p1, type, state, offset, trx_id, last_addr.page);
+	}
+
+	printf("///////////////////////\n");
+}
+
 #if defined (UNIV_PMEMOBJ_BUF) 
 /*
  * pm_fil_io_batch original, without space_oriented sort
@@ -6693,17 +6797,22 @@ fil_aio_wait(
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	if(node->space->purpose == FIL_TYPE_LOG) {
 		if (message != NULL) {
+				//the write log and read log share this source
+				PMEM_PAGE_LOG_BUF* plogbuf = static_cast<PMEM_PAGE_LOG_BUF*> (message);
 
-			PMEM_PAGE_LOG_BUF* plogbuf = static_cast<PMEM_PAGE_LOG_BUF*> (message);
-
-			if (plogbuf != NULL && plogbuf->check == PMEM_AIO_CHECK) {
-				pm_handle_finished_log_buf(
-						gb_pmw->pop,
-					   	gb_pmw->ppl,
-						node,
-					   	plogbuf);
-				return;
-			}
+				if (plogbuf != NULL && plogbuf->check == PMEM_AIO_CHECK) {
+					if (type.is_write()){
+						pm_handle_finished_log_buf(
+							gb_pmw->pop,
+							gb_pmw->ppl,
+							node,
+							plogbuf);
+					}
+					else{
+						/*do nothing*/
+					}
+					return;
+				}
 			//this is the InnoDB's REDO log
 		}
 	}
@@ -7994,9 +8103,13 @@ fil_names_dirty_and_write(
 	fil_space_t*	space,
 	mtr_t*		mtr)
 {
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//we don't own the log mutex
+#else //original
 	ut_ad(log_mutex_own());
 	ut_d(fil_space_validate_for_mtr_commit(space));
 	ut_ad(space->max_lsn == log_sys->lsn);
+#endif //UNIV_PMEMOBJ_PART_PL
 
 	UT_LIST_ADD_LAST(fil_system->named_spaces, space);
 	fil_names_write(space, mtr);
@@ -8586,6 +8699,8 @@ fil_space_t::release_free_extents(ulint	n_reserved)
 }
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
+/*Additional functions for PPL*/
+
 /*
  * Create fil_node by name
  * Open the file and assign file handle
@@ -8671,17 +8786,19 @@ pm_log_fil_io(
 	log_src = pdata + plogbuf->pmemaddr;
 
 	start_offset = 0;
-	end_offset = plogbuf->cur_off;
+	//end_offset = plogbuf->cur_off;
+	end_offset = plogbuf->size;
 
-	//(1) Align the offset with the sector size 512
-	area_start = ut_calc_align_down(start_offset, OS_FILE_LOG_BLOCK_SIZE);
-	area_end = ut_calc_align_down(end_offset, OS_FILE_LOG_BLOCK_SIZE);
+	//(1) Align the offset with the page size
+	//area_start = ut_calc_align_down(start_offset, OS_FILE_LOG_BLOCK_SIZE);
+	//area_end = ut_calc_align_down(end_offset, OS_FILE_LOG_BLOCK_SIZE);
 	
-	len = area_end - area_start;
+	//len = area_end - area_start;
+	len = plogbuf->size;
 	ut_ad(len > 0);
 	
 	assert(plogbuf->hashed_id >= 0);	
-
+	
 	group = ppl->log_groups[plogbuf->hashed_id];
 	pline = D_RW(D_RW(ppl->buckets)[plogbuf->hashed_id]);
 
@@ -8698,15 +8815,8 @@ pm_log_fil_io(
 	}
 	
 	//(2) Write, simulate log_group_write_buf()
-	ut_ad(len % OS_FILE_LOG_BLOCK_SIZE == 0);
-	
-	//write each 4-KB page to disk
-		
-	// page_no is the div of 4-KB page
-	ulint page_no =
-	   	(ulint) (next_offset / univ_page_size.physical());
-	//write offset on page_no
-	write_offset = (ulint) (next_offset % UNIV_PAGE_SIZE);
+	assert((end_offset % univ_page_size.physical()) == 0);	
+	//ut_ad(len % OS_FILE_LOG_BLOCK_SIZE == 0);
 
 	space = ppl->log_space;
 	node = ppl->node_arr[plogbuf->hashed_id];
@@ -8733,37 +8843,22 @@ pm_log_fil_io(
 
 /*
  * Read part log file to buffer use Linux AIO when recovery
- * Read from pline->recv_diskaddr to pline->write_diskaddr
  * Follow the logic of log_group_read_log_seq()
+ * Just simple open the file (if need) and read the read_len bytes from read_offset
  * return: number bytes read
  * */
-ulint
+dberr_t
 pm_log_fil_read(
 	PMEMobjpool*			pop,
 	PMEM_PAGE_PART_LOG*		ppl,
 	PMEM_PAGE_LOG_HASHED_LINE*		pline,
-	byte* buf
+	byte* buf,
+	uint64_t read_offset,
+	uint64_t read_len
 	)
 {
 	PMEM_LOG_GROUP*		group;
 
-	byte*		pdata;
-	byte*		log_src;
-
-	ulint		start_offset;
-	ulint		end_offset;
-	ulint		cur_offset;
-
-	ulint		area_start;
-	ulint		area_end;
-
-	ulint		next_offset;
-	ulint		read_offset;
-	ulint		read_len;
-
-	ulint		len;
-	ulint		i;
-	
 	fil_space_t*	space;
 	fil_node_t*		node;
 
@@ -8771,17 +8866,12 @@ pm_log_fil_read(
 	IORequest		req_type(IORequestLogRead);
 	dberr_t	err;
 
-	mode = OS_AIO_LOG;
-	
-	if (pline->recv_diskaddr == pline->write_diskaddr){
-		/*do nothing*/
-		return 0;
-	}	
+	//read log with AIO_SYNC
+	mode = OS_AIO_SYNC;
+	//mode = OS_AIO_LOG;
 
 	group = ppl->log_groups[pline->hashed_id];
 
-	start_offset = pline->recv_diskaddr;
-	end_offset = pline->write_diskaddr;
 
 	space = ppl->log_space;
 	node = ppl->node_arr[pline->hashed_id];
@@ -8796,39 +8886,13 @@ pm_log_fil_read(
 		node->is_open = true;
 	}
 
-
-	cur_offset = start_offset;	
-	read_len = 0;
-
-// read each log page from start_offset to end_offset	
-loop:	
-	len = end_offset - cur_offset;
-
-	if ( (cur_offset % group->file_size) + len > group->file_size){
-		//we need to cross-file read
-		len = (ulint) (group->file_size - (cur_offset % group->file_size));
-	}
-		
-	ulint page_no =
-	   	(ulint) (cur_offset / univ_page_size.physical());
-
 	err = os_aio(
 		req_type,
 		mode, node->name, node->handle,
-	   	buf, cur_offset, len,
+	   	buf, read_offset, read_len,
 		srv_read_only_mode,
-		node, NULL);
+		node, D_RW(pline->logbuf));
 
-	cur_offset += len;	
-	buf += len;
-	read_len += len;
-
-	if (cur_offset < end_offset) {
-		goto loop;
-	}
-
-	assert (read_len == (end_offset - start_offset));
-
-	return read_len;
+	return err;
 }
 #endif //UNIV_PMEMOBJ_PART_PL

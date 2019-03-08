@@ -1227,6 +1227,13 @@ fil_io(
 	ulint			len,
 	void*			buf,
 	void*			message);
+//tdnguyen test for debug PPL
+void
+pm_ppl_test_write_rseg(
+		IORequest   req_type,
+		page_id_t   page_id,
+		byte*       buf,
+		ulint		page_size);
 #if defined (UNIV_PMEMOBJ_BUF)
 dberr_t
 pm_fil_io_batch(

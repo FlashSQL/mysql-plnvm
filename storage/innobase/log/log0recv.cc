@@ -2429,10 +2429,12 @@ recv_recover_page_func(
 
 	while (recv) {
 		end_lsn = recv->end_lsn;
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+        //in PPL, we don't use InnoDB's log group
+#else //original
 		ut_ad(end_lsn
 		      <= UT_LIST_GET_FIRST(log_sys->log_groups)->scanned_lsn);
-
+#endif //UNIV_PMEMOBJ_PART_PL
 		if (recv->len > RECV_DATA_BLOCK_SIZE) {
 			/* We have to copy the record body to a separate
 			buffer */
@@ -2660,8 +2662,6 @@ loop:
 	recv_sys->apply_batch_on = TRUE;
 
 	for (i = 0; i < hash_get_n_cells(recv_sys->addr_hash); i++) {
-		//tdnguyen test
-		//printf("i = %zu\n", i);
 
 		for (recv_addr = static_cast<recv_addr_t*>(
 				HASH_GET_FIRST(recv_sys->addr_hash, i));
@@ -4053,13 +4053,15 @@ pm_ppl_recv_init(
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
         
-        // the redo buffer has k times larger than the logbuf 
-        size = 2 * D_RW(pline->logbuf)->size;
+        // the redo buffer has same length as log buffer 
+        //size = 2 * D_RW(pline->logbuf)->size;
+        size = D_RW(pline->logbuf)->size;
 
         pline->recv_line = (PMEM_RECV_LINE*) malloc(sizeof(PMEM_RECV_LINE));
 
         pline->recv_line-> buf = static_cast<byte*>(
         ut_malloc_nokey(size));
+        pline->recv_line->len = size;
     }
 }
 
@@ -4084,6 +4086,7 @@ pm_ppl_recv_end(
 }
 
 /*
+ * Simulate recv_recovery_from_checkpoint_start()
  * */
 dberr_t
 pm_ppl_recovery(
@@ -4104,7 +4107,6 @@ pm_ppl_recovery(
 	byte		log_hdr_buf[LOG_FILE_HDR_SIZE];
 	dberr_t		err;
 
-	/*Phase 1: Analysis and prepare data structure for recovery*/
     
     //init the temp buffer for REDO, we deallocate at the end of this function
     pm_ppl_recv_init(pop, ppl);
@@ -4116,22 +4118,31 @@ pm_ppl_recovery(
 	recv_recovery_on = true;
 	log_mutex_enter();
 
-	/*Original: Get the log group has min checkpoint
-     * Read the checkpoint info from the log group to get checkpoint_lsn and checkpoint_no
+    
+	/*Phase 1: Analysis and prepare data structure for recovery
+     *pm_ppl_analysis() replace old codes until the first recv_group_scan_log_recs()
      * */
-    //TODO: we've already save the min checkpoints in each page-level logs
-
     pm_ppl_analysis(pop, ppl);
+    printf("\nPMEM_REC: ====    ANALYSIS FINISH ====== \n");
 	/*Phase 2: REDO*/
-    //Simulate recv_group_scan_log_recs()
+    //Simulate recv_group_scan_log_recs(), we do in parallelism
     pm_ppl_redo(pop, ppl);
-	//rescan = recv_group_scan_log_recs(group, &contiguous_lsn, false);
     
     //all error handle code is remove because we assert() in the pm_ppl_redo()
     // all code related with checkpoint is removed because we don't use checkpoint
     
     //at the end of pm_ppl_redo, recv_sys->recovered_lsn is the last offset of the last line
+	recv_init_crash_recovery();
+
 	log_sys->lsn = recv_sys->recovered_lsn;
+    
+    //this function call buf_dblwr_process() that correct tone page using DWB
+	err = recv_init_crash_recovery_spaces();
+    if (err != DB_SUCCESS) {
+        log_mutex_exit();
+        return(err);
+    }
+
     
     //we don't need to rescan because we put log recs in HASH table in the first scan
 
@@ -4139,13 +4150,6 @@ pm_ppl_recovery(
 	/* Synchronize the uncorrupted log groups to the most up-to-date log
 	group; we also copy checkpoint info to groups */
 
-
-	//ut_memcpy(log_sys->buf, recv_sys->last_block, OS_FILE_LOG_BLOCK_SIZE);
-	//log_sys->buf_free = (ulint) log_sys->lsn % OS_FILE_LOG_BLOCK_SIZE;
-	//log_sys->buf_next_to_write = log_sys->buf_free;
-	//log_sys->write_lsn = log_sys->lsn;
-
-	//log_sys->last_checkpoint_lsn = checkpoint_lsn;
 
 	mutex_enter(&recv_sys->mutex);
 
@@ -4180,6 +4184,7 @@ pm_ppl_analysis(
     uint64_t low_diskaddr;
     uint64_t low_offset;
     uint64_t low_watermark;
+    uint64_t cnt;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
@@ -4189,38 +4194,43 @@ pm_ppl_analysis(
 
 	n = ppl->n_buckets;
 	k = ppl->n_blocks_per_bucket;
-
+    
+    //find low_watermark for each line
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
 
-        //low_watermark = D_RW(D_RW(pline->arr)[0])->start_diskaddr + D_RW(D_RW(pline->arr)[0])->start_off;
-        //low_diskaddr = D_RW(D_RW(pline->arr[0]))->start_diskaddr;
-        //low_offset = D_RW(D_RW(pline->arr[0]))->start_off;
         low_watermark = ULONG_MAX;
+        low_diskaddr = ULONG_MAX;
+        low_offset = 0;
+
+        cnt = 0;
 
         //for each block in the line
         for (j = 0; j < k; j++){
-		    plog_block = D_RW(D_RW(pline->arr)[j]);
+            plog_block = D_RW(D_RW(pline->arr)[j]);
 
-            if (low_watermark > (plog_block->start_diskaddr + plog_block->start_off)){
+            if (!plog_block->is_free){
+                if(low_watermark > 
+                        (plog_block->start_diskaddr + plog_block->start_off)){
 
-                low_watermark = (plog_block->start_diskaddr + plog_block->start_off);
-                low_diskaddr = plog_block->start_diskaddr;
-                low_offset = plog_block->start_off;
+                    low_watermark = (plog_block->start_diskaddr + plog_block->start_off);
+                    low_diskaddr = plog_block->start_diskaddr;
+                    low_offset = plog_block->start_off;
+                }
+
+                cnt++;
             }
         } //end for each block in the line
-        
-        assert(low_diskaddr <= pline->diskaddr);
 
-        //handle the case that the system crash when the log flush is in the middle 
-        if (pline->write_diskaddr < pline->diskaddr){
-            printf("===> TODO: handle crash in middle log flush case for line %zu \n", i);
-        }
         pline->recv_diskaddr = low_diskaddr;
         pline->recv_off = low_offset;
+        //printf("line %zu recv_diskaddr %zu recv_off %zu n_nonfree/total %zu/%zu write_diskaddr %zu\n", i, low_diskaddr, low_offset, cnt, k, pline->write_diskaddr);
     } //end for each line
 }
 
+/*
+ *Start redoer threads to parallelism REDOing
+ * */
 void 
 pm_ppl_redo(
 		PMEMobjpool*		pop,
@@ -4231,19 +4241,61 @@ pm_ppl_redo(
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
-
-    //TODO: parallelism REDOing
+    PMEM_LOG_REDOER* redoer;
+    
 	n = ppl->n_buckets;
+
+    //(1) Init the redoers and create threads
+    redoer = pm_log_redoer_init(n);
+    ppl->redoer = redoer;
+
+
+    redoer->n_remains = n;
+
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
-        is_err = pm_ppl_redo_line(pop, ppl, pline);
-
-        if (is_err) {
-            printf("PMEM_ERROR REDO error in line %zu \n", i);
-            assert(0);
+        if (pline->recv_diskaddr == ULONG_MAX){
+            redoer->n_remains--;
         }
     }
+    printf("PMEM_RECV: Need redoing %zu lines\n", redoer->n_remains);
 
+
+    ppl->is_redoing_done = false;
+    
+    //create threads
+    for (i = 0; i < srv_ppl_n_log_flush_threads; ++i) {
+        os_thread_create(pm_log_redoer_worker, NULL, NULL);
+    }
+    
+    // (2) Assign pointers
+	for (i = 0; i < n; i++) {
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+        
+        //this variable is set true after a thread accept to REDO this line
+        pline->is_redoing = false;
+
+        /*if a line has recv_diskaddr == ULONG_MAX, that line has all free page block => skip REDO*/
+        if (pline->recv_diskaddr == ULONG_MAX)
+            continue;
+
+        //Asign pline to a redoer thread
+        redoer->hashed_line_arr[i] = pline;
+        //pm_recv_assign_redoer(ppl, pline);
+    }
+    
+    //trigger REDOer threads
+    os_event_set(redoer->is_log_req_not_empty);
+    
+    //(3) wait for all threads finish
+    while (redoer->n_remains > 0){
+        os_event_wait(redoer->is_log_all_finished);
+    }
+
+finish: 
+    //(4) finish
+    pm_log_redoer_close(ppl->redoer);
+    printf("\nPMEM_RECV: ===== REDOing completed ======\n");
 }
 
 /*
@@ -4265,7 +4317,7 @@ pm_ppl_redo_line(
 
     byte* recv_buf;
     uint64_t recv_buf_len;  //len of the buffer
-    uint64_t recovered_off;
+    uint64_t read_off;  //len of the buffer
     
     //temp variable for memcpy
     byte* src;
@@ -4273,6 +4325,141 @@ pm_ppl_redo_line(
     uint64_t scan_len;
     
     //for phase 2
+    bool is_err;
+    byte* ptr;
+    byte* end_ptr;
+
+    uint64_t len;
+    uint64_t actual_len;
+    dberr_t err;
+
+    PMEM_PAGE_LOG_BUF* plogbuf;
+    PMEM_PAGE_LOG_BUF* pflush_logbuf;
+
+    recv_buf = pline->recv_line->buf;
+    recv_buf_len = pline->recv_line->len;
+
+    start_addr = pline->recv_diskaddr;
+    end_addr = pline->write_diskaddr;
+    cur_addr = start_addr;
+
+    //we borrow recv_sys value to make the logic simple
+    recv_sys->recovered_lsn = start_addr;
+    recv_sys->recovered_offset = 0;
+    recv_sys->scanned_lsn = end_addr;
+
+    read_off = 0;
+    
+    // pline->recv_diskaddr --> pline->write_diskaddr --> flush_logbuf->cur_off --> logbuf->cur_off
+loop:
+    memset(recv_buf, 0, pline->recv_line->len);
+
+    ///////////////////////////////////////////////////
+    // (1) Scan phase: Build the recv buffer
+    // ////////////////////////////////////////////////
+
+    if (cur_addr < pline->write_diskaddr){
+        //case A: pread n-bytes equal to logbuf size from log file on disk to recv_buf
+        //printf("PMEM_INFO redo line %zu read from log file \n", pline->hashed_id);        
+        scan_len = pline->write_diskaddr - cur_addr;
+
+        if (scan_len > recv_buf_len)
+            scan_len = recv_buf_len;
+        else {
+            //the last read
+            //printf("==> PMEM_INFO the last read in case A scan_len %zu \n", scan_len);
+        }
+        
+        err = pm_log_fil_read(pop, ppl, pline, recv_buf, read_off, scan_len);
+
+        //read the actual buffer len (included the header)
+        actual_len = mach_read_from_4(recv_buf);
+        assert(actual_len > 0);
+        ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
+
+        if (err != DB_SUCCESS){
+            printf("PMEM_ERROR error in pm_log_fil_read() line %zu", pline->hashed_id);
+            return true;
+        }
+
+        //parse log recs in the recv_buf 
+        is_err = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE);
+
+        if (is_err){
+            printf("PMEM_ERROR case A error after pm_ppl_parse_recs() \n");
+            return is_err; 
+        }
+
+        cur_addr += scan_len;
+        read_off += scan_len;
+
+        goto loop; 
+    }
+    
+    //If you reach this point, all log recs on disk are parsed successful. Now parse log recs on NVDIMM 
+    scan_len = 0;
+
+    if (cur_addr < pline->diskaddr){
+        //case B: memcpy from flushing log buffer in NVDIMM to buf
+        pflush_logbuf = D_RW(pline->flush_logbuf);
+
+        src = ppl->p_align + pflush_logbuf->pmemaddr;
+        //scan_len = pflush_logbuf->cur_off;
+        scan_len = pflush_logbuf->size;
+
+        memcpy(recv_buf, src, scan_len);
+
+        actual_len = mach_read_from_4(recv_buf);
+        assert(actual_len > 0);
+        assert(actual_len == pflush_logbuf->cur_off);
+
+        ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
+
+        is_err = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE);
+        if (is_err){
+            printf("PMEM_ERROR case B error after pm_ppl_parse_recs() \n");
+            return is_err; 
+        }
+
+        cur_addr += scan_len;
+    }
+
+    //now copy the last part of log recs in the logbuf 
+    plogbuf = D_RW(pline->logbuf);
+    if (plogbuf->cur_off > 0){
+        //memcpy from log buffer in NVDIMM to recv_buf
+        src = ppl->p_align + plogbuf->pmemaddr;
+        scan_len = plogbuf->cur_off;
+
+        memcpy(recv_buf, src, scan_len);
+        actual_len = scan_len;
+
+        ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
+
+        is_err = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE);
+        if (is_err){
+            printf("PMEM_ERROR case C error after pm_ppl_parse_recs() \n");
+            return is_err; 
+        }
+
+        cur_addr += scan_len;
+    }
+
+    return is_err; 
+}
+
+/*parse log recs from the recv_buf
+ * follow the logic of recv_parse_log_recs()
+ * */
+bool
+pm_ppl_parse_recs(
+		PMEMobjpool*		        pop,
+		PMEM_PAGE_PART_LOG*	        ppl,
+		PMEM_PAGE_LOG_HASHED_LINE*  pline,
+		byte*                       start_ptr,
+		uint64_t                    parse_len
+		)
+{
     byte* ptr;
     byte* end_ptr;
 	bool		single_rec;
@@ -4284,73 +4471,20 @@ pm_ppl_redo_line(
 	lsn_t		new_recovered_lsn;
 	lsn_t		old_lsn;
     uint64_t len;
+    uint64_t recovered_off;
 
-
-    PMEM_PAGE_LOG_BUF* plogbuf;
-    PMEM_PAGE_LOG_BUF* pflush_logbuf;
-
-
+	//store_t		store = STORE_YES;
 	store_t		store = STORE_YES;
 
-    recv_buf = pline->recv_line->buf;
-    recv_buf_len = 0;
-
-    ///////////////////////////////////////////////////
-    // (1) Scan phase: Build the recv buffer
-    // ////////////////////////////////////////////////
-    start_addr = pline->recv_diskaddr;
-    cur_addr = start_addr;
-    
-    if (cur_addr < pline->write_diskaddr){
-        //pread from log file on disk to buf
-        printf("PMEM_INFO redo line %zu read from log file \n", pline->hashed_id);        
-
-        scan_len = pm_log_fil_read(pop, ppl, pline, recv_buf);
-        
-        cur_addr += scan_len;
-    }
-    
-    if (cur_addr < pline->diskaddr){
-        //memcpy from flushing log buffer in NVDIMM to buf
-        pflush_logbuf = D_RW(pline->flush_logbuf);
-
-        src = ppl->p_align + pflush_logbuf->pmemaddr;
-        scan_len = pflush_logbuf->cur_off;
-        memcpy(recv_buf + cur_addr, src, scan_len);
-
-        cur_addr += scan_len;
-    }
-    
-    plogbuf = D_RW(pline->logbuf);
-    if (plogbuf->cur_off > 0){
-        //memcpy from log buffer in NVDIMM to recv_buf
-        src = ppl->p_align + plogbuf->pmemaddr;
-        scan_len = plogbuf->cur_off;
-        memcpy(recv_buf + cur_addr, src, scan_len);
-
-        cur_addr += scan_len;
-    }
-
-    end_addr = cur_addr;
-    recv_buf_len = end_addr - start_addr;
-
-    ///////////////////////////////////////////////////
-    // (2) Parse phase:  simulate recv_parse_log_recs()
-    // ////////////////////////////////////////////////
-    
-    //we borrow recv_sys value to make the logic simple
-    recv_sys->recovered_lsn = start_addr;
-    recv_sys->recovered_offset = 0;
-    recv_sys->scanned_lsn = end_addr;
-
     recovered_off = 0; //alternative of recv_sys->recovered_offset
-    //recovered_off increase for each loop
+
+//parse each log recs, increase the recovered_off after each loop
 loop:
-    ptr = recv_buf + recovered_off;
-    end_ptr = recv_buf + recv_buf_len;
+    ptr = start_ptr + recovered_off;
+    end_ptr = start_ptr + parse_len;
 
     if (ptr == end_ptr) {
-        return false;
+        return false; // ok, done
     }
 
 	switch (*ptr) {
@@ -4385,9 +4519,10 @@ loop:
 			return(true);
 		}
 
-		new_recovered_lsn = recv_calc_lsn_on_data_add(old_lsn, len);
+		//new_recovered_lsn = recv_calc_lsn_on_data_add(old_lsn, len);
+		new_recovered_lsn = old_lsn +  len;
 
-		if (new_recovered_lsn > end_addr) {
+		if (new_recovered_lsn > parse_len) {
             return false;
         }
 
@@ -4480,12 +4615,13 @@ loop:
 			}
 
 			if (only_mlog_file) {
-				new_recovered_lsn = recv_calc_lsn_on_data_add(
-					recv_sys->recovered_lsn, len);
+				//new_recovered_lsn = recv_calc_lsn_on_data_add(
+				//	recv_sys->recovered_lsn, len);
+                
 				mlog_rec_len += len;
 				recovered_off += len;
 				recv_sys->recovered_offset += len;
-				recv_sys->recovered_lsn = new_recovered_lsn;
+				recv_sys->recovered_lsn += len;
 			}
 
 			total_len += len;
@@ -4500,9 +4636,11 @@ loop:
 			}
 
         }//end first for (;;)
-
-		new_recovered_lsn = recv_calc_lsn_on_data_add(
-			recv_sys->recovered_lsn, total_len);
+        //in PPL we simply add total_len
+    
+		//new_recovered_lsn = recv_calc_lsn_on_data_add(
+		//	recv_sys->recovered_lsn, total_len);
+        new_recovered_lsn = recv_sys->recovered_lsn + total_len;
 
 		if (new_recovered_lsn > recv_sys->scanned_lsn) {
 			/* The log record filled a log block, and we require
@@ -4512,7 +4650,7 @@ loop:
 			return(false);
 		}
 
-        ptr = recv_buf + recovered_off;
+        ptr = start_ptr + recovered_off;
 
 		for (;;) {
 			old_lsn = recv_sys->recovered_lsn;
@@ -4539,8 +4677,9 @@ loop:
 
 			recovered_off += len;
 			recv_sys->recovered_offset += len;
-			recv_sys->recovered_lsn
-				= recv_calc_lsn_on_data_add(old_lsn, len);
+			//recv_sys->recovered_lsn
+			//	= recv_calc_lsn_on_data_add(old_lsn, len);
+			recv_sys->recovered_lsn = old_lsn + len;
 			switch (type) {
 			case MLOG_MULTI_REC_END:
 				/* Found the end mark for the records */
@@ -4582,7 +4721,21 @@ loop:
 	goto loop;
 }
 
+/*
+ *Test the header of a log record (from ptr to end_ptr)
+ * */
+void
+pm_ppl_check_input_rec(
+		byte*		    ptr,
+		byte*           end_ptr,
+		mlog_id_t*      type,
+	    ulint*          space,
+		ulint*          page_no
+		)
+{
+   byte* new_ptr = mlog_parse_initial_log_record(ptr, end_ptr, type, space, page_no);
 
+}
 #endif //UNIV_PMEMOBJ_PART_PL
 
 /** Start recovering from a redo log checkpoint.

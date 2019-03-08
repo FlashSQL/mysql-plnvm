@@ -369,36 +369,42 @@ struct ReleaseBlocks {
 		block->page.flush_observer = m_flush_observer;
 
 		if (block->page.oldest_modification == 0) {
-			//simulate buf_flush_insert_into_flush_list()
-
-			ut_ad(!block->page.in_flush_list);
-			ut_d(block->page.in_flush_list = TRUE);
-
-			block->page.oldest_modification = m_start_lsn;
 
 			buf_pool_t*	buf_pool = buf_pool_from_block(block);
+
+			//simulate buf_flush_insert_into_flush_list()
+			lsn_t lsn = m_start_lsn;
 			buf_flush_list_mutex_enter(buf_pool);
-			buf_page_t* first_page = UT_LIST_GET_FIRST(buf_pool->flush_list);
 
-			//if (first_page != NULL) 
-			////printf("PL_NVM_DEBUG: m_start_lsn = %zu first_page->om = %zu first_page->pageLSN = %zu\n", 
-			////		m_start_lsn, first_page->oldest_modification, first_page->newest_modification);
-			//assert(first_page->oldest_modification <= m_start_lsn);
+			/* If we are in the recovery then we need to update the flush
+			   red-black tree as well. */
+			if (buf_pool->flush_rbt != NULL) {
+				buf_flush_list_mutex_exit(buf_pool);
+				buf_flush_insert_sorted_into_flush_list(buf_pool, block, lsn);
+			}
+			else {
+				ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
+				ut_ad(!block->page.in_flush_list);
 
-			UT_LIST_ADD_FIRST(buf_pool->flush_list, &block->page);
-			//simulate incr_flush_list_size_in_bytes
-			buf_pool->stat.flush_list_bytes += block->page.size.physical();
+				ut_d(block->page.in_flush_list = TRUE);
+				block->page.oldest_modification = m_start_lsn;
 
-			buf_flush_list_mutex_exit(buf_pool);
+				UT_LIST_ADD_FIRST(buf_pool->flush_list, &block->page);
+				//simulate incr_flush_list_size_in_bytes
+				buf_pool->stat.flush_list_bytes += block->page.size.physical();
 
-			//buf_flush_insert_into_flush_list(buf_pool, block, start_lsn);
+				buf_flush_list_mutex_exit(buf_pool);
+			}
+			//end simulate buf_flush_insert_into_flush_list()
 		} else {
-			//ut_ad(block->page.oldest_modification <= start_lsn);
+			ut_ad(block->page.oldest_modification <= m_start_lsn);
 		}
 
 		buf_page_mutex_exit(block);
 
 		srv_stats.buf_pool_write_requests.inc();
+		//END simulate buf_flush_note_modification()
+
 #else // original
 		buf_flush_note_modification(block, m_start_lsn,
 					    m_end_lsn, m_flush_observer);
@@ -1029,72 +1035,149 @@ mtr_t::Command::execute()
 #if defined (UNIV_TRACE_FLUSH_TIME)
 	ulint start_time = ut_time_us(NULL);
 #endif
-	ulint	len	= m_impl->m_log.size();
-	ulint	n_recs	= m_impl->m_n_log_recs;
+	ulint			len;
+	ulint			n_recs;
+	fil_space_t*	space;
 
-	trx_t*      trx;
+	trx_t*			trx;
+
+	len	= m_impl->m_log.size();
+	n_recs	= m_impl->m_n_log_recs;
+
 	trx = m_impl->m_parent_trx;
-	
-	//TODO: check if the current log block in PMEM is not enough space for this mtr log, extend the size, see prepare_write()
-	//TODO: handle MLOG_MULTI_REC_END, see prepare_write()
-	
-	if (trx != NULL){
-		// PART_PL WRITE LOG
-		const mtr_buf_t::block_t*	front = m_impl->m_log.front();
-		byte* start_log_ptr = (byte*) front->begin(); 	
-		//tdnguyen test
-#if defined (UNIV_PMEMOBJ_TX_LOG)
-		trx->pm_log_block_id = pm_ptxl_write(
-				gb_pmw->pop,
-				gb_pmw->ptxl,
-				trx->id,
-				start_log_ptr,
-				len,
-				n_recs,
-				m_impl->key_arr,
-				m_impl->LSN_arr,
-				m_impl->size_arr,
-				m_impl->space_arr,
-				m_impl->page_arr,
-				trx->pm_log_block_id);
-#else
-		trx->pm_log_block_id = pm_ppl_write(
-				gb_pmw->pop,
-				gb_pmw->ppl,
-				trx->id,
-				start_log_ptr,
-				len,
-				n_recs,
-				m_impl->key_arr,
-				m_impl->LSN_arr,
-				m_impl->size_arr,
-				trx->pm_log_block_id);
-#endif //UNIV_PMEMOBJ_TX_LOG
-	}
-	else {
-		//printf("in mtr_t::Command::execute() trx is NULL\n");
-	}
 
+	if (len == 0){
+		//m_end_lsn = m_start_lsn = log_sys->lsn;
+		m_end_lsn = m_start_lsn = ut_time_us(NULL);
+		goto skip_prepare;
+	}
+	
+	ut_ad(m_impl->m_n_log_recs == n_recs);
+	/////////////////////////////////////////////////
+	// begin simulate Command::prepare_write()
+	/////////////////////////////////////////////////
 	/*simulate the lsn 
 	 * start lsn is the smallest lsn in the LSN_arr
 	 * end_lsn is the largest lsn in the LSN_arr
 	 * */
-	//m_start_lsn = m_impl->LSN_arr[0];
-	//m_end_lsn = m_impl->LSN_arr[n_recs - 1];
-	ulint cur_time = ut_time_us(NULL);
-	//m_start_lsn = cur_time;
 	m_start_lsn = m_impl->LSN_arr[0] + 1;
 	//m_end_lsn = m_start_lsn + len;
 	m_end_lsn = m_impl->LSN_arr[n_recs - 1] + 1;
 
-	assert(m_start_lsn <= m_end_lsn);
+	ut_ad(m_start_lsn <= m_end_lsn);
 
+	space = m_impl->m_user_space;
+
+	if (space != NULL && is_system_or_undo_tablespace(space->id)) {
+		/* Omit MLOG_FILE_NAME for predefined tablespaces. */
+		space = NULL;
+	}
+
+	//simulate fil_names_write_if_was_clean()
+	bool was_clean;
+	if (space == NULL){
+		was_clean = false;
+	}
+	else{
+		was_clean = space->max_lsn == 0;
+		space->max_lsn = m_end_lsn;
+		if (was_clean) {
+			//call fil_names_write(space, mtr) that wirte MLOG_FILE_NAME REDO log of the first page to mtr heap
+			fil_names_dirty_and_write(space, m_impl->m_mtr);
+		}
+	}
+	//end simulate fil_names_write_if_was_clean()
+	if (was_clean) {
+		/* This mini-transaction was the first one to modify
+		this tablespace since the latest checkpoint, so
+		some MLOG_FILE_NAME records were appended to m_log. */
+		ut_ad(m_impl->m_n_log_recs > n_recs);
+		mlog_catenate_ulint(
+			&m_impl->m_log, MLOG_MULTI_REC_END, MLOG_1BYTE);
+		//update len
+		len = m_impl->m_log.size();
+	}
+	else {
+		/* This was not the first time of dirtying a
+		tablespace since the latest checkpoint. */
+
+		ut_ad(n_recs == m_impl->m_n_log_recs);
+
+		if (n_recs <= 1) {
+			ut_ad(n_recs == 1);
+
+			/* Flag the single log record as the
+			only record in this mini-transaction. */
+			*m_impl->m_log.front()->begin()
+				|= MLOG_SINGLE_REC_FLAG;
+		} else {
+			/* Because this mini-transaction comprises
+			multiple log records, append MLOG_MULTI_REC_END
+			at the end. */
+
+			mlog_catenate_ulint(
+				&m_impl->m_log, MLOG_MULTI_REC_END,
+				MLOG_1BYTE);
+			len++;
+		}
+	}
+
+	/* check and attempt a checkpoint if exceeding capacity */
+	//log_margin_checkpoint_age(len);
+	// We don't need this because when a log buffer in NVDIMM is full we write it to disk
+
+	// end simulate Command::prepare_write()
+	
+	/////////////////////////////////////////////////
+	// begin simulate Command::finish_write()
+	/////////////////////////////////////////////////
+	
+	if (len > 0){
+		if (trx != NULL){
+			// PART_PL WRITE LOG
+			const mtr_buf_t::block_t*	front = m_impl->m_log.front();
+			byte* start_log_ptr = (byte*) front->begin(); 	
+			//tdnguyen test
+#if defined (UNIV_PMEMOBJ_TX_LOG)
+			trx->pm_log_block_id = pm_ptxl_write(
+					gb_pmw->pop,
+					gb_pmw->ptxl,
+					trx->id,
+					start_log_ptr,
+					len,
+					n_recs,
+					m_impl->key_arr,
+					m_impl->LSN_arr,
+					m_impl->size_arr,
+					m_impl->space_arr,
+					m_impl->page_arr,
+					trx->pm_log_block_id);
+#else
+			trx->pm_log_block_id = pm_ppl_write(
+					gb_pmw->pop,
+					gb_pmw->ppl,
+					trx->id,
+					start_log_ptr,
+					len,
+					n_recs,
+					m_impl->key_arr,
+					m_impl->LSN_arr,
+					m_impl->size_arr,
+					trx->pm_log_block_id);
+#endif //UNIV_PMEMOBJ_TX_LOG
+		}
+		else {
+			//printf("in mtr_t::Command::execute() trx is NULL\n");
+		}
+	} //end if(len > 0)
+skip_prepare:
 	//(2) add the block to the flush list 
 	if (m_impl->m_made_dirty) {
 		log_flush_order_mutex_enter();
 	}
 	m_impl->m_mtr->m_commit_lsn = m_end_lsn;
 
+	//update pageLSN in release_blocks()
 	release_blocks();
 
 	if (m_impl->m_made_dirty) {

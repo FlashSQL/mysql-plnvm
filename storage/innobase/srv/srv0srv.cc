@@ -2218,6 +2218,8 @@ srv_master_do_active_tasks(void)
 	/* Make a new checkpoint */
 	if (cur_time % SRV_MASTER_CHECKPOINT_INTERVAL == 0) {
 		srv_main_thread_op_info = "making checkpoint";
+		//tdnguyen test
+		//printf("CKPT: call log_checkpoint(TRUE, FALSE) from srv_master_do_active_tasks()\n");
 		log_checkpoint(TRUE, FALSE);
 		MONITOR_INC_TIME_IN_MICRO_SECS(
 			MONITOR_SRV_CHECKPOINT_MICROSECOND, counter_time);
@@ -2302,6 +2304,8 @@ srv_master_do_idle_tasks(void)
 
 	/* Make a new checkpoint */
 	srv_main_thread_op_info = "making checkpoint";
+	//tdnguyen test
+	//printf("call log_checkpoint from srv_master_do_idle_tasks(TRUE, FALSE)\n");
 	log_checkpoint(TRUE, FALSE);
 	MONITOR_INC_TIME_IN_MICRO_SECS(MONITOR_SRV_CHECKPOINT_MICROSECOND,
 				       counter_time);
@@ -2362,6 +2366,8 @@ srv_master_do_shutdown_tasks(
 func_exit:
 	/* Make a new checkpoint about once in 10 seconds */
 	srv_main_thread_op_info = "making checkpoint";
+	//tdnguyen test
+	//printf("CKPT: call log_checkpoint() from srv_master_do_shutdown_tasks()\n");
 	log_checkpoint(TRUE, FALSE);
 
 	/* Print progress message every 60 seconds during shutdown */

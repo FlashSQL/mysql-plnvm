@@ -3922,6 +3922,8 @@ FlushObserver::flush()
 #if defined (UNIV_PMEMOBJ_PART_PL)
 //Defined in my_pmemobj.h
 
+/////////// FLUSHER /////////////////////
+
 PMEM_LOG_FLUSHER*
 pm_log_flusher_init(
 				const size_t	size) {
@@ -4136,8 +4138,230 @@ retry:
 	OS_THREAD_DUMMY_RETURN;
 }
 
+/////////// END FLUSHER /////////////////////
+
+/////////// REDOER /////////////////////
+
+/*
+ * Init the REDOER
+ * size: The input size, should equal to the number of hashed line
+ * */
+PMEM_LOG_REDOER*
+pm_log_redoer_init(
+				const size_t	size) {
+	PMEM_LOG_REDOER* redoer;
+	ulint i;
+
+	redoer = static_cast <PMEM_LOG_REDOER*> (
+			ut_zalloc_nokey(sizeof(PMEM_LOG_REDOER)));
+
+	mutex_create(LATCH_ID_PM_LOG_REDOER, &redoer->mutex);
+
+	redoer->is_log_req_not_empty = os_event_create("redoer_is_log_req_not_empty");
+	redoer->is_log_req_full = os_event_create("redoer_is_log_req_full");
+	redoer->is_log_all_finished = os_event_create("redoer_is_log_all_finished");
+	redoer->is_log_all_closed = os_event_create("redoer_is_log_all_closed");
+	redoer->size = size;
+	redoer->tail = 0;
+	redoer->n_requested = 0;
+	redoer->is_running = false;
+
+	redoer->hashed_line_arr = static_cast <PMEM_PAGE_LOG_HASHED_LINE**> (	calloc(size, sizeof(PMEM_PAGE_LOG_HASHED_LINE*)));
+	for (i = 0; i < size; i++) {
+		redoer->hashed_line_arr[i] = NULL;
+	}	
+
+	return redoer;
+}
+
+void
+pm_log_redoer_close(
+		PMEM_LOG_REDOER*	redoer) {
+	ulint i;
+	
+	//wait for all workers finish their work
+	while (redoer->n_workers > 0) {
+		os_thread_sleep(10000);
+	}
+
+	for (i = 0; i < redoer->size; i++) {
+		if (redoer->hashed_line_arr[i]){
+			//free(buf->flusher->flush_list_arr[i]);
+			redoer->hashed_line_arr[i] = NULL;
+		}
+			
+	}	
+
+	if (redoer->hashed_line_arr){
+		free(redoer->hashed_line_arr);
+		redoer->hashed_line_arr = NULL;
+	}	
+
+	mutex_destroy(&redoer->mutex);
+
+	os_event_destroy(redoer->is_log_req_not_empty);
+	os_event_destroy(redoer->is_log_req_full);
+
+	os_event_destroy(redoer->is_log_all_finished);
+	os_event_destroy(redoer->is_log_all_closed);
+
+	if(redoer){
+		redoer = NULL;
+		free(redoer);
+	}
+	//printf("free flusher ok\n");
+}
+/*
+ *The coordinator
+ Handle start/stop all workers
+ * */
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_redoer_coordinator)(
+/*===============================================*/
+	void*	arg MY_ATTRIBUTE((unused)))
+			/*!< in: a dummy parameter required by
+			os_thread_create */
+{
+
+
+	my_thread_init();
+
+#ifdef UNIV_PFS_THREAD
+	pfs_register_thread(pm_log_redoer_thread_key);
+#endif /* UNIV_PFS_THREAD */
+
+#ifdef UNIV_DEBUG_THREAD_CREATION
+	ib::info() << "coordinator pm_log_flusher thread running, id "
+		<< os_thread_pf(os_thread_get_curr_id());
+#endif /* UNIV_DEBUG_THREAD_CREATION */
+
+	PMEM_LOG_REDOER* redoer = gb_pmw->ppl->redoer;
+
+	redoer->is_running = true;
+
+	while (!gb_pmw->ppl->is_redoing_done) {
+		os_event_wait(redoer->is_log_all_finished);
+
+		if (srv_shutdown_state != SRV_SHUTDOWN_NONE) {
+			break;
+		}
+		//the workers are idle and the server is running, keep waiting
+		os_event_reset(redoer->is_log_all_finished);
+	} //end while thread
+
+	redoer->is_running = false;
+	//trigger waiting workers to stop
+	os_event_set(redoer->is_log_req_not_empty);
+	//wait for all workers closed
+	printf("wait all redoers close...\n");
+	os_event_wait(redoer->is_log_all_closed);
+
+	printf("all redoers closed\n");
+	my_thread_end();
+
+	os_thread_exit();
+
+	OS_THREAD_DUMMY_RETURN;
+}
+
+/*Worker thread of log redoer.
+ * Managed by the coordinator thread
+ * number of threads are defined in header file
+@return a dummy parameter */
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_redoer_worker)(
+/*==========================================*/
+	void*	arg MY_ATTRIBUTE((unused)))
+			/*!< in: a dummy parameter required by
+			os_thread_create */
+{
+	ulint i;
+
+	PMEM_LOG_REDOER* redoer = gb_pmw->ppl->redoer;
+
+	PMEM_PAGE_LOG_HASHED_LINE* pline = NULL;
+
+	my_thread_init();
+
+	mutex_enter(&redoer->mutex);
+	redoer->n_workers++;
+	os_event_reset(redoer->is_log_all_closed);
+	mutex_exit(&redoer->mutex);
+
+	while (true) {
+		//worker thread wait until there is is_requested signal 
+retry:
+		os_event_wait(redoer->is_log_req_not_empty);
+
+		//waked up, looking for a hashed line and REDO it
+
+		if(redoer->n_remains == 0){
+			//do nothing
+			break;
+		}
+
+		for (i = 0; i < redoer->size; i++) {
+			mutex_enter(&redoer->mutex);
+
+			pline = redoer->hashed_line_arr[i];
+
+			if (pline != NULL && !pline->is_redoing)
+			{
+				pline->is_redoing = true;
+				//do not hold the mutex during REDOing
+				mutex_exit(&redoer->mutex);
+
+				/***this call REDOing for a line ***/
+				printf("PMEM_REDO: start redoing line %zu ...\n", pline->hashed_id);
+				bool is_err = pm_ppl_redo_line(gb_pmw->pop, gb_pmw->ppl, pline);
+				if (is_err){
+					printf("PMEM_REDO: error redoing line %zu \n", pline->hashed_id);
+					assert(0);
+				}
+				printf("PMEM_REDO: end redoing line %zu\n", pline->hashed_id);
+				//test
+				//os_thread_sleep(10000);
+
+				mutex_enter(&redoer->mutex);
+				redoer->hashed_line_arr[i] = NULL;
+				//redoer->n_requested--;
+				redoer->n_remains--;
+
+				if (redoer->n_remains == 0){
+					//this is the last REDO
+					mutex_exit(&redoer->mutex);
+					break;
+				}
+			}
+			mutex_exit(&redoer->mutex);
+		} //end for
+
+		// after this for loop, all lines are either done REDO or REDOing by other threads, this thread has nothing to do
+		break;
+	} //end while thread
+
+	mutex_enter(&redoer->mutex);
+	redoer->n_workers--;
+	if (redoer->n_workers == 0) {
+		printf("The last log redoer is closing\n");
+		//trigger the coordinator (the pm_ppl_redo) to wakeup
+		os_event_set(redoer->is_log_all_finished);
+	}
+	mutex_exit(&redoer->mutex);
+
+	my_thread_end();
+
+	os_thread_exit();
+
+	OS_THREAD_DUMMY_RETURN;
+}
+/////////// END REDOER /////////////////////
+
 #ifdef UNIV_PFS_THREAD
 mysql_pfs_key_t pm_log_flusher_thread_key;
+mysql_pfs_key_t pm_log_redoer_thread_key;
 #endif /* UNIV_PFS_THREAD */
 
 #endif //UNIV_PMEMOBJ_PART_PL

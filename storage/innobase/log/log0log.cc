@@ -379,6 +379,8 @@ log_margin_checkpoint_age(
 		if (!flushed_enough) {
 			os_thread_sleep(100000);
 		}
+		//tdnguyen test
+		//printf("CKPT: call log_checkpoint(true,false) from log_margin_checkpoint_age()\n");
 		log_checkpoint(true, false);
 
 		log_mutex_enter();
@@ -1639,7 +1641,6 @@ log_preflush_pool_modified_pages(
 	    || srv_is_being_started) {
 
 		ulint	n_pages;
-
 		success = buf_flush_lists(ULINT_MAX, new_oldest, &n_pages);
 
 		buf_flush_wait_batch_end(NULL, BUF_FLUSH_LIST);
@@ -1929,7 +1930,7 @@ log_checkpoint(
 	lsn_t	oldest_lsn;
 
 	ut_ad(!srv_read_only_mode);
-
+	
 	if (recv_recovery_is_on()) {
 		recv_apply_hashed_log_recs(TRUE);
 	}
@@ -1947,8 +1948,8 @@ log_checkpoint(
 	}
 #endif /* !_WIN32 */
 
-#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
-//#if !defined (UNIV_TEST_PL)
+//#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
+#if defined (UNIV_PMEMOBJ_PL)
 	//printf("PL DEBUG ====> log_checkpoint()\n");
 	//hot fix bug: when start server recv_recovery_rollback_active() ->
 	// row_merge_drop_temp_indexes() -> que_eval_sql() -> que_run_threads()
@@ -1962,9 +1963,9 @@ log_checkpoint(
 	log_sys->last_checkpoint_lsn = log_sys->next_checkpoint_lsn;
 	log_mutex_exit();
 	return (true);
-//#endif
 	//if the UNIV_TEST_PL is defined, we still does as the original InnoDB
 #endif // UNIV_PMEMOBJ_PL
+
 	log_mutex_enter();
 
 	ut_ad(!recv_no_log_write);
@@ -2059,6 +2060,17 @@ log_checkpoint(
 
 	return(true);
 }
+#if defined (UNIV_PMEMOBJ_PART_PL)
+/*simulate log_checkpoint
+ **/
+bool
+pm_ppl_checkpoint(
+		bool sync,
+		bool write_always)
+{
+
+}
+#endif //UNIV_PMEMOBJ_PART_PL
 
 /** Make a checkpoint at or after a specified LSN.
 @param[in]	lsn		the log sequence number, or LSN_MAX
@@ -2070,6 +2082,8 @@ log_make_checkpoint_at(
 	lsn_t			lsn,
 	bool			write_always)
 {
+	//tdnguyen test
+	//printf("=========== \nCKPT: call log_checkpoint() from log_make_checkpoint_at()\n===========\n");
 	/* Preflush pages synchronously */
 
 	while (!log_preflush_pool_modified_pages(lsn)) {
@@ -2159,6 +2173,9 @@ loop:
 	}
 
 	if (do_checkpoint) {
+		//tdnguyen test
+		//printf("CKPT: call log_checkpoint(%zu, FALSE) from log_checkpoint_margin() checkpoint_age %zu age %zu advance %zu\n",
+		//	   	checkpoint_sync, checkpoint_age, age, advance);
 		log_checkpoint(checkpoint_sync, FALSE);
 
 		if (checkpoint_sync) {

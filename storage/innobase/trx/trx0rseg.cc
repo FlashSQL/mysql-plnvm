@@ -111,6 +111,11 @@ trx_rseg_header_create(
 
 		trx_sysf_rseg_set_page_no(
 			sys_header, rseg_slot_no, page_no, mtr);
+
+		//tdnguyen test
+		printf("===>>> trx_rseg_header_create() create new rseg space %zu page %zu slot_no %zu\n", 
+				space, page_no, rseg_slot_no);
+		//end tdnguyen test
 	}
 
 	return(page_no);

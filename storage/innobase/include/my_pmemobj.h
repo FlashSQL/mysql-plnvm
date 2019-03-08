@@ -190,6 +190,9 @@ typedef struct __pmem_page_log_block PMEM_PAGE_LOG_BLOCK;
 struct __pmem_log_flusher;
 typedef struct __pmem_log_flusher PMEM_LOG_FLUSHER;
 
+struct __pmem_log_redoer;
+typedef struct __pmem_log_redoer PMEM_LOG_REDOER;
+
 struct __pmem_tt;
 typedef struct __pmem_tt PMEM_TT;
 
@@ -497,8 +500,13 @@ struct __pmem_page_part_log {
 	 * */
 
 	os_event_t free_log_pool_event; //event for free_pool
+
 	/*Flusher*/	
 	PMEM_LOG_FLUSHER*	flusher;
+
+	/*Redoer*/	
+	PMEM_LOG_REDOER*	redoer;
+	bool				is_redoing_done;
 
 	/*DRAM Log File*/	
 	uint64_t			log_file_size;
@@ -518,6 +526,7 @@ struct __pmem_page_part_log {
 
 	/*Debug*/
 	FILE*				deb_file;
+
 };
 /*
  * A hashed line has array of log blocks share the same hashed value and log buffer
@@ -542,6 +551,7 @@ struct __pmem_page_log_hashed_line {
 
 	//Recovery, allocate in DRAM when recovery
 	PMEM_RECV_LINE* recv_line;
+	bool			is_redoing;
 
 	/*Statistic info*/
 #if defined(UNIV_PMEMOBJ_PPL_STAT)
@@ -605,6 +615,10 @@ struct __pmem_page_log_block {
 	uint32_t		start_diskaddr;// diskaddr when the first log rec is written 
 };
 
+////////////////     FLUSHER         /////////////////
+/*
+ * FLUSHER - Handle async flus logs to disk
+ * */
 struct __pmem_log_flusher {
 	ib_mutex_t			mutex;
 	//for worker
@@ -621,6 +635,7 @@ struct __pmem_log_flusher {
 	//ulint n_flushing;
 
 	bool is_running;
+	//pointer array
 	PMEM_PAGE_LOG_BUF** flush_list_arr;
 
 };
@@ -630,6 +645,39 @@ pm_log_flusher_init(
 				const size_t	size);
 void
 pm_log_flusher_close(PMEM_LOG_FLUSHER*	flusher);
+////////////////     END FLUSHER   /////////////////
+
+////////////////    REDOER   /////////////////
+/*
+ * Handle parallelism REDOing in recovery
+ * Similar to FLUSHER
+ * */
+struct __pmem_log_redoer {
+	ib_mutex_t			mutex;
+	//for worker
+	os_event_t			is_log_req_not_empty; //signaled when there is a new flushing list added
+	os_event_t			is_log_req_full;
+
+	os_event_t			is_log_all_finished; //signaled when all workers are finished flushing and no pending request 
+	os_event_t			is_log_all_closed; //signaled when all workers are closed 
+	volatile ulint n_workers;
+	//the waiting_list
+	ulint size;
+	ulint tail; //always increase, circled counter, mark where the next line  will be assigned
+	ulint n_requested;
+	ulint n_remains;// number of remain lines need to REDO
+
+	bool is_running;
+	//pointer array
+	PMEM_PAGE_LOG_HASHED_LINE** hashed_line_arr;
+};
+
+PMEM_LOG_REDOER*
+pm_log_redoer_init(
+				const size_t	size);
+void
+pm_log_redoer_close(PMEM_LOG_REDOER*	redoer);
+////////////////    END REDOER   /////////////////
 
 /*Transaction Table Entry*/
 
@@ -912,6 +960,11 @@ pm_log_buf_assign_flusher(
 		PMEM_PAGE_PART_LOG*			ppl,
 		PMEM_PAGE_LOG_BUF*	plogbuf);
 
+void
+pm_recv_assign_redoer(
+		PMEM_PAGE_PART_LOG*			ppl,
+		PMEM_PAGE_LOG_HASHED_LINE*	pline);
+
 //log flusher worker call back
 void 
 pm_log_flush_log_buf(
@@ -946,12 +999,14 @@ pm_log_fil_io(
 		PMEM_PAGE_PART_LOG*		ppl,
 		PMEM_PAGE_LOG_BUF*		plogbuf);
 
-ulint
+dberr_t
 pm_log_fil_read(
 	PMEMobjpool*			pop,
 	PMEM_PAGE_PART_LOG*		ppl,
 	PMEM_PAGE_LOG_HASHED_LINE*		pline,
-	byte* buf
+	byte* buf,
+	uint64_t offset,
+	uint64_t len
 	);
 
 //////////// COMMIT //////////////////
@@ -968,6 +1023,11 @@ pm_ppl_flush_page(
 		PMEM_PAGE_PART_LOG*	ppl,
 		uint64_t			key,
 		uint64_t			pageLSN);
+//////////////// CHECKPOINT ///////////
+bool
+pm_ppl_checkpoint(
+		bool sync,
+		bool write_always);
 
 ////// RECOVERY
 void 
@@ -1002,6 +1062,22 @@ pm_ppl_redo_line(
 		PMEM_PAGE_PART_LOG*	ppl,
 		PMEM_PAGE_LOG_HASHED_LINE* pline);
 
+bool
+pm_ppl_parse_recs(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
+		byte* recv_buf,
+		uint64_t len
+		);
+void
+pm_ppl_check_input_rec(
+		byte*		    ptr,
+		byte*           end_ptr,
+		mlog_id_t*      type,
+	    ulint*          space,
+		ulint*          page_no
+		);
 ////////////// END RECOVERY
 int64_t
 __update_tt_entry_on_write_log(
@@ -1096,6 +1172,15 @@ os_thread_ret_t
 DECLARE_THREAD(pm_log_flusher_worker)(
 		void* arg);
 
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_redoer_coordinator)(
+		void* arg);
+
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_redoer_worker)(
+		void* arg);
 ///////////////// END PER-PAGE LOGGING //////////////////
 
 ////////////// END NEW PARTITIONED LOG /////////////////

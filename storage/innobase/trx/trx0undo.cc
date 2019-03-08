@@ -521,6 +521,16 @@ trx_undo_seg_create(
 
 	trx_rsegf_set_nth_undo(rseg_hdr, slot_no,
 			       page_get_page_no(*undo_page), mtr);
+//tdnguyen test
+	ulint rseg_page_no = page_get_page_no(page_align(rseg_hdr));
+	ulint useg_page_no = page_get_page_no(*undo_page);
+
+	if (rseg_page_no == 6){
+	printf("===>SEG_CREATE: rseg page %zu create UNDO seg page_no %zu type %zu at slot %zu \n",
+		   	rseg_page_no, useg_page_no, type, slot_no);
+	}
+//end tdnguyen test
+
 	*id = slot_no;
 
 	MONITOR_INC(MONITOR_NUM_UNDO_SLOT_USED);
@@ -965,7 +975,12 @@ trx_undo_add_page(
 		      new_page + TRX_UNDO_PAGE_HDR + TRX_UNDO_PAGE_NODE, mtr);
 	undo->size++;
 	rseg->curr_size++;
-
+	
+	//tdnguyen test
+	printf("===>>>> add new UNDO page in RSEG (id %zu page_no %zu) UNDO segment (slot %zu header page_no %zu last page_no %zu size %zu)\n",
+		   	rseg->id, rseg->page_no, undo->id, undo->hdr_page_no, undo->last_page_no);
+	//end tdnguyen test
+	
 	return(new_block);
 }
 
@@ -1273,6 +1288,10 @@ trx_undo_seg_free(
 			rseg_header = trx_rsegf_get(
 				rseg->space, rseg->page_no, rseg->page_size,
 				&mtr);
+			//tdnguyen test
+			if(rseg->space == 0 && rseg->page_no ==6) {
+				printf("===> SEG_FREE: set UNDO page %zu at slot %zu to FIL_NULL (%zu)\n", trx_rsegf_get_nth_undo(rseg_header, undo->id, &mtr), undo->id, FIL_NULL);
+			}
 			trx_rsegf_set_nth_undo(rseg_header, undo->id, FIL_NULL,
 					       &mtr);
 
@@ -1405,7 +1424,9 @@ add_to_list:
 			MONITOR_INC(MONITOR_NUM_UNDO_SLOT_CACHED);
 		}
 	}
-
+	//tdnguyen test
+	printf("==> add UNDO obj when server start RSEG (id %zu page_no %zu) UNDO segment(slot %zu page_no %zu header page_no %zu last page_no %zu trx_id %zu\n", rseg->id, rseg->page_no, id, page_no, undo->hdr_page_no, undo->last_page_no, trx_id);
+	//end tdnguyen test
 	return(undo);
 }
 

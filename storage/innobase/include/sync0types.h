@@ -243,6 +243,7 @@ enum latch_level_t {
 #endif
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	SYNC_LOG_PM_FLUSHER,
+	SYNC_LOG_PM_REDOER,
 #endif
 	SYNC_PURGE_QUEUE,
 	SYNC_TRX_SYS_HEADER,
@@ -344,6 +345,7 @@ enum latch_id_t {
 #endif
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	LATCH_ID_PM_LOG_FLUSHER,
+	LATCH_ID_PM_LOG_REDOER,
 #endif
 	LATCH_ID_TRX_PURGE,
 	LATCH_ID_PURGE_SYS_PQ,

@@ -1042,13 +1042,14 @@ buf_page_hash_get_low(
 {
 	buf_page_t*	bpage;
 
-#ifdef UNIV_DEBUG
-	rw_lock_t*	hash_lock;
-
-	hash_lock = hash_get_lock(buf_pool->page_hash, page_id.fold());
-	ut_ad(rw_lock_own(hash_lock, RW_LOCK_X)
-	      || rw_lock_own(hash_lock, RW_LOCK_S));
-#endif /* UNIV_DEBUG */
+//tdnguyen test remove this for debug
+//#ifdef UNIV_DEBUG
+//	rw_lock_t*	hash_lock;
+//
+//	hash_lock = hash_get_lock(buf_pool->page_hash, page_id.fold());
+//	ut_ad(rw_lock_own(hash_lock, RW_LOCK_X)
+//	      || rw_lock_own(hash_lock, RW_LOCK_S));
+//#endif /* UNIV_DEBUG */
 
 	/* Look for the page in the hash table */
 

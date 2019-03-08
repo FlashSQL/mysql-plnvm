@@ -520,6 +520,7 @@ extern mysql_pfs_key_t	pm_flusher_thread_key;
 #endif
 #if defined (UNIV_PMEMOBJ_PART_PL)
 extern mysql_pfs_key_t	pm_log_flusher_thread_key;
+extern mysql_pfs_key_t	pm_log_redoer_thread_key;
 #endif
 extern mysql_pfs_key_t	recv_writer_thread_key;
 extern mysql_pfs_key_t	srv_error_monitor_thread_key;

@@ -1413,6 +1413,8 @@ sync_latch_meta_init()
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	LATCH_ADD_MUTEX(PM_LOG_FLUSHER, SYNC_LOG_PM_FLUSHER,
 			pm_log_flusher_mutex_key);
+	LATCH_ADD_MUTEX(PM_LOG_REDOER, SYNC_LOG_PM_REDOER,
+			pm_log_redoer_mutex_key);
 #endif
 
 	LATCH_ADD_MUTEX(PURGE_SYS_PQ, SYNC_PURGE_QUEUE,

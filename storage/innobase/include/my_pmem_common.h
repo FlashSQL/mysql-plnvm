@@ -57,6 +57,7 @@ static const size_t PMEM_MAX_DBW_PAGES= 128; // 2 * extent_size
 #define PMEM_MAX_LISTS_PER_BUCKET 2
 //#define PMEM_BUF_THRESHOLD 0.8
 
+#define PMEM_LOG_BUF_HEADER_SIZE 4
 
 enum {
 	PMEM_READ = 1,

@@ -42,6 +42,7 @@ static uint64_t PMEM_TT_MAX_DIRTY_PAGES_PER_TX;
 /*Flush Log*/
 static double PMEM_LOG_BUF_FLUSH_PCT;
 static uint64_t PMEM_LOG_FLUSHER_WAKE_THRESHOLD=5;
+static uint64_t PMEM_LOG_REDOER_WAKE_THRESHOLD=30;
 static uint64_t PMEM_N_LOG_FLUSH_THREADS=32;
 
 /*Log files*/
@@ -1355,8 +1356,6 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 
 	ppl->pmem_alloc_size += ppl->pmem_tt_size;
 
-
-
 	pmemobj_persist(pop, ppl, sizeof(*ppl));
 	return ppl;
 }
@@ -1541,7 +1540,8 @@ pm_page_part_log_bucket_init(
 
 		plogbuf->state = PMEM_LOG_BUF_FREE;
 		plogbuf->size = log_buf_size;
-		plogbuf->cur_off = 0;
+		//plogbuf->cur_off = 0;
+		plogbuf->cur_off = PMEM_LOG_BUF_HEADER_SIZE;
 		plogbuf->self = (pline->logbuf).oid;
 		plogbuf->check = PMEM_AIO_CHECK;
 
@@ -1629,7 +1629,8 @@ __init_page_log_free_pool(
 
 		plogbuf->state = PMEM_LOG_BUF_FREE;
 		plogbuf->size = log_buf_size;
-		plogbuf->cur_off = 0;
+		//plogbuf->cur_off = 0;
+		plogbuf->cur_off = PMEM_LOG_BUF_HEADER_SIZE;
 		plogbuf->self = logbuf.oid;
 		plogbuf->check = PMEM_AIO_CHECK;
 
@@ -2010,7 +2011,7 @@ __update_page_log_block_on_write(
 			//next log block
 		}//end search for exist log block
 
-		//Case A2: If you reach here, then the log block is not exst, write the new one. During the scan, some log block may be reclaimed, search from the begin
+		//Case A2: If you reach here, then the log block is not existed, write the new one. During the scan, some log block may be reclaimed, search from the begin
 
 		//search for a free block to write on O(k)
 		n_try = k;
@@ -2043,7 +2044,7 @@ __update_page_log_block_on_write(
 				//(3) update metadata
 				plog_block->lastLSN = LSN;
 
-				plog_block->count=1;
+				plog_block->count = 1;
 				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
 				return ret;
 			}
@@ -2140,31 +2141,13 @@ __pm_write_log_buf(
 	
 	plogbuf = D_RW(pline->logbuf);
 
-	// (1) Write log rec to log buf
-	if (is_first_write){
-		//Note that we save the offset and diskaddr for the first write of this block
-		plog_block->start_off = plogbuf->cur_off;
-		plog_block->start_diskaddr = pline->diskaddr;
-	}
-
-	log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
-	__pm_write_log_rec_low(pop,
-			log_des,
-			log_src + src_off,
-			rec_size);
-	if (plogbuf->cur_off == 0){
-		//this is the first write on this logbuf
-		plogbuf->state = PMEM_LOG_BUF_IN_USED;
-	}
-	plogbuf->cur_off += rec_size;
-
 	////////////////////////////////////////////
-	// (2) Handle full log buf
+	// (1) Handle full log buf
 	// /////////////////////////////////////////
-	if (plogbuf->cur_off > plogbuf->size * PMEM_LOG_BUF_FLUSH_PCT) {
+	if (plogbuf->cur_off + rec_size > plogbuf->size) {
 
 get_free_buf:
-		// (2.1) Get a free log buf
+		// (1.1) Get a free log buf
 		pfreepool = D_RW(ppl->free_pool);
 
 #if defined(UNIV_PMEMOBJ_PPL_STAT)
@@ -2192,41 +2175,82 @@ get_free_buf:
 		os_event_reset(ppl->free_log_pool_event);
 		pmemobj_rwlock_unlock(pop, &pfreepool->lock);
 		
-		// (2.2) switch the free log buf with the full log buf
+		// (1.2) switch the free log buf with the full log buf
 
 		// save the flushing log buf for recovery
 		TOID_ASSIGN(pline->flush_logbuf, pline->logbuf.oid);
 		//asign new one
 		TOID_ASSIGN(pline->logbuf, free_buf.oid);
 		D_RW(free_buf)->hashed_id = pline->hashed_id; 
-		
-		// (2.3) handle left over after alignment
-		uint64_t end_off = ut_uint64_align_down(
-				plogbuf->cur_off,
-				OS_FILE_LOG_BLOCK_SIZE);
-		uint64_t left_over_size = plogbuf->cur_off - end_off;
-		if (left_over_size > 0){
 
-			byte* src_temp = ppl->p_align + plogbuf->pmemaddr + end_off;
-			byte* des_temp = ppl->p_align + D_RW(free_buf)->pmemaddr + 0;
-			__pm_write_log_rec_low(pop,
-					des_temp,
-					src_temp,
-					left_over_size);
-			D_RW(free_buf)->cur_off = left_over_size;
-			D_RW(free_buf)->state = PMEM_LOG_BUF_IN_USED;
-		}
-		
+		//reserve 4 bytes for log buffer's header
+		assert(D_RW(free_buf)->cur_off == PMEM_LOG_BUF_HEADER_SIZE);
+
 		//move the diskaddr on the line ahead	
-		pline->diskaddr += end_off;
+		//pline->diskaddr += end_off;
+		pline->diskaddr += plogbuf->size;
 
-		// (2.4) assign a pointer in the flusher to the full log buf, this function return immediately 
+		// (1.3)write log rec on new buf
+		log_des = ppl->p_align + D_RW(free_buf)->pmemaddr + D_RW(free_buf)->cur_off;
+
+		if (is_first_write){
+			//Note that we save the offset and diskaddr for the first write of this block
+			plog_block->start_off = D_RW(free_buf)->cur_off;
+			plog_block->start_diskaddr = pline->diskaddr;
+		}
+
+		__pm_write_log_rec_low(pop,
+				log_des,
+				log_src + src_off,
+				rec_size);
+
+		D_RW(free_buf)->cur_off += rec_size;
+		D_RW(free_buf)->state = PMEM_LOG_BUF_IN_USED;
+
+		// (1.4) write acutal log buffer's size to the header
+		byte* header = ppl->p_align + plogbuf->pmemaddr + 0;
+		mach_write_to_4(header, plogbuf->cur_off);
+		// (1.5) assign a pointer in the flusher to the full log buf, this function return immediately 
 		pm_log_buf_assign_flusher(ppl, plogbuf);
 
-		//simply reset
-		//plogbuf->cur_off = 0;		
 	} //end handle full log buf
+	else {	//Regular case
+		// (1) Write log rec to log buf
+		if (is_first_write){
+			//Note that we save the offset and diskaddr for the first write of this block
+			plog_block->start_off = plogbuf->cur_off;
+			plog_block->start_diskaddr = pline->diskaddr;
+		}
 
+		log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
+
+		// Only for debug, check the type of log rec
+		// Get the snipper code from recv_parse_log_rec()
+		byte* ptr;
+		byte* end_ptr;
+		byte* new_ptr;
+		mlog_id_t type;
+		ulint space;
+		ulint page_no;
+
+
+		ptr = log_src + src_off;
+		end_ptr = ptr + rec_size;
+
+		pm_ppl_check_input_rec(ptr, end_ptr, &type, &space, &page_no);
+		//printf("check input rec type %zu space %zu page_no %zu \n", type, space, page_no);
+		// end check type
+
+		__pm_write_log_rec_low(pop,
+				log_des,
+				log_src + src_off,
+				rec_size);
+		if (plogbuf->cur_off == PMEM_LOG_BUF_HEADER_SIZE)		{
+			//this is the first write on this logbuf
+			plogbuf->state = PMEM_LOG_BUF_IN_USED;
+		}
+		plogbuf->cur_off += rec_size;
+	}
 	pmemobj_rwlock_unlock(pop, &pline->lock);
 
 }
@@ -2358,6 +2382,67 @@ pm_log_flush_log_buf(
 }
 
 
+/*
+ * Called by pm_ppl_redo in recovery
+ * Assign the pointer in the redoer to a need-REDO hashed line
+ * Trigger the worker thread if the number of assigned pointers reach a threshold
+ * */
+void
+pm_recv_assign_redoer(
+		PMEM_PAGE_PART_LOG*			ppl,
+		PMEM_PAGE_LOG_HASHED_LINE*	pline) 
+{
+	
+	PMEM_LOG_REDOER* redoer = ppl->redoer;
+
+assign_worker:
+	mutex_enter(&redoer->mutex);
+
+	if (redoer->n_requested == redoer->size) {
+		//all requested slot is full)
+		printf("PMEM_INFO: all redoers are booked, sleep and wait \n");
+		mutex_exit(&redoer->mutex);
+		os_event_wait(redoer->is_log_req_full);	
+		goto assign_worker;	
+	}
+
+	//find an idle thread to assign task
+	int64_t n_try = redoer->size;
+
+	while (n_try > 0) {
+		if (redoer->hashed_line_arr[redoer->tail] == NULL) {
+			//found
+			redoer->hashed_line_arr[redoer->tail] = pline;
+			++redoer->n_requested;
+			//delay calling REDO up to a threshold
+			if (redoer->n_requested >= PMEM_LOG_REDOER_WAKE_THRESHOLD) {
+				os_event_set(redoer->is_log_req_not_empty);
+				//see pm_redoer_worker() --> pm_ppl_redo_line()
+			}
+
+			if (redoer->n_requested >= redoer->size) {
+				os_event_reset(redoer->is_log_req_full);
+			}
+			//for the next 
+			redoer->tail = (redoer->tail + 1) % redoer->size;
+			break;
+		}
+		//circled increase
+		redoer->tail = (redoer->tail + 1) % redoer->size;
+		n_try--;
+	} //end while 
+	//check
+	if (n_try == 0) {
+		/*This imply an logical error 
+		 * */
+		printf("PMEM_ERROR in pm_log_buf_assign_redoer() requested/size = %zu /%zu / %zu\n", redoer->n_requested, redoer->size);
+
+		mutex_exit(&redoer->mutex);
+		assert (n_try);
+	}
+
+	mutex_exit(&redoer->mutex);
+}
 
 /*
  * Write log rec from transaction's heap to NVDIMM
@@ -2420,7 +2505,8 @@ pm_handle_finished_log_buf(
 
 	//reset the log buf
 	plogbuf->state = PMEM_LOG_BUF_FREE;
-	plogbuf->cur_off = 0;
+	//plogbuf->cur_off = 0;
+	plogbuf->cur_off = PMEM_LOG_BUF_HEADER_SIZE;
 	plogbuf->hashed_id = -1;
 	//reset the ref in line
 	TOID_ASSIGN(pline->flush_logbuf, OID_NULL);
@@ -2568,10 +2654,17 @@ __update_page_log_block_on_commit(
 	plog_block = D_RW(log_block);
 	assert(plog_block);
 	
+
 	if (plog_block->bid != bid){
 		printf("error in __update_page_log_block_on_commit plog_block->bid %zu diff. with bid %zu \n ", plog_block->bid, bid);
 		assert(0);
 	}
+
+	if (plog_block->is_free){
+		// If we reclaim a block when flush page without checking the count variable (true in InnoDB), then this case may happen
+		// this block is free due to flush page, do nothing
+		return true;
+	}	
 
 	pmemobj_rwlock_wrlock(pop, &plog_block->lock);
 	if (plog_block->count <= 0){
@@ -2694,13 +2787,16 @@ pm_ppl_flush_page(
 
 			//we no longer assert here, new log recs are written on page during its flushing time
 			//assert(plog_block->lastLSN <= pageLSN);
-
+	
+			/*Note 1: In InnoDB, changes of UNDO page has already captured in REDO log, we don't need to check the count variable to equal to reclaim. However, in other storage engine, count variable may needed
+			 * Note 2: Checkpoint in PPL is naturally done by this reclaim. By reclaiming a block of flush page, the low_watermark is increased.
+			 * */
 			// (2) Check to reclaim this log block
-			if (plog_block->count <= 0){
+			//if (plog_block->count <= 0){
 				if (plog_block->lastLSN <= pageLSN){
 					__reset_page_log_block(plog_block);
 				}
-			}
+			//}
 			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
 			return;
 
