@@ -83,6 +83,11 @@ enum PMEM_LOG_BUF_STATE{
 	PMEM_LOG_BUF_IN_FLUSH = 3,
 };
 
+enum PMEM_REDO_PHASE{
+	PMEM_REDO_PHASE1 = 1,
+	PMEM_REDO_PHASE2 = 2,
+};
+
 enum PMEM_LOG_BLOCK_STATE {
     PMEM_FREE_LOG_BLOCK = 1, //the log block is free, a transaction can write its log records
     PMEM_COMMIT_LOG_BLOCK = 2, // the transaction is either commit or abort

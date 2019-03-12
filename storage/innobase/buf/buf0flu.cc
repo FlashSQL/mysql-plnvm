@@ -1109,7 +1109,12 @@ buf_flush_write_block_low(
 
 #if defined (UNIV_PMEMOBJ_PART_PL) 
 		// PL-NVM without PB-NVM
-		pm_ppl_flush_page(gb_pmw->pop, gb_pmw->ppl, bpage->id.fold(), bpage->newest_modification);
+		pm_ppl_flush_page(
+				gb_pmw->pop, gb_pmw->ppl,
+			   	bpage->id.space(),
+			    bpage->id.page_no(),
+			    bpage->id.fold(),
+				bpage->newest_modification);
 #endif /*UNIV_PMEMOBJ_BUF*/
 
 	/* Disable use of double-write buffer for temporary tablespace.
@@ -4282,6 +4287,7 @@ DECLARE_THREAD(pm_log_redoer_worker)(
 	PMEM_LOG_REDOER* redoer = gb_pmw->ppl->redoer;
 
 	PMEM_PAGE_LOG_HASHED_LINE* pline = NULL;
+	PMEM_RECV_LINE* recv_line = NULL;
 
 	my_thread_init();
 
@@ -4314,13 +4320,26 @@ retry:
 				mutex_exit(&redoer->mutex);
 
 				/***this call REDOing for a line ***/
-				printf("PMEM_REDO: start redoing line %zu ...\n", pline->hashed_id);
-				bool is_err = pm_ppl_redo_line(gb_pmw->pop, gb_pmw->ppl, pline);
-				if (is_err){
-					printf("PMEM_REDO: error redoing line %zu \n", pline->hashed_id);
-					assert(0);
+				if (redoer->phase == PMEM_REDO_PHASE1){
+					printf("PMEM_REDO: start REDO_PHASE1 (scan and parse) line %zu ...\n", pline->hashed_id);
+
+					bool is_err = pm_ppl_redo_line(gb_pmw->pop, gb_pmw->ppl, pline);
+
+					if (is_err){
+						printf("PMEM_REDO: error redoing line %zu \n", pline->hashed_id);
+						assert(0);
+					}
+
+					printf("PMEM_REDO: end REDO_PHASE1 (scan and parse) line %zu\n", pline->hashed_id);
 				}
-				printf("PMEM_REDO: end redoing line %zu\n", pline->hashed_id);
+				else {
+					printf("PMEM_REDO: start REDO_PHASE2 (applying) line %zu ...\n", pline->hashed_id);
+					pm_ppl_recv_apply_hashed_line(
+							gb_pmw->pop, gb_pmw->ppl,
+							pline, pline->recv_line->is_ibuf_avail);
+
+					printf("PMEM_REDO: end REDO_PHASE2 (applying) line %zu\n", pline->hashed_id);
+				}
 				//test
 				//os_thread_sleep(10000);
 

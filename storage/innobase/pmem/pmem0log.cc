@@ -16,6 +16,8 @@
 #include <wchar.h>
 #include <unistd.h> //for access()
 
+#include "mtr0log.h" //for mlog_parse_initial_log_record()
+
 #include "my_pmem_common.h"
 #include "my_pmemobj.h"
 
@@ -1683,6 +1685,7 @@ pm_ppl_write(
 	
 	//Starting from TT is easier and faster
 	ptt = D_RW(ppl->tt);
+
 	assert(ptt != NULL);
 	assert(n_recs > 0);
 
@@ -1799,6 +1802,38 @@ pm_ppl_write(
 	}//end case B
 
 }
+
+PMEM_PAGE_LOG_BLOCK*
+__get_log_block_by_id(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			uint64_t			bid)
+{
+	uint64_t n, k;
+	uint64_t bucket_id, local_id;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+
+
+	n = ppl->n_buckets;
+	k = ppl->n_blocks_per_bucket;
+
+	bucket_id = bid / k;
+	local_id = bid % k;
+
+	TOID_ASSIGN(line, (D_RW(ppl->buckets)[bucket_id]).oid);
+	pline = D_RW(line);
+	TOID_ASSIGN (log_block, (D_RW(pline->arr)[local_id]).oid);
+	plog_block = D_RW(log_block);
+
+	return plog_block;
+}
+
+
 /*
  * Sub-rountine to handle write log
  * Called by pm_ppl_write(), the caller has already acquired the lock on the entry
@@ -1858,19 +1893,40 @@ void __handle_pm_ppl_write_by_entry(
 
 		if (j < pe->n_dp_entries){
 			//pageref already exist, we don't increase count
-			pref->pageLSN = LSN;
+			//Note: Because pm_ppl_flush() may reset a plogblock even though it's count > 0, check for out-of-date
+			PMEM_PAGE_LOG_BLOCK* plog_block =
+				__get_log_block_by_id(pop, ppl, pref->idx);
+			if (plog_block->is_free || plog_block->key == 0){
+				//pref is out-of-date
+				uint64_t new_bid = __update_page_log_block_on_write(
+						pop,
+						ppl,
+						log_src,
+						cur_off,
+						rec_size,
+						key,
+						LSN,
+						pe->eid,
+						-1);
+				pref->key = key;
+				pref->idx = new_bid;
+				pref->pageLSN = LSN;
+			}
+			else{
+				pref->pageLSN = LSN;
 
-			//update log block			
-			__update_page_log_block_on_write(
-					pop,
-					ppl,
-					log_src,
-					cur_off,
-					rec_size,
-					key,
-					LSN,
-					pe->eid,
-					pref->idx);
+				//update log block			
+				__update_page_log_block_on_write(
+						pop,
+						ppl,
+						log_src,
+						cur_off,
+						rec_size,
+						key,
+						LSN,
+						pe->eid,
+						pref->idx);
+			}
 		}
 		else {
 			// new pageref, increase the count
@@ -1959,9 +2015,23 @@ __update_page_log_block_on_write(
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 
 	PMEM_PAGE_LOG_BUF* plogbuf;
+	
+	////tdnguyen test, parset the log rec
+	//mlog_id_t type;
+	//ulint space;
+	//ulint page_no;
 
+	//mlog_parse_initial_log_record(log_src, log_src + rec_size, &type, &space, &page_no);	
+
+
+	//if (type == MLOG_UNDO_INSERT){
+	//	printf("==> PMEM_TEST Add REDO log rec of UNDO page (space %zu, page_no %zu)\n ", space, page_no);
+	//}
+	////end tdnguyen test
+	
 	n = ppl->n_buckets;
 	k = ppl->n_blocks_per_bucket;
+
 	if (block_id == -1) {
 		//Case A: there is no help from fast access, the log block may exist or not. Search from the beginning
 		PMEM_LOG_HASH_KEY(hashed, key, n);
@@ -1974,9 +2044,10 @@ __update_page_log_block_on_write(
 
 		//(1) search for the exist log block O(k)
 		n_try = k;
+
 		PMEM_LOG_HASH_KEY(i, key, k);
+
 		while (n_try > 0){
-		//for (i = 0; i < k; i++){}
 			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
 			plog_block = D_RW(D_RW(pline->arr)[i]);
 			if (!plog_block->is_free &&
@@ -2006,6 +2077,7 @@ __update_page_log_block_on_write(
 				return ret;
 			}
 			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+
 			n_try--;
 			i = (i + 1) % k;
 			//next log block
@@ -2045,7 +2117,9 @@ __update_page_log_block_on_write(
 				plog_block->lastLSN = LSN;
 
 				plog_block->count = 1;
+
 				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+
 				return ret;
 			}
 			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
@@ -2578,9 +2652,18 @@ pm_ppl_commit(
 	for (i = 0; i < pe->n_dp_entries; i++) {
 		pref = D_RW(D_RW(pe->dp_arr)[i]);
 		if (pref->idx >= 0){
-			//update the corresponding log block and try to reclaim it
-			__update_page_log_block_on_commit(
-					pop, ppl, pref, pe->eid);
+
+			//Double-check for out-of-date log_block
+			PMEM_PAGE_LOG_BLOCK* plog_block =
+				__get_log_block_by_id(pop, ppl, pref->idx);
+			if (plog_block->is_free || plog_block->key == 0){
+				pref->idx = -1;
+			}
+			else {
+				//update the corresponding log block and try to reclaim it
+				__update_page_log_block_on_commit(
+						pop, ppl, pref, pe->eid);
+			}
 		}
 
 	} //end for each pageref in the entry
@@ -2738,10 +2821,11 @@ void
 pm_ppl_flush_page(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*	ppl,
+		uint64_t			space,
+		uint64_t			page_no,
 		uint64_t			key,
 		uint64_t			pageLSN) 
 {
-//return;
 	ulint hashed;
 	uint32_t n, k, i, j;
 
@@ -2792,6 +2876,7 @@ pm_ppl_flush_page(
 			 * Note 2: Checkpoint in PPL is naturally done by this reclaim. By reclaiming a block of flush page, the low_watermark is increased.
 			 * */
 			// (2) Check to reclaim this log block
+			//printf("pm_ppl_flush_page (%zu, %zu) key %zu\n bid %zu count %zu", space, page_no, key, plog_block->bid, plog_block->count);
 			//if (plog_block->count <= 0){
 				if (plog_block->lastLSN <= pageLSN){
 					__reset_page_log_block(plog_block);
@@ -2915,6 +3000,30 @@ pm_log_group_free(
 	ut_free (group->file_header_bufs_ptr);
 	ut_free (group->file_header_bufs);
 	ut_free (group);
+}
+
+PMEM_PAGE_LOG_HASHED_LINE*
+pm_ppl_get_line_from_key(
+	PMEMobjpool*                pop,
+	PMEM_PAGE_PART_LOG*         ppl,
+	uint64_t					key)
+{
+	uint32_t n;
+	ulint hashed;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	n = ppl->n_buckets;
+
+	PMEM_LOG_HASH_KEY(hashed, key, n);
+	assert (hashed < n);
+
+	TOID_ASSIGN(line, (D_RW(ppl->buckets)[hashed]).oid);
+	pline = D_RW(line);
+	assert(pline);
+
+	return pline;
 }
 //////////////////// STATISTIC FUNCTIONS//////
 

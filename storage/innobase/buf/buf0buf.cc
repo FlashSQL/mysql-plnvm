@@ -73,6 +73,7 @@ Created 11/5/1995 Heikki Tuuri
 #include <map>
 #include <sstream>
 
+
 my_bool  srv_numa_interleave = FALSE;
 
 #ifdef HAVE_LIBNUMA

@@ -554,7 +554,20 @@ mtr_write_log(
 	log->for_each_block(write_log);
 	log_close();
 }
+#if defined (UNIV_PMEMOBJ_PL)
+uint64_t 
+mtr_t::pmemlog_get_trx_id() {
+	trx_t* trx;
 
+	trx = m_impl.m_parent_trx;
+
+	if (trx != NULL)
+		return trx->id;
+	else
+		return 0;
+	
+}
+#endif 
 /** Start a mini-transaction.
 @param sync		true if it is a synchronous mini-transaction
 @param read_only	true if read only mini-transaction */
@@ -1040,19 +1053,57 @@ mtr_t::Command::execute()
 	fil_space_t*	space;
 
 	trx_t*			trx;
+	
 
 	len	= m_impl->m_log.size();
 	n_recs	= m_impl->m_n_log_recs;
 
 	trx = m_impl->m_parent_trx;
-
+	
 	if (len == 0){
 		//m_end_lsn = m_start_lsn = log_sys->lsn;
 		m_end_lsn = m_start_lsn = ut_time_us(NULL);
 		goto skip_prepare;
 	}
+
+//tdnguyen test
+
+	if (trx == NULL){
+		if (len > 0){
+			ulint i;
+			mlog_id_t type;
+			ulint space;
+			ulint page_no;
+			ulint rec_size;
+			byte* ptr;
+			const mtr_buf_t::block_t*	front = m_impl->m_log.front();
+			byte* start_log_ptr = (byte*) front->begin(); 	
+			ptr = start_log_ptr;
+			type = (mlog_id_t)((ulint)*ptr & ~MLOG_SINGLE_REC_FLAG);
+			printf("mtr::exec trx is NULL while len > 0 n_recs %zu type %zu \n", n_recs, type);
+
+			//for (i = 0; i < n_recs; i++){
+			//	if (i == n_recs - 1){
+			//		rec_size = len - m_impl->size_arr[i];
+			//	}
+			//	else{
+			//		rec_size = m_impl->size_arr[i+1] - m_impl->size_arr[i];
+			//	}
+
+			//	//mlog_parse_initial_log_record(ptr, ptr + rec_size, &type, &space, &page_no);
+			//	printf("mtr::exec trx is NULL while len > 0 n_recs %zu rec %zu type %zu space %zu page %zu \n", n_recs, i, type, space, page_no);
+
+			//	//if (n_recs > 1){
+			//	//	printf("==> TEST in mtr::execute() multi-rec rec %zu type %zu space %zu page %zu trx_id %zu\n", i, type, space, page_no, trx->id);
+			//	//}
+			//	ptr += rec_size;
+			//}
+		}
+	}
+	//end tdnguyen test
 	
 	ut_ad(m_impl->m_n_log_recs == n_recs);
+
 	/////////////////////////////////////////////////
 	// begin simulate Command::prepare_write()
 	/////////////////////////////////////////////////
@@ -1137,22 +1188,25 @@ mtr_t::Command::execute()
 			// PART_PL WRITE LOG
 			const mtr_buf_t::block_t*	front = m_impl->m_log.front();
 			byte* start_log_ptr = (byte*) front->begin(); 	
-			//tdnguyen test
-#if defined (UNIV_PMEMOBJ_TX_LOG)
-			trx->pm_log_block_id = pm_ptxl_write(
-					gb_pmw->pop,
-					gb_pmw->ptxl,
-					trx->id,
-					start_log_ptr,
-					len,
-					n_recs,
-					m_impl->key_arr,
-					m_impl->LSN_arr,
-					m_impl->size_arr,
-					m_impl->space_arr,
-					m_impl->page_arr,
-					trx->pm_log_block_id);
-#else
+			////tdnguyen test
+			//ulint i;
+			//mlog_id_t type;
+			//ulint space;
+			//ulint page_no;
+			//ulint rec_size;
+			//byte* ptr;
+
+			//ptr = start_log_ptr;
+
+			//for (i = 0; i < n_recs; i++){
+			//	rec_size = m_impl->size_arr[i];
+			//	mlog_parse_initial_log_record(ptr, ptr + rec_size, &type, &space, &page_no);
+			//	if (n_recs > 1){
+			//		printf("==> TEST in mtr::execute() multi-rec rec %zu space %zu page %zu trx_id %zu \n", i, space, page_no, trx->id);
+			//	}
+			//	ptr += rec_size;
+			//}
+			////end tdnguyen test
 			trx->pm_log_block_id = pm_ppl_write(
 					gb_pmw->pop,
 					gb_pmw->ppl,
@@ -1164,7 +1218,6 @@ mtr_t::Command::execute()
 					m_impl->LSN_arr,
 					m_impl->size_arr,
 					trx->pm_log_block_id);
-#endif //UNIV_PMEMOBJ_TX_LOG
 		}
 		else {
 			//printf("in mtr_t::Command::execute() trx is NULL\n");

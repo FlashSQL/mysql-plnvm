@@ -172,12 +172,15 @@ struct mtr_t {
 #if defined (UNIV_PMEMOBJ_PL)
 		/* pointer to the parent transaction*/
 		trx_t* m_parent_trx;
+		uint64_t m_trx_id;// id of m_parent_trx, in some case we cannot achieve trx_t but trx_id
 		/* array of space id and page id, length is m_n_log_recs*/
 		uint64_t* key_arr;
 		uint64_t* LSN_arr;
 		uint64_t* page_arr;
 		uint64_t* space_arr;
 		uint64_t* size_arr;
+
+		bool	is_undo_page = false; //redo log for UNDO page
 #endif
 
 		/** memo stack for locks etc. */
@@ -260,6 +263,21 @@ struct mtr_t {
 	{
 		m_impl.m_parent_trx = p;
 	}
+	void pmemlog_set_trx_id(uint64_t id)
+	{
+		m_impl.m_trx_id = id;	
+	}
+	uint64_t pmemlog_get_trx_id();
+
+	void set_is_undo_page(bool val)
+	{
+		m_impl.is_undo_page = val;
+	}
+	bool get_is_undo_page()
+	{
+		return m_impl.is_undo_page;
+	}
+
 #endif 
 	/** @return whether this is an asynchronous mini-transaction. */
 	bool is_async() const

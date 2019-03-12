@@ -198,13 +198,22 @@ mlog_write_initial_log_record_low(
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	uint64_t key = (space_id << 20) + space_id + page_no;
 	mtr->add_key(key);
+
+	//LSN of a log rec is the timestamp
 	mtr->add_LSN(ut_time_us(NULL));
+
 	mtr->add_space(space_id);
 	mtr->add_page(page_no);
-
+	
 	ulint size = mtr->get_log()->size();
 	mtr->add_size(size);
+	
+	//tdnguyen test
+	//if (type == MLOG_UNDO_INSERT){
+	//	uint64_t trx_id = mtr->pmemlog_get_trx_id();
+	//	//printf("mlog_write_initial_log_record_low add log rec for UNDO page (%zu,%zu) trx_id %zu\n",space_id, page_no, trx_id);
 
+	//}
 #endif
 	mtr->added_rec();
 	return(log_ptr);

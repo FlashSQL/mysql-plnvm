@@ -549,7 +549,7 @@ struct __pmem_page_log_hashed_line {
 	uint64_t n_blocks; //the total log block in bucket
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
 
-	//Recovery, allocate in DRAM when recovery
+	//Alternative to recv_sys_t in InnoDB, allocate in DRAM when recovery
 	PMEM_RECV_LINE* recv_line;
 	bool			is_redoing;
 
@@ -660,6 +660,8 @@ struct __pmem_log_redoer {
 
 	os_event_t			is_log_all_finished; //signaled when all workers are finished flushing and no pending request 
 	os_event_t			is_log_all_closed; //signaled when all workers are closed 
+
+	uint16_t			phase;/*1: scan and parse, 2: apply*/
 	volatile ulint n_workers;
 	//the waiting_list
 	ulint size;
@@ -726,10 +728,39 @@ struct __pmem_log_group {
 	byte**				file_header_bufs;
 };
 
-//folow the design of recv_sys_t in InnoDB
+/*
+ * per-line mini recovery system
+ * folow the design of recv_sys_t in InnoDB
+ */
 struct __pmem_recv_line {
+	uint32_t	hashed_id;
+
+	bool		apply_log_recs;
+	bool		apply_batch_on;
+
 	byte*		buf;	/*!< buffer for parsing log records */
 	ulint		len;	/*!< amount of data in buf */
+
+	lsn_t		parse_start_lsn;
+	lsn_t		scanned_lsn;
+	ulint		scanned_checkpoint_no;
+
+	ulint		recovered_offset;
+	lsn_t		recovered_lsn;
+
+	bool		found_corrupt_log;
+	bool		found_corrupt_fs;
+
+	bool		is_ibuf_avail; //used in applying phase
+
+	lsn_t		mlog_checkpoint_lsn;
+
+	mem_heap_t*	heap;	/*!< memory heap of log records and file addresses */
+
+	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
+	ulint		n_addrs;/*!< number of not processed hashed file addresses in the hash table */
+	recv_dblwr_t	dblwr;
+	encryption_list_t* encryption_list;
 };
 
 /////////////// End Per-Page Logging ///////////////////
@@ -936,6 +967,12 @@ __update_page_log_block_on_write(
 			int64_t				eid,
 			int64_t				bid);
 
+PMEM_PAGE_LOG_BLOCK*
+__get_log_block_by_id(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		uint64_t			bid);
+
 /// write log_buf --> full --> assign flusher worker --> handle finish
 static inline void
 __pm_write_log_buf(
@@ -1021,6 +1058,8 @@ void
 pm_ppl_flush_page(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*	ppl,
+		uint64_t			space,
+		uint64_t			page_no,
 		uint64_t			key,
 		uint64_t			pageLSN);
 //////////////// CHECKPOINT ///////////
@@ -1033,7 +1072,8 @@ pm_ppl_checkpoint(
 void 
 pm_ppl_recv_init(
 		PMEMobjpool*		pop,
-		PMEM_PAGE_PART_LOG*	ppl);
+		PMEM_PAGE_PART_LOG*	ppl
+		);
 
 void 
 pm_ppl_recv_end(
@@ -1070,6 +1110,83 @@ pm_ppl_parse_recs(
 		byte* recv_buf,
 		uint64_t len
 		);
+int64_t
+pm_ppl_recv_parse_log_rec(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_RECV_LINE* recv_line,
+	mlog_id_t*	type,
+	byte*		ptr,
+	byte*		end_ptr,
+	ulint*		space,
+	ulint*		page_no,
+	bool		apply,
+	byte**		body);
+
+
+void 
+pm_ppl_recv_line_empty_hash(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_PAGE_LOG_HASHED_LINE* pline);
+
+void
+pm_ppl_recv_add_to_hash_table(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_RECV_LINE* recv_line,
+	mlog_id_t	type,		/*!< in: log record type */
+	ulint		space,		/*!< in: space id */
+	ulint		page_no,	/*!< in: page number */
+	byte*		body,		/*!< in: log record body */
+	byte*		rec_end,	/*!< in: log record end */
+	lsn_t		start_lsn,
+	lsn_t		end_lsn);
+
+recv_addr_t*
+pm_ppl_recv_get_fil_addr_struct(
+	PMEM_RECV_LINE* recv_line,
+	ulint	space,
+	ulint	page_no);
+
+ulint
+pm_ppl_recv_get_max_recovered_lsn(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl);
+
+dberr_t
+pm_ppl_recv_init_crash_recovery_spaces(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	ulint max_recovered_lsn);
+
+
+void
+pm_ppl_recv_recover_page_func(
+	PMEM_RECV_LINE* recv_line,
+	ibool		just_read_in,
+				/*!< in: TRUE if the i/o handler calls
+				this for a freshly read page */
+	buf_block_t*	block);	/*!< in/out: buffer block */
+
+ulint
+pm_ppl_recv_read_in_area(
+	PMEM_RECV_LINE* recv_line,
+	const page_id_t&	page_id);
+
+void
+pm_ppl_recv_apply_hashed_log_recs(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		ibool	allow_ibuf);
+
+void
+pm_ppl_recv_apply_hashed_line(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_PAGE_LOG_HASHED_LINE* pline,
+	ibool	allow_ibuf);
+
 void
 pm_ppl_check_input_rec(
 		byte*		    ptr,
@@ -1106,6 +1223,12 @@ pm_ppl_check_and_reset_tt_entry(
 inline bool
 __is_page_log_block_reclaimable(
 		PMEM_PAGE_LOG_BLOCK* plog_block);
+
+PMEM_PAGE_LOG_HASHED_LINE*
+pm_ppl_get_line_from_key(
+		PMEMobjpool*				pop,
+		PMEM_PAGE_PART_LOG*			ppl,
+		uint64_t key);
 
 /////////////////////// LOG FILES ////////////////////////////
 

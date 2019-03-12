@@ -70,7 +70,15 @@ trx_undof_page_add_undo_rec_log(
 
 		return;
 	}
-
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	const byte* page = (const byte*) ut_align_down(undo_page, UNIV_PAGE_SIZE);
+//	ulint space = mach_read_from_4(page + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
+//	ulint page_no = mach_read_from_4(page + FIL_PAGE_OFFSET);
+//	uint64_t trx_id = mtr->pmemlog_get_trx_id();
+//	
+//	mtr->set_is_undo_page(true);
+//	printf("trx_undof_page_add_undo_rec_log UNDO page space %zu page_no %zu trx_id %zu \n", space, page_no, trx_id);
+//#endif
 	log_end = &log_ptr[11 + 13 + MLOG_BUF_MARGIN];
 	log_ptr = mlog_write_initial_log_record_fast(
 		undo_page, MLOG_UNDO_INSERT, log_ptr, mtr);
@@ -1884,7 +1892,6 @@ trx_undo_report_row_operation(
 	      || (clust_entry && !update && !rec));
 
 	trx = thr_get_trx(thr);
-
 	bool	is_temp_table = dict_table_is_temporary(index->table);
 
 	/* Temporary tables do not go into INFORMATION_SCHEMA.TABLES,
@@ -1917,6 +1924,14 @@ trx_undo_report_row_operation(
 	dict_disable_redo_if_temporary(index->table, &mtr);
 	mutex_enter(&trx->undo_mutex);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//because update UNDO page use different mtr with insert/update operation
+	//we must update the transaction for mtr
+	if (trx != NULL){
+		mtr.pmemlog_set_parent_trx(trx);	
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
 	/* If object is temp-table then select noredo rseg as changes
 	to undo logs don't need REDO logging given that they are not
 	restored on restart as corresponding object doesn't exist on restart.*/

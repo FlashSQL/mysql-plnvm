@@ -2149,7 +2149,12 @@ row_upd_sec_index_entry(
 
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	mtr.pmemlog_set_parent_trx(trx);
+	if (trx != NULL){
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
 	/* Disable REDO logging as lifetime of temp-tables is limited to
 	server or connection lifetime and so REDO information is not needed
 	on restart for recovery.
@@ -2816,6 +2821,12 @@ row_upd_clust_step(
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	mtr.pmemlog_set_parent_trx(trx);
+	if (trx != NULL){
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
 	/* Disable REDO logging as lifetime of temp-tables is limited to
 	server or connection lifetime and so REDO information is not needed
 	on restart for recovery.
