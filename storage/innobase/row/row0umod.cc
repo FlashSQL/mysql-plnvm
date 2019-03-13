@@ -275,6 +275,14 @@ row_undo_mod_clust(
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	trx_t* trx = thr_get_trx(thr);
+	if (trx != NULL){
+		mtr.pmemlog_set_parent_trx(trx);
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
+
 	online = dict_index_is_online_ddl(index);
 	if (online) {
 		ut_ad(node->trx->dict_operation_lock_mode != RW_X_LATCH);
@@ -420,6 +428,15 @@ row_undo_mod_del_mark_or_remove_sec_low(
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	trx_t* trx = thr_get_trx(thr);
+
+	if (trx != NULL){
+		mtr.pmemlog_set_parent_trx(trx);
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
 
 	if (mode == BTR_MODIFY_LEAF) {
 		modify_leaf = true;
@@ -625,6 +642,13 @@ try_again:
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (trx != NULL){
+		mtr.pmemlog_set_parent_trx(trx);
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
 
 	if (!index->is_committed()) {
 		/* The index->online_status may change if the index is

@@ -1595,6 +1595,7 @@ trx_write_serialisation_history(
 		own_noredo_rseg_mutex = true;
 		mtr_start(&temp_mtr);
 		temp_mtr.set_log_mode(MTR_LOG_NO_REDO);
+
 	}
 
 	/* If transaction involves insert then truncate undo logs. */
@@ -2206,34 +2207,28 @@ trx_commit(
 		mtr = NULL;
 	}
 
-#if defined (UNIV_PMEMOBJ_PL)
 #if defined (UNIV_PMEMOBJ_PART_PL)
-		//in this version, just simple set the log block free
+	//trx_commit_low write MLOG_2BYTES, we save the trx and trx_id here
+	if (mtr != NULL){
+		mtr->pmemlog_set_parent_trx(trx);
+		mtr->pmemlog_set_trx_id(trx->id);
+	}
+#endif
+
+	trx_commit_low(trx, mtr);
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
 		if (trx->pm_log_block_id != -1){
-#if defined (UNIV_PMEMOBJ_TX_LOG) //per-tx logging
-			pm_ptxl_commit(
-					gb_pmw->pop,
-					gb_pmw->ptxl,
-					trx->id,
-					trx->pm_log_block_id);
-#else //per-page logging
 			pm_ppl_commit(
 					gb_pmw->pop,
 					gb_pmw->ppl,
 					trx->id,
 					trx->pm_log_block_id);
-#endif //UNIV_PMEMOBJ_TX_LOG
 		}	
-#else
-#if !defined (UNIV_TEST_PL)
-	if( trx->id > 0 && !trx->read_only){
-		//pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx->id);
-		pmemlog_trx_commit(gb_pmw->pop, gb_pmw->pbuf, trx);
-	}
+		else {
+			//printf("===> PMEM_WARN commit a trx with block_id == -1\n");
+		}
 #endif
-#endif //UNIV_PMEMOBJ_PART_PL
-#endif //UNIV_PMEMOBJ_PL
-	trx_commit_low(trx, mtr);
 }
 
 /****************************************************************//**

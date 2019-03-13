@@ -348,11 +348,7 @@ struct ReleaseBlocks {
 	void add_dirty_page_to_flush_list(mtr_memo_slot_t* slot) const
 	{
 		ut_ad(m_end_lsn > 0);
-#if defined (UNIV_PMEMOBJ_PL)
-		ut_ad(m_start_lsn >= 0);
-#else //original
 		ut_ad(m_start_lsn > 0);
-#endif
 
 		buf_block_t*	block;
 
@@ -599,6 +595,7 @@ mtr_t::start(bool sync, bool read_only)
 	m_impl.m_flush_observer = NULL;
 #if defined (UNIV_PMEMOBJ_PL)
 	m_impl.m_parent_trx = NULL;
+	m_impl.m_trx_id = 0;
 	m_impl.key_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 	m_impl.LSN_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 	m_impl.space_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
@@ -1054,6 +1051,8 @@ mtr_t::Command::execute()
 
 	trx_t*			trx;
 	
+	const mtr_buf_t::block_t*	front = m_impl->m_log.front();
+	byte* start_log_ptr = (byte*) front->begin(); 	
 
 	len	= m_impl->m_log.size();
 	n_recs	= m_impl->m_n_log_recs;
@@ -1067,37 +1066,24 @@ mtr_t::Command::execute()
 	}
 
 //tdnguyen test
+	mlog_id_t type;
+	byte* ptr;
+	ptr = start_log_ptr;
+	type = (mlog_id_t)((ulint)*ptr & ~MLOG_SINGLE_REC_FLAG);
 
 	if (trx == NULL){
 		if (len > 0){
-			ulint i;
-			mlog_id_t type;
-			ulint space;
-			ulint page_no;
-			ulint rec_size;
-			byte* ptr;
-			const mtr_buf_t::block_t*	front = m_impl->m_log.front();
-			byte* start_log_ptr = (byte*) front->begin(); 	
-			ptr = start_log_ptr;
-			type = (mlog_id_t)((ulint)*ptr & ~MLOG_SINGLE_REC_FLAG);
-			printf("mtr::exec trx is NULL while len > 0 n_recs %zu type %zu \n", n_recs, type);
+			//check what we miss from capture log
+			if (type > 8){
+				printf("mtr::exec trx is NULL while len > 0 n_recs %zu type %zu \n", n_recs, type);
+			}
+		}
+	}
+	else{
+		//test trx_id == 0
+		if (trx->id == 0 && len > 0){
+			printf("mtr::exec trx->id is ZERO while trx_id is %zu len > 0 n_recs %zu type %zu \n", m_impl->m_trx_id,  n_recs, type);
 
-			//for (i = 0; i < n_recs; i++){
-			//	if (i == n_recs - 1){
-			//		rec_size = len - m_impl->size_arr[i];
-			//	}
-			//	else{
-			//		rec_size = m_impl->size_arr[i+1] - m_impl->size_arr[i];
-			//	}
-
-			//	//mlog_parse_initial_log_record(ptr, ptr + rec_size, &type, &space, &page_no);
-			//	printf("mtr::exec trx is NULL while len > 0 n_recs %zu rec %zu type %zu space %zu page %zu \n", n_recs, i, type, space, page_no);
-
-			//	//if (n_recs > 1){
-			//	//	printf("==> TEST in mtr::execute() multi-rec rec %zu type %zu space %zu page %zu trx_id %zu\n", i, type, space, page_no, trx->id);
-			//	//}
-			//	ptr += rec_size;
-			//}
 		}
 	}
 	//end tdnguyen test
@@ -1186,8 +1172,8 @@ mtr_t::Command::execute()
 	if (len > 0){
 		if (trx != NULL){
 			// PART_PL WRITE LOG
-			const mtr_buf_t::block_t*	front = m_impl->m_log.front();
-			byte* start_log_ptr = (byte*) front->begin(); 	
+			//const mtr_buf_t::block_t*	front = m_impl->m_log.front();
+			//byte* start_log_ptr = (byte*) front->begin(); 	
 			////tdnguyen test
 			//ulint i;
 			//mlog_id_t type;
@@ -1207,6 +1193,8 @@ mtr_t::Command::execute()
 			//	ptr += rec_size;
 			//}
 			////end tdnguyen test
+
+			//fix node->trx->id == 0 even though node->trx_id != 0 in row_purge()
 			trx->pm_log_block_id = pm_ppl_write(
 					gb_pmw->pop,
 					gb_pmw->ppl,

@@ -53,6 +53,10 @@ Created 11/29/1995 Heikki Tuuri
 
 #include <my_aes.h>
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+#include "trx0trx.h" //for trx_t
+#endif 
+
 /** Returns an extent to the free list of a space.
 @param[in]	page_id		page id in the extent
 @param[in]	page_size	page size
@@ -1676,6 +1680,15 @@ fsp_fill_free_list(
 
 				mtr_start(&ibuf_mtr);
 				ibuf_mtr.set_named_space(space);
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+				//type 59 MLOG_INIT_FILE_PAGE2
+				trx_t* trx = mtr->pmemlog_get_parent_trx();
+				if (trx != NULL){
+					ibuf_mtr.pmemlog_set_parent_trx(trx);
+					ibuf_mtr.pmemlog_set_trx_id(trx->id);
+				}
+#endif
 
 				/* Avoid logging while truncate table
 				fix-up is active. */

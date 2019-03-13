@@ -147,6 +147,17 @@ row_purge_remove_clust_if_poss_low(
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (node->trx != NULL){
+		mtr.pmemlog_set_trx_id(node->trx_id);
+
+		if (node->trx_id != 0 && node->trx->id == 0)
+			node->trx->id = node->trx_id;
+
+		mtr.pmemlog_set_parent_trx(node->trx);
+	}
+#endif
+
 	if (!row_purge_reposition_pcur(mode, node, &mtr)) {
 		/* The record was already removed. */
 		goto func_exit;
@@ -854,7 +865,6 @@ row_purge_parse_undo_rec(
 					       &info_bits);
 	node->table = NULL;
 	node->trx_id = trx_id;
-
 	/* Prevent DROP TABLE etc. from running when we are doing the purge
 	for this row */
 
@@ -943,6 +953,9 @@ err_exit:
 				       node->heap);
 
 	trx = thr_get_trx(thr);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	node->trx = trx;
+#endif
 
 	ptr = trx_undo_update_rec_get_update(ptr, clust_index, type, trx_id,
 					     roll_ptr, info_bits, trx,

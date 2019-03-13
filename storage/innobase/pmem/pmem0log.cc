@@ -1206,7 +1206,7 @@ pm_wrapper_page_log_alloc_or_open(
 		printf("\n=================================\n Footprint of PAGE part-log:\n");
 		printf("Log area %zu x %zu (B) = \t\t %f (MB) \n", n_log_bufs, PMEM_LOG_BUF_SIZE, (n_log_bufs * PMEM_LOG_BUF_SIZE * 1.0)/(1024*1024) );
 		printf("PAGE-Log metadata: %zu x %zu = \t %f (MB)\n", PMEM_N_LOG_BUCKETS, PMEM_N_BLOCKS_PER_BUCKET, (pmw->ppl->pmem_page_log_size * 1.0)/(1024*1024));
-		printf("TT metadata, %zu x %zu = \t\t %f (MB)\n", PMEM_TT_N_LINES, PMEM_TT_N_ENTRIES_PER_LINE, (pmw->ppl->pmem_tt_size * 1.0) / (1024*1024));
+		printf("TT metadata, %zu x %zu x %zu = \t\t %f (MB)\n", PMEM_TT_N_LINES, PMEM_TT_N_ENTRIES_PER_LINE, PMEM_TT_MAX_DIRTY_PAGES_PER_TX, (pmw->ppl->pmem_tt_size * 1.0) / (1024*1024));
 		printf("Total NVDIMM allocated = \t\t %f (MB)\n", (pmw->ppl->pmem_alloc_size * 1.0)/ (1024*1024));
 		float log_file_size_MB = PMEM_LOG_FILE_SIZE * 4 * 1024 * 1.0 / (1024 * 1024);
 		printf("Log files %zu x %f (MB) = \t %f (MB)\n", PMEM_N_LOG_BUCKETS, log_file_size_MB, (PMEM_N_LOG_BUCKETS * log_file_size_MB));
@@ -1388,6 +1388,7 @@ __init_tt(
 	//allocate the buckets (hashed lines)
 	ptt->n_buckets = n;
 	ptt->n_entries_per_bucket = k;
+	ptt->n_pref_per_entry = pages_per_tx;
 
 	POBJ_ALLOC(pop,
 				&ptt->buckets,
@@ -1395,6 +1396,7 @@ __init_tt(
 				sizeof(TOID(PMEM_TT_HASHED_LINE)) * n,
 				NULL,
 				NULL);
+
 	ppl->pmem_tt_size += sizeof(TOID(PMEM_TT_HASHED_LINE)) * n;
 
 	if (TOID_IS_NULL(ptt->buckets)) {
@@ -1407,9 +1409,11 @@ __init_tt(
 				PMEM_TT_HASHED_LINE);
 
 		ppl->pmem_tt_size += sizeof(PMEM_TT_HASHED_LINE);
+
 		if (TOID_IS_NULL(D_RW(ptt->buckets)[i])) {
 			fprintf(stderr, "POBJ_ALLOC\n");
 		}
+
 		pline = D_RW(D_RW(ptt->buckets)[i]);
 
 		pline->hashed_id = i;
@@ -1422,16 +1426,20 @@ __init_tt(
 				sizeof(TOID(PMEM_TT_ENTRY)) * k,
 				NULL,
 				NULL);
+
 		ppl->pmem_tt_size += sizeof(TOID(PMEM_TT_ENTRY))* k;
 		//for each entry in the line
 		for (j = 0; j < k; j++) {
 			POBJ_ZNEW(pop,
 					&D_RW(pline->arr)[j],
 					PMEM_TT_ENTRY);
+
 			ppl->pmem_tt_size += sizeof(PMEM_TT_ENTRY);
+
 			if (TOID_IS_NULL(D_RW(pline->arr)[j])) {
 				fprintf(stderr, "POBJ_ZNEW\n");
 			}
+
 			pe = D_RW(D_RW(pline->arr)[j]);
 
 			pe->state = PMEM_TX_FREE;
@@ -1458,11 +1466,79 @@ __init_tt(
 				D_RW(D_RW(pe->dp_arr)[i_temp])->pageLSN = 0;
 			}
 			pe->n_dp_entries = 0;
+			pe->max_dp_entries = pages_per_tx;
 			ppl->pmem_tt_size += sizeof(PMEM_PAGE_REF) * pages_per_tx;
 		} //end for each entry
 	}// end for each line
 }
 
+void __reset_TT_entry(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_TT_ENTRY* pe)
+{
+	uint64_t i;
+	PMEM_PAGE_REF* pref;
+
+	PMEM_TT* ptt = D_RW(ppl->tt);
+
+	pe->tid = 0;
+	pe->state = PMEM_TX_FREE;
+
+	//TODO: what happend for pe that is realloc?
+	// (pe->max_dp_entries > ptt->n_pref_per_entry)
+	
+	for (i = 0; i < pe->n_dp_entries; i++) {
+		pref = D_RW(D_RW(pe->dp_arr)[i]);
+		pref->key = 0;
+		pref->idx = -1;
+		pref->pageLSN = 0;
+	}
+
+	pe->n_dp_entries = 0;
+}
+
+/*
+ * reallocate a full pe
+ * pop <in>
+ * ppl <in>
+ * pe <in/out>
+ * new_size <in>
+ * */
+void __realloc_TT_entry(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_TT_ENTRY*			pe,
+		uint64_t				new_size)
+{
+	uint64_t i;
+	
+	//we only reallocate up
+	assert (pe->max_dp_entries < new_size);
+
+	POBJ_REALLOC(pop,
+			&pe->dp_arr,
+			TOID(PMEM_PAGE_REF),
+			sizeof(TOID(PMEM_PAGE_REF)) * new_size);
+
+	if (pe->max_dp_entries < new_size){
+		
+		for (i = pe->max_dp_entries; i < new_size; i++){
+			POBJ_ZNEW(pop,
+					&D_RW(pe->dp_arr)[i],
+					PMEM_PAGE_REF);	
+
+			D_RW(D_RW(pe->dp_arr)[i])->key = 0;
+			D_RW(D_RW(pe->dp_arr)[i])->idx = -1;
+			D_RW(D_RW(pe->dp_arr)[i])->pageLSN = 0;
+		}
+
+		ppl->pmem_tt_size += sizeof(PMEM_PAGE_REF) * (new_size - pe->max_dp_entries);
+		pe->max_dp_entries = new_size;
+
+
+	}
+}
 
 void 
 pm_page_part_log_bucket_init(
@@ -1896,23 +1972,8 @@ void __handle_pm_ppl_write_by_entry(
 			//Note: Because pm_ppl_flush() may reset a plogblock even though it's count > 0, check for out-of-date
 			PMEM_PAGE_LOG_BLOCK* plog_block =
 				__get_log_block_by_id(pop, ppl, pref->idx);
-			if (plog_block->is_free || plog_block->key == 0){
-				//pref is out-of-date
-				uint64_t new_bid = __update_page_log_block_on_write(
-						pop,
-						ppl,
-						log_src,
-						cur_off,
-						rec_size,
-						key,
-						LSN,
-						pe->eid,
-						-1);
-				pref->key = key;
-				pref->idx = new_bid;
-				pref->pageLSN = LSN;
-			}
-			else{
+			if (!plog_block->is_free &&
+					plog_block->key == key){
 				pref->pageLSN = LSN;
 
 				//update log block			
@@ -1927,6 +1988,27 @@ void __handle_pm_ppl_write_by_entry(
 						pe->eid,
 						pref->idx);
 			}
+			else{
+				//pref is out-of-date, the plog_block is either reset now or the key is not match (another trx has occupied the reset plog_block)
+
+				pref->idx = -1;
+
+				uint64_t new_bid = __update_page_log_block_on_write(
+						pop,
+						ppl,
+						log_src,
+						cur_off,
+						rec_size,
+						key,
+						LSN,
+						pe->eid,
+						-1);
+
+				//update pref
+				pref->key = key;
+				pref->idx = new_bid;
+				pref->pageLSN = LSN;
+			}
 		}
 		else {
 			// new pageref, increase the count
@@ -1940,6 +2022,25 @@ void __handle_pm_ppl_write_by_entry(
 			}
 
 			if (j == pe->n_dp_entries){
+
+				//pe is full
+				if (pe->n_dp_entries == pe->max_dp_entries){
+					uint64_t old_size = pe->max_dp_entries;
+					//Realloc double size
+					__realloc_TT_entry(pop, ppl, pe, pe->max_dp_entries * 2);
+
+					mlog_id_t type;
+					type = (mlog_id_t)((ulint)*log_src & ~MLOG_SINGLE_REC_FLAG);
+					//printf("TRACE FOR DEBUG: trx_id %zu\n", pe->tid);
+					//for (j = 0; j < pe->n_dp_entries; j++) {
+					//	pref = D_RW(D_RW(pe->dp_arr)[j]);
+					//	printf("\t\t pref %zu key %zu index %zu\n ", j, pref->key, pref->idx);
+					//} //end for each pageref in entry
+
+					printf("\n\nREALLOC a PMEM_TT_ENTRY from %zu to %zu (eid %zu tid %zu log type %zu) \n", old_size, pe->max_dp_entries, pe->eid, pe->tid, type);
+					//assert(0);
+				}
+
 				pref = D_RW(D_RW(pe->dp_arr)[j]);
 				pe->n_dp_entries++;
 			}
@@ -2311,7 +2412,7 @@ get_free_buf:
 		ptr = log_src + src_off;
 		end_ptr = ptr + rec_size;
 
-		pm_ppl_check_input_rec(ptr, end_ptr, &type, &space, &page_no);
+		//pm_ppl_check_input_rec(ptr, end_ptr, &type, &space, &page_no);
 		//printf("check input rec type %zu space %zu page_no %zu \n", type, space, page_no);
 		// end check type
 
@@ -2669,27 +2770,11 @@ pm_ppl_commit(
 	} //end for each pageref in the entry
 
 	//we reset the TT entry on commit 
-	__reset_TT_entry(pe);
+	__reset_TT_entry(pop, ppl, pe);
 
 	pmemobj_rwlock_unlock(pop, &pe->lock);
 }
 
-void __reset_TT_entry(PMEM_TT_ENTRY* pe)
-{
-	uint64_t i;
-	PMEM_PAGE_REF* pref;
-	
-	pe->tid = 0;
-	pe->state = PMEM_TX_FREE;
-
-	for (i = 0; i < pe->n_dp_entries; i++) {
-		pref = D_RW(D_RW(pe->dp_arr)[i]);
-		pref->key = 0;
-		pref->idx = -1;
-		pref->pageLSN = 0;
-	}
-	pe->n_dp_entries = 0;
-}
 
 /*
  * Update the page log block on commit

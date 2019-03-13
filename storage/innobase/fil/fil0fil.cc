@@ -5847,11 +5847,11 @@ fil_io(
 #else /* UNIV_HOTBACKUP */
 	/* Queue the aio request */
 //tdnguyen test
-	if (page_id.space() == 0){
-		if (page_id.page_no() == 6){
-			pm_ppl_test_write_rseg(req_type, page_id, (byte*) buf, page_size.physical());
-		}
-	}
+	//if (page_id.space() == 0){
+	//	if (page_id.page_no() == 6){
+	//		pm_ppl_test_write_rseg(req_type, page_id, (byte*) buf, page_size.physical());
+	//	}
+	//}
 //end tdnguyen test
 	err = os_aio(
 		req_type,
@@ -5970,7 +5970,9 @@ pm_ppl_test_write_rseg(
 	}
 	//Now follow the logic in trx_undo_mem_create_at_db_start() to get other info
 	page_header = undo_page + TRX_UNDO_PAGE_HDR;
-	type = mtr_read_ulint(page_header + TRX_UNDO_PAGE_TYPE, MLOG_2BYTES, &mtr);
+
+	//type = mtr_read_ulint(page_header + TRX_UNDO_PAGE_TYPE, MLOG_2BYTES, &mtr);
+	type = mach_read_ulint(page_header + TRX_UNDO_PAGE_TYPE, MLOG_2BYTES);
 
 	seg_header = undo_page + TRX_UNDO_SEG_HDR;
 

@@ -1800,6 +1800,16 @@ trx_undo_assign_undo(
 	ut_ad(mutex_own(&(trx->undo_mutex)));
 
 	mtr_start(&mtr);
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//Note that update RSEG page, update UNDO page, and update user data page  use different mtr
+	//we must update the transaction for mtr
+	if (trx != NULL){
+		mtr.pmemlog_set_parent_trx(trx);	
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
+
 	if (&trx->rsegs.m_noredo == undo_ptr) {
 		mtr.set_log_mode(MTR_LOG_NO_REDO);;
 	} else {

@@ -424,12 +424,6 @@ struct __pmem_tx_log_block {
 	
 };
 
-// Dirty Page Entry Ref in the log block
-struct __pmem_page_ref {
-	uint64_t	key; //fold of page_id_t.fold() in InnoDB
-	int64_t		idx; // index of the entry in DPT
-	uint64_t	pageLSN; //latest LSN on this page caused by the host transction, this value used in reclaiming logs
-};
 
 //Dirty Page Table Entry
 struct __pmem_dpt_entry {
@@ -487,13 +481,13 @@ struct __pmem_page_part_log {
 	// Transaction Table
 	TOID(PMEM_TT) tt; // transaction table	
 
-
 	bool		is_new;
 	/*log area as hash table*/
 	uint64_t			n_buckets; //# of buckets
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_HASHED_LINE)) buckets;
 
 	uint64_t			n_blocks_per_bucket; //# load_factor, of log block per bucket
+
 
 	/* 
 	 * DRAM objects, alloc every time the server start
@@ -683,6 +677,13 @@ pm_log_redoer_close(PMEM_LOG_REDOER*	redoer);
 
 /*Transaction Table Entry*/
 
+// Dirty Page Entry Ref in the log block
+struct __pmem_page_ref {
+	uint64_t	key; //fold of page_id_t.fold() in InnoDB
+	int64_t		idx; // index of the entry in DPT
+	uint64_t	pageLSN; //latest LSN on this page caused by the host transction, this value used in reclaiming logs
+};
+
 struct __pmem_tt_entry {
 	PMEMrwlock		lock;
 	uint64_t		eid; //block id
@@ -692,6 +693,7 @@ struct __pmem_tt_entry {
 	/*dirty page array consists of (key, bid) pair of dirty pages caused by this transaction*/
 	TOID_ARRAY(TOID(PMEM_PAGE_REF))		dp_arr;
 	uint64_t							n_dp_entries; 
+	uint64_t							max_dp_entries; //this value may differ to n_pref_per_entry in PMEM_TT due to the realloc mechanism
 };
 
 struct __pmem_tt_hashed_line {
@@ -704,9 +706,11 @@ struct __pmem_tt_hashed_line {
 };
 
 struct __pmem_tt {
-	uint64_t	n_buckets; 
-	uint64_t	n_entries_per_bucket;
 	TOID_ARRAY(TOID(PMEM_TT_HASHED_LINE)) buckets;
+	uint64_t	n_buckets; 
+
+	uint64_t	n_entries_per_bucket;
+	uint64_t	n_pref_per_entry;
 };
 
 struct __pmem_log_group {
@@ -1210,7 +1214,17 @@ __update_page_log_block_on_commit(
 		PMEM_PAGE_REF*				pref,
 		int64_t						eid);
 void 
-__reset_TT_entry(PMEM_TT_ENTRY* pe);
+__reset_TT_entry(
+		PMEMobjpool*				pop,
+		PMEM_PAGE_PART_LOG*			ppl,
+		PMEM_TT_ENTRY*				pe);
+void 
+__realloc_TT_entry(
+		PMEMobjpool*				pop,
+		PMEM_PAGE_PART_LOG*			ppl,
+		PMEM_TT_ENTRY*				pe,
+		uint64_t					new_size);
+
 void 
 __reset_page_log_block(PMEM_PAGE_LOG_BLOCK* plog_block);
 

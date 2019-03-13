@@ -115,6 +115,9 @@ struct purge_node_t{
 				clustered index record */
 	ibool		done;	/* Debug flag */
 	trx_id_t	trx_id;	/*!< trx id for this purging record */
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	trx_t*		trx; /*pointer to transaction*/
+#endif
 
 #ifdef UNIV_DEBUG
 	/***********************************************************//**

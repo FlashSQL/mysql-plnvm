@@ -83,6 +83,13 @@ row_undo_ins_remove_clust_rec(
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (node->trx != NULL){
+		mtr.pmemlog_set_parent_trx(node->trx);
+		mtr.pmemlog_set_trx_id(node->trx->id);
+	}
+#endif
+
 	/* This is similar to row_undo_mod_clust(). The DDL thread may
 	already have copied this row from the log to the new table.
 	We must log the removal, so that the row will be correctly
@@ -132,6 +139,12 @@ row_undo_ins_remove_clust_rec(
 
 		mtr_start(&mtr);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (node->trx != NULL){
+		mtr.pmemlog_set_parent_trx(node->trx);
+		mtr.pmemlog_set_trx_id(node->trx->id);
+	}
+#endif
 		success = btr_pcur_restore_position(
 			BTR_MODIFY_LEAF, &node->pcur, &mtr);
 		ut_a(success);
@@ -149,6 +162,12 @@ retry:
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (node->trx != NULL){
+		mtr.pmemlog_set_parent_trx(node->trx);
+		mtr.pmemlog_set_trx_id(node->trx->id);
+	}
+#endif
 	success = btr_pcur_restore_position(
 			BTR_MODIFY_TREE | BTR_LATCH_FOR_DELETE,
 			&node->pcur, &mtr);
@@ -205,6 +224,14 @@ row_undo_ins_remove_sec_low(
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	trx_t* trx = thr_get_trx(thr); 
+
+	if (trx != NULL){
+		mtr.pmemlog_set_parent_trx(trx);
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
 
 	if (mode == BTR_MODIFY_LEAF) {
 		mode = BTR_MODIFY_LEAF | BTR_ALREADY_S_LATCHED;
