@@ -31,6 +31,7 @@
 #include "ut0new.h"
 
 #include "trx0trx.h" //for trx_t
+#include "dyn0buf.h" // for mtr_buf_t
 
 //#include "pmem_log.h"
 #include <libpmemobj.h>
@@ -512,7 +513,7 @@ struct __pmem_page_part_log {
 	/*Statistic info*/	
 	//log area
 	uint64_t			pmem_alloc_size;
-
+	
 	//metadata
 	uint64_t			pmem_page_log_size;
 	uint64_t			pmem_page_log_free_pool_size;
@@ -538,6 +539,7 @@ struct __pmem_page_log_hashed_line {
 	/* test */
 	uint64_t		recv_diskaddr; //the diskaddr begin the recover, min of log blocks diskaddr
 	uint64_t		recv_off; //the offset begin the recover
+	uint64_t		recv_lsn; //min lsn of block's beginLSN in this line
 	/*end test */
 
 	uint64_t n_blocks; //the total log block in bucket
@@ -580,6 +582,8 @@ struct __pmem_page_log_buf {
 
 	int					check; //for AIO
 	
+	uint64_t		diskaddr; //write address assigned when the buffer is full
+
 	//link with the list free pool
 	POBJ_LIST_ENTRY(PMEM_PAGE_LOG_BUF) list_entries;
 };
@@ -604,6 +608,7 @@ struct __pmem_page_log_block {
 
 	/*LSN */
 	uint64_t		pageLSN; // pageLSN of the NVM-page
+	uint64_t		firstLSN; // LSN of the first log record
 	uint64_t		lastLSN; // LSN of the last log record
 	uint32_t		start_off;// offset of the first log rec of this page on log buffer/ disk
 	uint32_t		start_diskaddr;// diskaddr when the first log rec is written 
@@ -708,6 +713,8 @@ struct __pmem_tt_hashed_line {
 struct __pmem_tt {
 	TOID_ARRAY(TOID(PMEM_TT_HASHED_LINE)) buckets;
 	uint64_t	n_buckets; 
+	
+	TOID(PMEM_TT_HASHED_LINE) spec_bucket; //the special bucket to handle NULL trx
 
 	uint64_t	n_entries_per_bucket;
 	uint64_t	n_pref_per_entry;
@@ -932,6 +939,15 @@ __init_tt(
 		uint64_t k,
 		uint64_t pages_per_tx);
 
+void __init_tt_entry(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_TT_HASHED_LINE*	pline,
+		uint64_t n,
+		uint64_t k,
+		uint64_t pages_per_tx);
+
+
 /*Called when a mini-transaction write log record to log buffer in the traditional InnoDB*/
 int64_t
 pm_ppl_write(
@@ -939,6 +955,7 @@ pm_ppl_write(
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
 			byte*				log_src,
+			//mtr_buf_t*			dyn_buf,
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
@@ -951,6 +968,7 @@ void __handle_pm_ppl_write_by_entry(
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
 			byte*				log_src,
+			//mtr_buf_t*			dyn_buf,
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
@@ -982,10 +1000,12 @@ static inline void
 __pm_write_log_buf(
 			PMEMobjpool*				pop,
 			PMEM_PAGE_PART_LOG*			ppl,
-			PMEM_PAGE_LOG_HASHED_LINE*	pline,
+			//PMEM_PAGE_LOG_HASHED_LINE*	pline,
+			uint64_t					hashed_id,
 			byte*						log_src,
 			uint64_t					src_off,
 			uint64_t					rec_size,
+			uint64_t					rec_lsn,
 			PMEM_PAGE_LOG_BLOCK*		plog_block,
 			bool						is_first_write);
 
@@ -1106,7 +1126,8 @@ pm_ppl_redo_line(
 		PMEM_PAGE_PART_LOG*	ppl,
 		PMEM_PAGE_LOG_HASHED_LINE* pline);
 
-bool
+//bool
+int64_t
 pm_ppl_parse_recs(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*	ppl,
@@ -1114,7 +1135,7 @@ pm_ppl_parse_recs(
 		byte* recv_buf,
 		uint64_t len
 		);
-int64_t
+uint64_t
 pm_ppl_recv_parse_log_rec(
 	PMEMobjpool*		pop,
 	PMEM_PAGE_PART_LOG*	ppl,
@@ -1125,6 +1146,7 @@ pm_ppl_recv_parse_log_rec(
 	ulint*		space,
 	ulint*		page_no,
 	bool		apply,
+	uint64_t*   rec_lsn,
 	byte**		body);
 
 
@@ -1158,6 +1180,11 @@ pm_ppl_recv_get_max_recovered_lsn(
 	PMEMobjpool*		pop,
 	PMEM_PAGE_PART_LOG*	ppl);
 
+ulint
+pm_ppl_get_max_lsn(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl);
+
 dberr_t
 pm_ppl_recv_init_crash_recovery_spaces(
 	PMEMobjpool*		pop,
@@ -1167,7 +1194,8 @@ pm_ppl_recv_init_crash_recovery_spaces(
 
 void
 pm_ppl_recv_recover_page_func(
-	PMEM_RECV_LINE* recv_line,
+	PMEMobjpool*		pop,
+	PMEM_PAGE_LOG_HASHED_LINE* pline,
 	ibool		just_read_in,
 				/*!< in: TRUE if the i/o handler calls
 				this for a freshly read page */
@@ -1275,6 +1303,12 @@ pm_create_log_file(
 	pfs_os_file_t*	file,
 	const char*	name,
 	uint64_t log_file_size);
+
+//dberr_t
+//pm_truncate_log_file(
+//	pfs_os_file_t*	file,
+//	const char*	name,
+//	uint64_t new_size);
 
 fil_node_t*
 pm_log_fil_node_create(

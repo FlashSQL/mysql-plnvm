@@ -2402,8 +2402,6 @@ files_checked:
 		}			
 		else {
 			err = pm_ppl_recovery(gb_pmw->pop, gb_pmw->ppl, flushed_lsn);
-			//recv_recovery_on = true;
-			//buf_dblwr_process();
 		}
 #else
 		err = recv_recovery_from_checkpoint_start(flushed_lsn);
@@ -3404,6 +3402,7 @@ pm_create_log_file(
 
 	return(DB_SUCCESS);
 }
+
 /*
  * Close log files and release resource when the server close
  * */

@@ -8449,6 +8449,10 @@ ha_innobase::commit_inplace_alter_table(
 			ut_ad(trx_is_rseg_updated(trx));
 
 			if (mtr.get_log()->size() > 0) {
+#if defined (UNIV_PMEMOBJ_PART_PL)
+				//TODO: handle this
+				assert(0);
+#endif
 				ut_ad(*mtr.get_log()->front()->begin()
 				      == MLOG_FILE_RENAME2);
 

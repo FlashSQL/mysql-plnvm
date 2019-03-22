@@ -28,8 +28,205 @@ Created 12/7/1995 Heikki Tuuri
 #include "mach0data.h"
 #include "trx0types.h"
 
-/********************************************************//**
-Opens a buffer to mlog. It must be closed with mlog_close.
+///////////////////////////////////////////////////////////
+
+/*Opens a buffer*/
+#if defined (UNIV_PMEMOBJ_PART_PL)
+/*
+If cur_off + size > limit size then call realloc to extend the buffer
+*/
+UNIV_INLINE
+byte*
+mlog_open(
+	mtr_t*	mtr,
+	ulint	size)
+{
+	mtr->set_modified();
+
+	if (mtr_get_log_mode(mtr) == MTR_LOG_NONE
+	    || mtr_get_log_mode(mtr) == MTR_LOG_NO_REDO) {
+
+		return(NULL);
+	}
+	
+	return (mtr->open_buf(size));
+}
+
+/*Closes a buffer
+Set the cur_off to the ptr
+The ptr must greater than the cur_off (only move forward)
+*/
+UNIV_INLINE
+void
+mlog_close(
+	mtr_t*	mtr,	/*!< in: mtr */
+	byte*	ptr)	/*!< in: buffer space from ptr up was not used */
+{
+	ut_ad(mtr_get_log_mode(mtr) != MTR_LOG_NONE);
+	ut_ad(mtr_get_log_mode(mtr) != MTR_LOG_NO_REDO);
+	
+	//update offset
+	byte* begin_ptr = mtr->get_buf();
+
+	uint32_t new_off = ptr - begin_ptr;
+
+	ut_ad(mtr->get_cur_off() <= new_off);
+
+	mtr->set_cur_off(new_off);
+	
+	//mtr->get_log()->close(ptr);
+}
+
+/* PPL FUNCTION
+Catenates 1 - 4 bytes to the mtr log. The value is not compressed.
+This function use push instead of open_log and close_log 
+*/
+UNIV_INLINE
+void
+mlog_catenate_ulint(
+	mtr_t*	mtr,	/*!< in/out: mtr */
+	ulint		val,		/*!< in: value to write */
+	mlog_id_t	type)		/*!< in: type of value to write */
+{
+	ut_ad(MLOG_1BYTE == 1);
+	ut_ad(MLOG_2BYTES == 2);
+	ut_ad(MLOG_4BYTES == 4);
+	ut_ad(MLOG_8BYTES == 8);
+
+	if (mtr_get_log_mode(mtr) == MTR_LOG_NONE
+	    || mtr_get_log_mode(mtr) == MTR_LOG_NO_REDO) {
+
+		return;
+	}
+
+	//byte*	ptr = mtr_buf->push<byte*>(type);
+	
+	//check full as in open
+	uint32_t size = type;
+
+    byte* ptr = mtr->open_buf(size);
+
+	uint32_t cur_off = mtr->get_cur_off();
+	
+	switch (type) {
+	case MLOG_4BYTES:
+		mach_write_to_4(ptr, val);
+		break;
+	case MLOG_2BYTES:
+		mach_write_to_2(ptr, val);
+		break;
+	case MLOG_1BYTE:
+		mach_write_to_1(ptr, val);
+		break;
+	default:
+		ut_error;
+	}
+
+	//increase the offset equal to number of written bytes	
+	mtr->set_cur_off(cur_off + size);	
+}
+
+/** Writes a log record about an operation.
+@param[in]	type		redo log record type
+@param[in]	space_id	tablespace identifier
+@param[in]	page_no		page number
+@param[in,out]	log_ptr		current end of mini-transaction log
+@param[in,out]	mtr		mini-transaction
+@return	end of mini-transaction log */
+UNIV_INLINE
+byte*
+mlog_write_initial_log_record_low(
+	mlog_id_t	type,
+	ulint		space_id,
+	ulint		page_no,
+	byte*		log_ptr,
+	mtr_t*		mtr)
+{
+	ut_ad(type <= MLOG_BIGGEST_TYPE);
+	ut_ad(type == MLOG_FILE_NAME
+	      || type == MLOG_FILE_DELETE
+	      || type == MLOG_FILE_CREATE2
+	      || type == MLOG_FILE_RENAME2
+	      || type == MLOG_INDEX_LOAD
+	      || type == MLOG_TRUNCATE
+	      || mtr->is_named_space(space_id));
+
+	
+	byte*		begin_log_ptr;
+	uint16_t	off0;	
+	uint16_t	off1;	
+	uint64_t	key;	
+	uint64_t	lsn;
+
+	ib_uint32_t n_recs;
+	
+	n_recs = mtr->get_n_recs();
+
+	begin_log_ptr = mtr->get_buf();
+	assert(log_ptr >= begin_log_ptr);
+	
+	//save current off	
+	off0 = (log_ptr - begin_log_ptr);
+	mtr->add_off(off0);
+	
+	//write type, space, page as original code
+	mach_write_to_1(log_ptr, type);
+	log_ptr++;
+
+	log_ptr += mach_write_compressed(log_ptr, space_id);
+	log_ptr += mach_write_compressed(log_ptr, page_no);
+
+	//save offset of "rec_len" field
+	off1 = (log_ptr - begin_log_ptr);
+	mtr->add_len_off(off1);
+
+	//reserve 2-byte for rec len
+	log_ptr += 2;
+	
+	//reserve 8-byte for LSN
+	lsn = ut_time_us(NULL);
+
+	mach_write_to_8(log_ptr, lsn);
+	log_ptr += 8;
+
+	//add info 
+	key = (space_id << 20) + space_id + page_no;
+	mtr->add_key(key);
+	mtr->add_LSN(lsn);
+	mtr->add_type(type);
+	mtr->add_space(space_id);
+	mtr->add_page(page_no);
+
+
+	//compute size for previous log rec	
+
+	if (n_recs > 0){
+		uint16_t prev_off = mtr->get_off_at(n_recs - 1); 
+		uint16_t prev_len_off = mtr->get_len_off_at(n_recs - 1); 
+
+		assert(off0 > prev_off);
+
+		uint32_t rec_size = off0 - prev_off ;
+		if (rec_size > UINT16_MAX){
+			printf("PMEM_ERROR: rec_size %zu is larger than UINT16MAX %zu\n", rec_size, UINT16_MAX);
+			assert(0);
+		}
+
+		mach_write_to_2(begin_log_ptr + prev_len_off, rec_size);
+		mtr->add_size_at(rec_size, n_recs - 1);
+	}
+	else {
+		//this is the first log rec in the mtr, do nothing
+	}
+
+
+	mtr->added_rec();
+	return(log_ptr);
+}
+
+#else //////////      original ///////////////////////////////////////
+
+/* Opens a buffer to mlog. It must be closed with mlog_close.
 @return buffer, NULL if log mode MTR_LOG_NONE or MTR_LOG_NO_REDO */
 UNIV_INLINE
 byte*
@@ -46,7 +243,6 @@ mlog_open(
 
 		return(NULL);
 	}
-
 	return(mtr->get_log()->open(size));
 }
 
@@ -98,6 +294,42 @@ mlog_catenate_ulint(
 	}
 }
 
+/** Writes a log record about an operation.
+@param[in]	type		redo log record type
+@param[in]	space_id	tablespace identifier
+@param[in]	page_no		page number
+@param[in,out]	log_ptr		current end of mini-transaction log
+@param[in,out]	mtr		mini-transaction
+@return	end of mini-transaction log */
+UNIV_INLINE
+byte*
+mlog_write_initial_log_record_low(
+	mlog_id_t	type,
+	ulint		space_id,
+	ulint		page_no,
+	byte*		log_ptr,
+	mtr_t*		mtr)
+{
+	ut_ad(type <= MLOG_BIGGEST_TYPE);
+	ut_ad(type == MLOG_FILE_NAME
+	      || type == MLOG_FILE_DELETE
+	      || type == MLOG_FILE_CREATE2
+	      || type == MLOG_FILE_RENAME2
+	      || type == MLOG_INDEX_LOAD
+	      || type == MLOG_TRUNCATE
+	      || mtr->is_named_space(space_id));
+
+
+	mach_write_to_1(log_ptr, type);
+	log_ptr++;
+
+	log_ptr += mach_write_compressed(log_ptr, space_id);
+	log_ptr += mach_write_compressed(log_ptr, page_no);
+
+	mtr->added_rec();
+	return(log_ptr);
+}
+
 /********************************************************//**
 Catenates 1 - 4 bytes to the mtr log. The value is not compressed. */
 UNIV_INLINE
@@ -116,6 +348,14 @@ mlog_catenate_ulint(
 
 	mlog_catenate_ulint(mtr->get_log(), val, type);
 }
+#endif /* !UNIV_HOTBACKUP */
+
+#endif //UNIV_PMEMOBJ_PART_PL
+
+/////////////////////////////////////////////////////////////
+////////////////////////////// We reused below functions /////////////////
+////////////////////////////////////////////////////////////////
+#ifndef UNIV_HOTBACKUP
 
 /********************************************************//**
 Catenates a compressed ulint to mlog. */
@@ -165,59 +405,6 @@ mlog_catenate_ull_compressed(
 	mlog_close(mtr, log_ptr);
 }
 
-/** Writes a log record about an operation.
-@param[in]	type		redo log record type
-@param[in]	space_id	tablespace identifier
-@param[in]	page_no		page number
-@param[in,out]	log_ptr		current end of mini-transaction log
-@param[in,out]	mtr		mini-transaction
-@return	end of mini-transaction log */
-UNIV_INLINE
-byte*
-mlog_write_initial_log_record_low(
-	mlog_id_t	type,
-	ulint		space_id,
-	ulint		page_no,
-	byte*		log_ptr,
-	mtr_t*		mtr)
-{
-	ut_ad(type <= MLOG_BIGGEST_TYPE);
-	ut_ad(type == MLOG_FILE_NAME
-	      || type == MLOG_FILE_DELETE
-	      || type == MLOG_FILE_CREATE2
-	      || type == MLOG_FILE_RENAME2
-	      || type == MLOG_INDEX_LOAD
-	      || type == MLOG_TRUNCATE
-	      || mtr->is_named_space(space_id));
-
-	mach_write_to_1(log_ptr, type);
-	log_ptr++;
-
-	log_ptr += mach_write_compressed(log_ptr, space_id);
-	log_ptr += mach_write_compressed(log_ptr, page_no);
-#if defined (UNIV_PMEMOBJ_PART_PL)
-	uint64_t key = (space_id << 20) + space_id + page_no;
-	mtr->add_key(key);
-
-	//LSN of a log rec is the timestamp
-	mtr->add_LSN(ut_time_us(NULL));
-
-	mtr->add_space(space_id);
-	mtr->add_page(page_no);
-	
-	ulint size = mtr->get_log()->size();
-	mtr->add_size(size);
-	
-	//tdnguyen test
-	//if (type == MLOG_UNDO_INSERT){
-	//	uint64_t trx_id = mtr->pmemlog_get_trx_id();
-	//	//printf("mlog_write_initial_log_record_low add log rec for UNDO page (%zu,%zu) trx_id %zu\n",space_id, page_no, trx_id);
-
-	//}
-#endif
-	mtr->added_rec();
-	return(log_ptr);
-}
 
 /********************************************************//**
 Writes the initial part of a log record (3..11 bytes).

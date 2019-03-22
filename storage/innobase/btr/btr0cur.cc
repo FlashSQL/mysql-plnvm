@@ -4918,7 +4918,8 @@ btr_cur_del_mark_set_sec_rec_log(
 	byte*	log_ptr;
 	ut_ad(val <= 1);
 
-	log_ptr = mlog_open(mtr, 11 + 1 + 2);
+	//log_ptr = mlog_open(mtr, 11 + 1 + 2);
+	log_ptr = mlog_open(mtr, MLOG_HEADER_SIZE + 1 + 2);
 
 	if (!log_ptr) {
 		/* Logging in mtr is switched off during crash recovery:

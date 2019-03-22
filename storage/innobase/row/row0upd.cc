@@ -2822,8 +2822,8 @@ row_upd_clust_step(
 	mtr.set_named_space(index->space);
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-	mtr.pmemlog_set_parent_trx(trx);
-	if (trx != NULL){
+	if (trx != NULL) {
+		mtr.pmemlog_set_parent_trx(trx);
 		mtr.pmemlog_set_trx_id(trx->id);
 	}
 #endif
@@ -2887,6 +2887,12 @@ row_upd_clust_step(
 
 		mtr_commit(&mtr);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (trx != NULL) {
+		mtr.pmemlog_set_parent_trx(trx);
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
 		mtr_start(&mtr);
 		mtr.set_named_space(index->space);
 
@@ -2944,6 +2950,12 @@ row_upd_clust_step(
 		row_upd_eval_new_vals(node->update);
 	}
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (trx != NULL && mtr.pmemlog_get_parent_trx() == NULL) {
+		mtr.pmemlog_set_parent_trx(trx);
+		mtr.pmemlog_set_trx_id(trx->id);
+	}
+#endif
 	if (node->cmpl_info & UPD_NODE_NO_ORD_CHANGE) {
 
 		err = row_upd_clust_rec(

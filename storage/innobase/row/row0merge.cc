@@ -4259,7 +4259,8 @@ row_merge_write_redo(
 
 	ut_ad(!dict_table_is_temporary(index->table));
 	mtr.start();
-	log_ptr = mlog_open(&mtr, 11 + 8);
+	//log_ptr = mlog_open(&mtr, 11 + 8);
+	log_ptr = mlog_open(&mtr, MLOG_HEADER_SIZE + 8);
 	log_ptr = mlog_write_initial_log_record_low(
 		MLOG_INDEX_LOAD,
 		index->space, index->page, log_ptr, &mtr);

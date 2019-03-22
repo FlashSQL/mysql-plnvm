@@ -1428,7 +1428,9 @@ fil_space_create(
 	}
 
 	mutex_exit(&fil_system->mutex);
-
+//tdnguyen test
+	printf("=====>>|| fil_space_create() space id %zu name %s\n", id, name);
+//end tdnguyen test
 	return(space);
 }
 
@@ -2116,7 +2118,8 @@ fil_op_write_log(
 	ut_ad(strchr(path, OS_PATH_SEPARATOR) != NULL);
 	ut_ad(strcmp(&path[strlen(path) - strlen(DOT_IBD)], DOT_IBD) == 0);
 
-	log_ptr = mlog_open(mtr, 11 + 4 + 2 + 1);
+	//log_ptr = mlog_open(mtr, 11 + 4 + 2 + 1);
+	log_ptr = mlog_open(mtr, MLOG_HEADER_SIZE + 4 + 2 + 1);
 
 	if (log_ptr == NULL) {
 		/* Logging in mtr is switched off during crash recovery:
@@ -8727,22 +8730,6 @@ pm_log_fil_node_create(
 		assert(0);
 		return NULL;
 	}
-
-//	//open file, simple version of fil_node_open_file() in fil0fil.cc
-//	node->handle = os_file_create(
-//			innodb_log_file_key, node->name, OS_FILE_OPEN,
-//			OS_FILE_AIO, OS_LOG_FILE, false, &success);	   
-//
-//	if (!success){
-//		printf("PMEM_ERROR in pm_create_or_open_part_log_files(), cannot open fil_node %s \n ", node->name);
-//		assert(0);
-//	}
-//
-//	node->is_open = true;
-//
-//	fil_system->n_open++;
-//	fil_n_file_opened++;
-
 	return node;
 }
 /*
@@ -8757,7 +8744,6 @@ pm_log_fil_io(
 {
 
 	PMEM_LOG_GROUP*		group;
-	PMEM_PAGE_LOG_HASHED_LINE* pline;
 
 	byte*		pdata;
 	byte*		log_src;
@@ -8802,20 +8788,24 @@ pm_log_fil_io(
 	assert(plogbuf->hashed_id >= 0);	
 	
 	group = ppl->log_groups[plogbuf->hashed_id];
-	pline = D_RW(D_RW(ppl->buckets)[plogbuf->hashed_id]);
+	
+	/*if the previous AIO is not finish while this AIO happen, write_diskaddr < diskaddr. 
+	 * Otherwise, write_diskaddr == diskaddr. 
+	 * So we write from diskaddr to avoid overwirte on previous written
+	 * Since we advanced diskaddr size-bytes when handling full pline, we write from the previous size bytes from diskaddr
+	 * */
+	
+	//next_offset = pline->write_diskaddr
+	next_offset = plogbuf->diskaddr;
+	
+	//tdnguyen test, fixing bug pline 593 has first write block zero
+	
+	//what if we only write the first block	
+	if (plogbuf->hashed_id == 593 && next_offset > plogbuf->size ) {
+		printf("===> TEST only write first block ...\n\n");
+		return;		
+	}
 
-	next_offset = pline->write_diskaddr;
-	
-	if (next_offset + len > group->file_size){
-		printf("PMEM_INFO log file of line %zu is full\n", plogbuf->hashed_id);
-		assert(0);
-		//TODO: handle the case that the log group is full
-		//write_len = group->file_size - next_offset;
-	}
-	else {
-		write_len = len;
-	}
-	
 	//(2) Write, simulate log_group_write_buf()
 	assert((end_offset % univ_page_size.physical()) == 0);	
 	//ut_ad(len % OS_FILE_LOG_BLOCK_SIZE == 0);
@@ -8832,6 +8822,25 @@ pm_log_fil_io(
 			printf("Cannot open log file %s handle %zu\n", node->name, node->handle);
 		}
 		node->is_open = true;
+	}
+
+	if (next_offset + len > group->file_size){
+		printf("PMEM_INFO log file of line %zu is full, extend it to double size\n", plogbuf->hashed_id);
+		//assert(0);
+		bool ret = os_file_truncate(
+			   	node->name,
+				node->handle,
+			   	group->file_size * 2);
+		if (!ret){
+			printf("PMEM_ERROR cannot extend log file of line %zu \n", plogbuf->hashed_id);	
+			assert(0);
+		}
+
+		group->file_size = group->file_size * 2;
+
+	}
+	else {
+		write_len = len;
 	}
 	
 	err = os_aio(

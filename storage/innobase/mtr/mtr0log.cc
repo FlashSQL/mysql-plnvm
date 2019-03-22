@@ -51,8 +51,16 @@ mlog_catenate_string(
 
 		return;
 	}
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//get the end of buf and extend if need
+	byte* ptr = mtr->open_buf(len);
+	::memmove(ptr, str, len);
 
+	mtr->set_cur_off(mtr->get_cur_off() + len);
+   	
+#else
 	mtr->get_log()->push(str, ib_uint32_t(len));
+#endif
 }
 
 /********************************************************//**
@@ -73,7 +81,8 @@ mlog_write_initial_log_record(
 	ut_ad(type <= MLOG_BIGGEST_TYPE);
 	ut_ad(type > MLOG_8BYTES);
 
-	log_ptr = mlog_open(mtr, 11);
+	//log_ptr = mlog_open(mtr, 11);
+	log_ptr = mlog_open(mtr, MLOG_HEADER_SIZE);
 
 	/* If no logging is requested, we may return now */
 	if (log_ptr == NULL) {
@@ -257,7 +266,8 @@ mlog_write_ulint(
 	}
 
 	if (mtr != 0) {
-		byte*	log_ptr = mlog_open(mtr, 11 + 2 + 5);
+		//byte*	log_ptr = mlog_open(mtr, 11 + 2 + 5);
+		byte*	log_ptr = mlog_open(mtr, MLOG_HEADER_SIZE + 2 + 5);
 
 		/* If no logging is requested, we may return now */
 
@@ -289,7 +299,8 @@ mlog_write_ull(
 	mach_write_to_8(ptr, val);
 
 	if (mtr != 0) {
-		byte*	log_ptr = mlog_open(mtr, 11 + 2 + 9);
+		//byte*	log_ptr = mlog_open(mtr, 11 + 2 + 9);
+		byte*	log_ptr = mlog_open(mtr, MLOG_HEADER_SIZE + 2 + 9);
 
 		/* If no logging is requested, we may return now */
 		if (log_ptr != 0) {
@@ -437,17 +448,20 @@ mlog_open_and_write_index(
 	ut_ad(!!page_rec_is_comp(rec) == dict_table_is_comp(index->table));
 
 	if (!page_rec_is_comp(rec)) {
-		log_start = log_ptr = mlog_open(mtr, 11 + size);
+		//log_start = log_ptr = mlog_open(mtr, 11 + size);
+		log_start = log_ptr = mlog_open(mtr, MLOG_HEADER_SIZE + size);
 		if (!log_ptr) {
 			return(NULL); /* logging is disabled */
 		}
 		log_ptr = mlog_write_initial_log_record_fast(rec, type,
 							     log_ptr, mtr);
-		log_end = log_ptr + 11 + size;
+		//log_end = log_ptr + 11 + size;
+		log_end = log_ptr + MLOG_HEADER_SIZE + size;
 	} else {
 		ulint	i;
 		ulint	n	= dict_index_get_n_fields(index);
-		ulint	total	= 11 + size + (n + 2) * 2;
+		//ulint	total	= 11 + size + (n + 2) * 2;
+		ulint	total	= MLOG_HEADER_SIZE + size + (n + 2) * 2;
 		ulint	alloc	= total;
 
 		if (alloc > mtr_buf_t::MAX_DATA_SIZE) {
@@ -555,6 +569,9 @@ mlog_parse_index(
 
 	if (comp) {
 		if (end_ptr < ptr + 4) {
+#if defined (UNIV_PMEMOBJ_PART_PL)
+			assert(0);
+#endif
 			return(NULL);
 		}
 		n = mach_read_from_2(ptr);
@@ -563,6 +580,9 @@ mlog_parse_index(
 		ptr += 2;
 		ut_ad(n_uniq <= n);
 		if (end_ptr < ptr + n * 2) {
+#if defined (UNIV_PMEMOBJ_PART_PL)
+			assert(0);
+#endif
 			return(NULL);
 		}
 	} else {

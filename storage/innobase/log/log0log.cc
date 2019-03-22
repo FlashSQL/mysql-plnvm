@@ -2475,6 +2475,13 @@ loop:
 		return;
 	}
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//in PPL, we use our LSN
+	log_mutex_enter();
+	log_sys->lsn = pm_ppl_get_max_lsn(gb_pmw->pop, gb_pmw->ppl);
+	log_mutex_exit();
+#endif
+
 	if (!srv_read_only_mode) {
 		log_make_checkpoint_at(LSN_MAX, TRUE);
 	}
@@ -2486,6 +2493,7 @@ loop:
 	ut_ad(lsn >= log_sys->last_checkpoint_lsn);
 
 	log_mutex_exit();
+
 
 	/** If innodb_force_recovery is set to 6 then log_sys doesn't
 	have recent checkpoint information. So last checkpoint lsn

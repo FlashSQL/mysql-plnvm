@@ -1039,22 +1039,6 @@ page_cur_insert_rec_write_log(
 
 	byte*	log_ptr;
 
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-	byte* start_log_ptr; //save the start position
-	uint64_t log_size; //size of the REDO log
-	const byte* page_temp;
-	ulint		space_no;
-	ulint		page_no;
-	trx_t*		trx;
-	//re-build the page_id
-	page_temp = (const byte*) ut_align_down(insert_rec, UNIV_PAGE_SIZE);
-	space_no = mach_read_from_4(page_temp + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
-	page_no = mach_read_from_4(page_temp + FIL_PAGE_OFFSET);
-	page_id_t page_id(space_no, page_no);
-	//Now let's the InnoDB write REDO log to mrx buffer
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 
 	if (mtr_get_log_mode(mtr) != MTR_LOG_SHORT_INSERTS) {
 
@@ -1068,14 +1052,11 @@ page_cur_insert_rec_write_log(
 				mlog_open returns NULL */
 				return;
 			}
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-			//save the start of log_ptr
-			start_log_ptr = log_ptr;
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 		} else {
-			log_ptr = mlog_open(mtr, 11
+			//log_ptr = mlog_open(mtr, 11
+			//		    + 2 + 5 + 1 + 5 + 5
+			//		    + MLOG_BUF_MARGIN);
+			log_ptr = mlog_open(mtr, MLOG_HEADER_SIZE
 					    + 2 + 5 + 1 + 5 + 5
 					    + MLOG_BUF_MARGIN);
 			if (UNIV_UNLIKELY(!log_ptr)) {
@@ -1085,12 +1066,6 @@ page_cur_insert_rec_write_log(
 				return;
 			}
 
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-			//save the start of log_ptr
-			start_log_ptr = log_ptr;
-#endif //UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 			log_ptr = mlog_write_initial_log_record_fast(
 				insert_rec, MLOG_REC_INSERT, log_ptr, mtr);
 		}
@@ -1100,6 +1075,9 @@ page_cur_insert_rec_write_log(
 		mach_write_to_2(log_ptr, page_offset(cursor_rec));
 		log_ptr += 2;
 	} else {
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+		//printf("==> TODO: check MTR_LOG_SHORT_INSERT in page_cur_insert_rec_write_log() \n");
+//#endif
 		log_ptr = mlog_open(mtr, 5 + 1 + 5 + 5 + MLOG_BUF_MARGIN);
 		if (!log_ptr) {
 			/* Logging in mtr is switched off during crash
@@ -1167,43 +1145,6 @@ need_extra_info:
 		mlog_catenate_string(mtr, ins_ptr, rec_size);
 	}
 
-#if defined (UNIV_PMEMOBJ_PL)
-#if !defined (UNIV_TEST_PL)
-		//Now we write REDO log in mtr_t::Command::Execute()
-		////retrieve the parent trx
-		////We set it in btr_cur_optimistic_insert() 
-		//trx = mtr->pmemlog_get_parent_trx();
-		//if (trx != NULL) {
-		//	log_size = log_ptr - start_log_ptr;
-		//	trx->pm_log_block_id = pm_ppl_write(
-		//								gb_pmw->pop,
-		//								gb_pmw->ppl,
-		//								trx->id,
-		//								start_log_ptr,
-		//								log_size,
-		//								trx->pm_log_block_id);
-
-
-		//}
-
-		//////Old implementation
-		////Note that trx could be NULL
-		//if (trx != NULL) {
-		//	//save the start of log_ptr
-		//	log_size = log_ptr - start_log_ptr;
-		//	assert(log_size > 0);
-		//	//Alloc memrec
-		//	MEM_LOG_REC* memrec =   pmemlog_alloc_memrec(
-		//			start_log_ptr, log_size, page_id, trx->id);
-		//	assert(memrec);
-		//	//Add memrec to the global TT
-		//	pmemlog_add_log_to_TT(gb_pmw->pop, gb_pmw->pbuf->tt, gb_pmw->pbuf->dpt, memrec);
-		//}
-		//else {
-		//	//printf("PMEM_WARN: ===>in  page_cur_insert_rec_write_log(), REDO log of space %zu page %zu has NULL trx\n", page_id.space(), page_id.page_no() );
-		//}
-#endif // UNIV_TEST_PL
-#endif //UNIV_PMEMOBJ_PL
 }
 #else /* !UNIV_HOTBACKUP */
 # define page_cur_insert_rec_write_log(ins_rec,size,cur,index,mtr) ((void) 0)
@@ -2318,7 +2259,9 @@ page_parse_copy_rec_list_to_created_page(
 	page_zip_des_t*	page_zip;
 
 	if (ptr + 4 > end_ptr) {
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		assert(0);
+#endif
 		return(NULL);
 	}
 
@@ -2328,7 +2271,9 @@ page_parse_copy_rec_list_to_created_page(
 	rec_end = ptr + log_data_len;
 
 	if (rec_end > end_ptr) {
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		assert(0);
+#endif
 		return(NULL);
 	}
 
@@ -2414,8 +2359,14 @@ page_copy_rec_list_end_to_created_page(
 
 	log_ptr = page_copy_rec_list_to_created_page_write_log(new_page,
 							       index, mtr);
+#if defined(UNIV_PMEMOBJ_PART_PL)
+//handle bug due to reallocate, we save the offset instead of the pointer
+	ulint log_data_len_off = log_ptr - mtr->get_buf();
 
+	log_data_len = mtr->get_cur_off();
+#else //original
 	log_data_len = mtr->get_log()->size();
+#endif
 
 	/* Individual inserts are logged in a shorter form */
 
@@ -2508,7 +2459,17 @@ page_copy_rec_list_end_to_created_page(
 	if (UNIV_LIKELY_NULL(heap)) {
 		mem_heap_free(heap);
 	}
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	log_data_len = mtr->get_cur_off() - log_data_len;
 
+	ut_a(log_data_len < 100 * UNIV_PAGE_SIZE);
+	//update log_ptr, it may change if the mtr->buf is reallocate
+	log_ptr = mtr->get_buf() + log_data_len_off;
+
+	if (log_ptr != NULL) {
+		mach_write_to_4(log_ptr, log_data_len);
+	}
+#else //original
 	log_data_len = mtr->get_log()->size() - log_data_len;
 
 	ut_a(log_data_len < 100 * UNIV_PAGE_SIZE);
@@ -2516,6 +2477,21 @@ page_copy_rec_list_end_to_created_page(
 	if (log_ptr != NULL) {
 		mach_write_to_4(log_ptr, log_data_len);
 	}
+#endif
+
+
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	//debug
+//	else {
+//		printf("PMEM_ERROR log_ptr in page_copy_rec_list_end_to_created_page()  is NULL \n");
+//		assert(0);
+//	}
+//
+//	if (log_data_len == 0){
+//		printf("PMEM_ERROR log_data_len in page_copy_rec_list_end_to_created_page()  is ZERO \n");
+//		assert(0);
+//	}
+//#endif
 
 	if (page_is_comp(new_page)) {
 		rec_set_next_offs_new(insert_rec, PAGE_NEW_SUPREMUM);

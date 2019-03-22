@@ -64,7 +64,8 @@ trx_undof_page_add_undo_rec_log(
 	const byte*	log_end;
 	ulint		len;
 
-	log_ptr = mlog_open(mtr, 11 + 13 + MLOG_BUF_MARGIN);
+	//log_ptr = mlog_open(mtr, 11 + 13 + MLOG_BUF_MARGIN);
+	log_ptr = mlog_open(mtr, MLOG_HEADER_SIZE + 13 + MLOG_BUF_MARGIN);
 
 	if (log_ptr == NULL) {
 
@@ -79,7 +80,8 @@ trx_undof_page_add_undo_rec_log(
 //	mtr->set_is_undo_page(true);
 //	printf("trx_undof_page_add_undo_rec_log UNDO page space %zu page_no %zu trx_id %zu \n", space, page_no, trx_id);
 //#endif
-	log_end = &log_ptr[11 + 13 + MLOG_BUF_MARGIN];
+	//log_end = &log_ptr[11 + 13 + MLOG_BUF_MARGIN];
+	log_end = &log_ptr[MLOG_HEADER_SIZE + 13 + MLOG_BUF_MARGIN];
 	log_ptr = mlog_write_initial_log_record_fast(
 		undo_page, MLOG_UNDO_INSERT, log_ptr, mtr);
 	len = new_free - old_free - 4;

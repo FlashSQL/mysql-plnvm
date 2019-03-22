@@ -2147,6 +2147,9 @@ btr_insert_on_non_leaf_level_func(
 		tuple, &rec, &dummy_big_rec, 0, NULL, mtr);
 
 	if (err == DB_FAIL) {
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//		printf("PMEM_DEBUG split chain case mtr %zu\n", mtr);
+//#endif
 		err = btr_cur_pessimistic_insert(flags
 						 | BTR_NO_LOCKING_FLAG
 						 | BTR_KEEP_SYS_FLAG
