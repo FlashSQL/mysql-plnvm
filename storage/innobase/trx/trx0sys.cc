@@ -51,6 +51,12 @@ Created 3/26/1996 Heikki Tuuri
 #include "read0read.h"
 #include "fsp0sysspace.h"
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+#include "my_pmem_common.h"
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
+#endif
+
 /** The file format tag structure with id and name. */
 struct file_format_t {
 	ulint		id;		/*!< id of the file format */
@@ -467,6 +473,9 @@ trx_sys_init_at_db_start(void)
 	if (srv_force_recovery < SRV_FORCE_NO_UNDO_LOG_SCAN) {
 		trx_rseg_array_init(purge_queue);
 	}
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	printf("====> create undo obj FINISHED\n");
+#endif
 
 	/* VERY important: after the database is started, max_trx_id value is
 	divisible by TRX_SYS_TRX_ID_WRITE_MARGIN, and the 'if' in
@@ -484,6 +493,23 @@ trx_sys_init_at_db_start(void)
 		+ ut_uint64_align_up(mach_read_from_8(sys_header
 						   + TRX_SYS_TRX_ID_STORE),
 				     TRX_SYS_TRX_ID_WRITE_MARGIN);
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//test the trx_sys is recovered or not
+	ulint key;
+	PMEM_FOLD(key, TRX_SYS_SPACE, TRX_SYS_PAGE_NO);
+	PMEM_PAGE_LOG_BLOCK* plog_block = pm_ppl_get_log_block_by_key(gb_pmw->pop, gb_pmw->ppl, key);
+	
+	if (!gb_pmw->ppl->is_new){
+		ulint ppl_min_trx_id;
+		ulint ppl_max_trx_id;
+
+	   	pm_ppl_get_min_max_tid(gb_pmw->pop, gb_pmw->ppl,
+				&ppl_min_trx_id, &ppl_max_trx_id);
+
+		printf("PMEM_WARN: our min_tid %zu max_tid %zu differs to InnoDB max_tid %zu \n", ppl_min_trx_id, ppl_max_trx_id, trx_sys->max_trx_id);
+	}
+#endif
 
 	mtr.commit();
 	ut_d(trx_sys->rw_max_trx_id = trx_sys->max_trx_id);

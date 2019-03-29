@@ -3227,14 +3227,6 @@ fail_err:
 			err = btr_cur_ins_lock_and_undo(flags, cursor, entry,
 							thr, mtr, &inherit);
 
-//#if defined (UNIV_PMEMOBJ_PL)
-		//save the pointer to the transaction
-		//We need it later in page_cur_insert_rec_log() 
-		//if (thr){
-		//	trx_t* trx_p = thr_get_trx(thr);
-		//	mtr->pmemlog_set_parent_trx(trx_p);
-		//}
-//#endif //UNIV_PMEMOBJ_PL
 			if (err != DB_SUCCESS) {
 				goto fail_err;
 			}

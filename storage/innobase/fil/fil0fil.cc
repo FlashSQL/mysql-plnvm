@@ -5849,13 +5849,6 @@ fil_io(
 	}
 #else /* UNIV_HOTBACKUP */
 	/* Queue the aio request */
-//tdnguyen test
-	//if (page_id.space() == 0){
-	//	if (page_id.page_no() == 6){
-	//		pm_ppl_test_write_rseg(req_type, page_id, (byte*) buf, page_size.physical());
-	//	}
-	//}
-//end tdnguyen test
 	err = os_aio(
 		req_type,
 		mode, node->name, node->handle, buf, offset, len,
@@ -8097,7 +8090,24 @@ fil_names_dirty(
 	UT_LIST_ADD_LAST(fil_system->named_spaces, space);
 	space->max_lsn = log_sys->lsn;
 }
+#if defined (UNIV_PMEMOBJ_PART_PL)
+/*
+ *Simulate fil_names_dirty()
+ * */
+void
+pm_ppl_fil_names_dirty(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	ulint max_recovered_lsn,
+	fil_space_t*		space)
+{
+	ut_ad(space->max_lsn == 0);
+	ut_d(fil_space_validate_for_mtr_commit(space));
 
+	UT_LIST_ADD_LAST(fil_system->named_spaces, space);
+	space->max_lsn = max_recovered_lsn;
+}
+#endif
 /** Write MLOG_FILE_NAME records when a non-predefined persistent
 tablespace was modified for the first time since the latest
 fil_names_clear().
@@ -8797,14 +8807,6 @@ pm_log_fil_io(
 	
 	//next_offset = pline->write_diskaddr
 	next_offset = plogbuf->diskaddr;
-	
-	//tdnguyen test, fixing bug pline 593 has first write block zero
-	
-	//what if we only write the first block	
-	if (plogbuf->hashed_id == 593 && next_offset > plogbuf->size ) {
-		printf("===> TEST only write first block ...\n\n");
-		return;		
-	}
 
 	//(2) Write, simulate log_group_write_buf()
 	assert((end_offset % univ_page_size.physical()) == 0);	

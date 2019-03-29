@@ -2464,6 +2464,12 @@ files_checked:
 		are initialized in trx_sys_init_at_db_start(). */
 
 		recv_recovery_from_checkpoint_finish();
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		if (!gb_pmw->ppl->is_new){
+			pm_ppl_recv_end(gb_pmw->pop, gb_pmw->ppl);
+		}
+#endif
+
 #if defined(UNIV_PMEMOBJ_BUF_RECOVERY) 
 		gb_pmw->pbuf->is_recovery = false;
 		//printf("====> PMEM_INFO: start recovery from PMEM in background\n");

@@ -272,6 +272,8 @@ struct mtr_t {
 	void start(bool sync = true, bool read_only = false);
 
 #if defined (UNIV_PMEMOBJ_PL)
+	void pmem_check_mtrlog(mtr_t* mtr);
+
 	trx_t* pmemlog_get_parent_trx()
 	{
 		return m_impl.m_parent_trx;
@@ -639,6 +641,9 @@ struct mtr_t {
 
 			new_size = ((size / cur_max_size) + 2) * cur_max_size;
 			new_ptr = (byte*) realloc(m_impl.buf, new_size);
+			if (m_impl.buf != new_ptr){
+				printf("mtr::open_buf() reallocate from %zu to %zu\n", m_impl.buf, new_ptr);
+			}
 			m_impl.buf = new_ptr;
 
 			m_impl.max_buf_size = new_size;
@@ -671,6 +676,10 @@ struct mtr_t {
 	void add_LSN(uint64_t LSN){
 		m_impl.LSN_arr[m_impl.m_n_log_recs] = LSN;
 	}
+	uint64_t get_LSN_at(uint32_t i){
+		return m_impl.LSN_arr[i];
+	}
+
 	void add_space(uint64_t space_no){
 		m_impl.space_arr[m_impl.m_n_log_recs] = space_no;
 	}

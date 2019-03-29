@@ -69,12 +69,13 @@ mlog_close(
 	byte* begin_ptr = mtr->get_buf();
 
 	uint32_t new_off = ptr - begin_ptr;
-
+	
+	ut_ad(new_off < mtr->get_max_buf_size());
+	
+	//we only increase the offset in mlog_close()
 	ut_ad(mtr->get_cur_off() <= new_off);
 
 	mtr->set_cur_off(new_off);
-	
-	//mtr->get_log()->close(ptr);
 }
 
 /* PPL FUNCTION
@@ -159,6 +160,7 @@ mlog_write_initial_log_record_low(
 	uint64_t	lsn;
 
 	ib_uint32_t n_recs;
+	uint32_t rec_size;
 	
 	n_recs = mtr->get_n_recs();
 
@@ -169,35 +171,6 @@ mlog_write_initial_log_record_low(
 	off0 = (log_ptr - begin_log_ptr);
 	mtr->add_off(off0);
 	
-	//write type, space, page as original code
-	mach_write_to_1(log_ptr, type);
-	log_ptr++;
-
-	log_ptr += mach_write_compressed(log_ptr, space_id);
-	log_ptr += mach_write_compressed(log_ptr, page_no);
-
-	//save offset of "rec_len" field
-	off1 = (log_ptr - begin_log_ptr);
-	mtr->add_len_off(off1);
-
-	//reserve 2-byte for rec len
-	log_ptr += 2;
-	
-	//reserve 8-byte for LSN
-	lsn = ut_time_us(NULL);
-
-	mach_write_to_8(log_ptr, lsn);
-	log_ptr += 8;
-
-	//add info 
-	key = (space_id << 20) + space_id + page_no;
-	mtr->add_key(key);
-	mtr->add_LSN(lsn);
-	mtr->add_type(type);
-	mtr->add_space(space_id);
-	mtr->add_page(page_no);
-
-
 	//compute size for previous log rec	
 
 	if (n_recs > 0){
@@ -206,7 +179,7 @@ mlog_write_initial_log_record_low(
 
 		assert(off0 > prev_off);
 
-		uint32_t rec_size = off0 - prev_off ;
+		rec_size = off0 - prev_off ;
 		if (rec_size > UINT16_MAX){
 			printf("PMEM_ERROR: rec_size %zu is larger than UINT16MAX %zu\n", rec_size, UINT16_MAX);
 			assert(0);
@@ -219,6 +192,35 @@ mlog_write_initial_log_record_low(
 		//this is the first log rec in the mtr, do nothing
 	}
 
+	//write type, space, page as original code
+	mach_write_to_1(log_ptr, type);
+	log_ptr++;
+
+	log_ptr += mach_write_compressed(log_ptr, space_id);
+	log_ptr += mach_write_compressed(log_ptr, page_no);
+
+	//save offset of "rec_len" field
+	off1 = (log_ptr - begin_log_ptr);
+	mtr->add_len_off(off1);
+
+	/*reserve 2-byte for rec len, we write it later in the next call of this
+	function or at mtr::execute for the last log rec */
+	log_ptr += 2;
+	
+	/*reserve 8-byte for LSN, we write it later when log recs are written to PPL partition log buffer */
+	//lsn = ut_time_us(NULL);
+	//mach_write_to_8(log_ptr, lsn);
+	log_ptr += 8;
+
+	//add info 
+
+	//We compute the key as InnoDB 
+	key = (space_id << 20) + space_id + page_no;
+	mtr->add_key(key);
+	//mtr->add_LSN(lsn);
+	mtr->add_type(type);
+	mtr->add_space(space_id);
+	mtr->add_page(page_no);
 
 	mtr->added_rec();
 	return(log_ptr);

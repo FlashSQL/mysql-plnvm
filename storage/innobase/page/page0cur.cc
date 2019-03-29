@@ -1140,6 +1140,10 @@ need_extra_info:
 		memcpy(log_ptr, ins_ptr, rec_size);
 		mlog_close(mtr, log_ptr + rec_size);
 	} else {
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		//this case may cause bug, check	
+		assert(0);//debug
+#endif
 		mlog_close(mtr, log_ptr);
 		ut_a(rec_size < UNIV_PAGE_SIZE);
 		mlog_catenate_string(mtr, ins_ptr, rec_size);
@@ -1258,6 +1262,11 @@ page_cur_parse_insert_rec(
 		return(const_cast<byte*>(ptr + (end_seg_len >> 1)));
 	}
 
+#if defined(UNIV_PMEMOBJ_PART_PL)
+	//test skip the below code
+	return(const_cast<byte*>(ptr + (end_seg_len >> 1)));
+#endif
+
 	ut_ad(!!page_is_comp(page) == dict_table_is_comp(index->table));
 	ut_ad(!buf_block_get_page_zip(block) || page_is_comp(page));
 
@@ -1310,12 +1319,19 @@ page_cur_parse_insert_rec(
 
 	offsets = rec_get_offsets(buf + origin_offset, index, offsets,
 				  ULINT_UNDEFINED, &heap);
+
 	if (UNIV_UNLIKELY(!page_cur_rec_insert(&cursor,
 					       buf + origin_offset,
 					       index, offsets, mtr))) {
 		/* The redo log record should only have been written
 		after the write was successful. */
+#if defined(UNIV_PMEMOBJ_PART_PL)
+		//tdnguyen test
+		//skip this error to see what happend next
+		printf("PMEM_ERROR CODE#2 page_cur_rec_insert() return NULL in page_cur_parse_insert_rec() SKIP ERROR !!! \n");
+#else
 		ut_error;
+#endif
 	}
 
 	if (buf != buf1) {
@@ -1433,6 +1449,11 @@ use_heap:
 						 rec_size, &heap_no);
 
 		if (UNIV_UNLIKELY(insert_buf == NULL)) {
+#if defined(UNIV_PMEMOBJ_PART_PL)
+			if (!gb_pmw->ppl->is_new){
+				printf("~==~~ WARN WARN: insert_buf is NULL from page_mem_alloc_heap()\n");
+			}
+#endif
 			return(NULL);
 		}
 	}
@@ -2580,7 +2601,10 @@ page_cur_parse_delete_rec(
 	ptr += 2;
 
 	ut_a(offset <= UNIV_PAGE_SIZE);
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//test, skip parse
+	return (ptr);
+#endif
 	if (block) {
 		page_t*		page		= buf_block_get_frame(block);
 		mem_heap_t*	heap		= NULL;

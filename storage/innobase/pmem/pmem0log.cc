@@ -1757,9 +1757,107 @@ __init_page_log_free_pool(
 	pmemobj_persist(pop, &ppl->free_pool, sizeof(ppl->free_pool));
 }
 
+PMEM_TT_ENTRY* 
+pm_ppl_get_tt_entry_by_tid(
+		PMEMobjpool*				pop,
+		PMEM_PAGE_PART_LOG*			ppl,
+		uint64_t tid)
+{
+
+	ulint i, j;
+	ulint n, k;
+	
+	PMEM_TT* ptt;
+
+	TOID(PMEM_TT_HASHED_LINE) line;
+	PMEM_TT_HASHED_LINE* pline;
+
+	TOID(PMEM_TT_ENTRY) entry;
+	PMEM_TT_ENTRY* pe;
+
+	ptt = D_RW(ppl->tt);
+
+	n = ptt->n_buckets;
+	k = ptt->n_entries_per_bucket;
+	//for each bucket
+	for (i = 0; i < n; i++){
+		pline = D_RW(D_RW(ptt->buckets)[i]);
+		//for each entry in the bucket
+		for (j = 0; j < k; j++){
+			pe =  D_RW(D_RW(pline->arr)[j]);
+			if (pe->state == PMEM_TX_ACTIVE
+				&& pe->tid == tid){
+				return pe;
+			}
+		}
+	}
+}
+
+/*
+ * Find the maximum tid in TT
+ * Used in recovery
+ * */
+void
+pm_ppl_get_min_max_tid(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	ulint* min_tid,
+	ulint* max_tid){
+
+	ulint i, j;
+	ulint n, k;
+	
+	PMEM_TT* ptt;
+
+	TOID(PMEM_TT_HASHED_LINE) line;
+	PMEM_TT_HASHED_LINE* pline;
+
+	TOID(PMEM_TT_ENTRY) entry;
+	PMEM_TT_ENTRY* pe;
+
+	ptt = D_RW(ppl->tt);
+
+	n = ptt->n_buckets;
+	k = ptt->n_entries_per_bucket;
+	
+	*min_tid = ULONG_MAX;
+	*max_tid = 0;
+	
+	//for each bucket
+	for (i = 0; i < n; i++){
+		pline = D_RW(D_RW(ptt->buckets)[i]);
+		//for each entry in the bucket
+		for (j = 0; j < k; j++){
+			pe =  D_RW(D_RW(pline->arr)[j]);
+			if (pe->state == PMEM_TX_ACTIVE){
+				if (*max_tid < pe->tid){
+					*max_tid = pe->tid;
+				}
+
+				if (*min_tid > pe->tid){
+					*min_tid = pe->tid;
+				}
+			}
+		}
+	}
+
+}
+
 /*
  * Write REDO log records from mtr's heap to PMEM in partitioned-log   
- *
+ @param[in] pop
+ @param[in] ppl
+ @param[in] tid		trx id
+ @param[in] log_src pointer to start of log rec source
+ @param[in] size	total length of log recs
+ @param[in] n_recs	number of log recs
+ @param[in] key_arr	array of key
+ @param[in] size_arr rec len array
+ @param[out] ret_start_lsn	LSN of the first log recs after insert in PPL
+ @param[out] ret_end_lsn	LSN of the last log recs after insert in PPL
+ @param[in]	entry_id	TT entry id, -1 for the first time transaction write on PPL. Otherwise != -1
+ @return the TT entry id
+	
  * Return the entry id of TT  write on
  * */
 int64_t
@@ -1768,12 +1866,12 @@ pm_ppl_write(
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
 			byte*				log_src,
-			//mtr_buf_t*			dyn_buf,
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
-			uint64_t*			LSN_arr,
 			uint64_t*			size_arr,
+			uint64_t*			ret_start_lsn,
+			uint64_t*			ret_end_lsn,
 			int64_t				entry_id)
 {
 	int64_t ret;
@@ -1827,12 +1925,13 @@ pm_ppl_write(
 					ppl,
 					tid,
 					log_src,
-					//dyn_buf,
 					size,
 					n_recs,
 					key_arr,
-					LSN_arr,
 					size_arr,
+					ret_start_lsn,
+					ret_end_lsn,
+					//LSN_arr,
 					pe,
 					true);
 		} else {
@@ -1844,12 +1943,12 @@ pm_ppl_write(
 				ppl,
 				tid,
 				log_src,
-				//dyn_buf,
 				size,
 				n_recs,
 				key_arr,
-				LSN_arr,
 				size_arr,
+				ret_start_lsn,
+				ret_end_lsn,
 				pe,
 				false);
 		}
@@ -1893,12 +1992,12 @@ pm_ppl_write(
 						ppl,
 						tid,
 						log_src,
-						//dyn_buf,
 						size,
 						n_recs,
 						key_arr,
-						LSN_arr,
 						size_arr,
+						ret_start_lsn,
+						ret_end_lsn,
 						pe,
 						true);
 
@@ -1953,12 +2052,12 @@ pm_ppl_write(
 				ppl,
 				tid,
 				log_src,
-				//dyn_buf,
 				size,
 				n_recs,
 				key_arr,
-				LSN_arr,
 				size_arr,
+				ret_start_lsn,
+				ret_end_lsn,
 				pe,
 				false);
 
@@ -1968,6 +2067,50 @@ pm_ppl_write(
 	//printf("END case B add log for tid %zu at entry %zu n_recs %zu bucket_id %zu local_id %zu \n", tid,  entry_id, n_recs, bucket_id, local_id);
 		return ret;
 	}//end case B
+}
+
+/*key = fold(space, page_id) */
+PMEM_PAGE_LOG_BLOCK*
+pm_ppl_get_log_block_by_key(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			uint64_t			key)
+{
+	ulint hashed;
+	ulint i, j;
+
+	uint64_t n, k;
+	uint64_t bucket_id, local_id;
+	int64_t n_try;
+
+	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+
+	n = ppl->n_buckets;
+	k = ppl->n_blocks_per_bucket;
+
+	PMEM_LOG_HASH_KEY(hashed, key, n);
+	assert (hashed < n);
+
+	TOID_ASSIGN(line, (D_RW(ppl->buckets)[hashed]).oid);
+	pline = D_RW(line);
+	assert(pline);
+	assert(pline->n_blocks == k);
+
+	n_try = k;
+
+	//for log block on the hashed line
+	for (j = 0; j < k; j++){
+		plog_block = D_RW(D_RW(pline->arr)[j]);
+		if (!plog_block->is_free &&
+				plog_block->key == key){
+			return plog_block;
+		}
+	}
+	return NULL;
 }
 
 PMEM_PAGE_LOG_BLOCK*
@@ -2014,12 +2157,12 @@ void __handle_pm_ppl_write_by_entry(
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
 			byte*				log_src,
-			//mtr_buf_t*			dyn_buf,
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
-			uint64_t*			LSN_arr,
 			uint64_t*			size_arr,
+			uint64_t*			ret_start_lsn,
+			uint64_t*			ret_end_lsn,
 			PMEM_TT_ENTRY*		pe,
 			bool				is_new)
 {
@@ -2027,13 +2170,13 @@ void __handle_pm_ppl_write_by_entry(
 	ulint i, j;
 
 	uint64_t key;	
-	uint64_t LSN;	// log record LSN
 	uint64_t rec_size;// log record size
 	uint64_t cur_off;
 	uint64_t eid;
 
 	int64_t blodk_id;
 
+	uint64_t LSN;	// log record LSN
 	byte* end_ptr;
 
 	uint64_t block_len;
@@ -2049,19 +2192,7 @@ void __handle_pm_ppl_write_by_entry(
 	while (cur_off < size){
 		// retrieve info
 		key = key_arr[i];
-		LSN = LSN_arr[i];
 		rec_size = size_arr[i];
-		//check size
-		mlog_id_t type;
-		ulint space, page_no;
-		
-		byte* temp = mlog_parse_initial_log_record(
-				log_src + cur_off, end_ptr, &type, &space, &page_no);
-
-		uint16_t check_size = mach_read_from_2(temp);
-
-		assert (check_size == rec_size);
-		assert (type < MLOG_BIGGEST_TYPE);
 
 		//find the corresponding pageref with this log rec
 		for (j = 0; j < pe->n_dp_entries; j++) {
@@ -2079,8 +2210,7 @@ void __handle_pm_ppl_write_by_entry(
 				__get_log_block_by_id(pop, ppl, pref->idx);
 			if (!plog_block->is_free &&
 					plog_block->key == key){
-				pref->pageLSN = LSN;
-
+				
 				//update log block			
 				__update_page_log_block_on_write(
 						pop,
@@ -2089,9 +2219,11 @@ void __handle_pm_ppl_write_by_entry(
 						cur_off,
 						rec_size,
 						key,
-						LSN,
+						&LSN,
 						pe->eid,
 						pref->idx);
+
+				pref->pageLSN = LSN;
 			}
 			else{
 				//pref is out-of-date, the plog_block is either reset now or the key is not match (another trx has occupied the reset plog_block)
@@ -2105,7 +2237,7 @@ void __handle_pm_ppl_write_by_entry(
 						cur_off,
 						rec_size,
 						key,
-						LSN,
+						&LSN,
 						pe->eid,
 						-1);
 
@@ -2153,7 +2285,7 @@ void __handle_pm_ppl_write_by_entry(
 					cur_off,
 					rec_size,
 					key,
-					LSN,
+					&LSN,
 					pe->eid,
 					-1);
 
@@ -2161,173 +2293,33 @@ void __handle_pm_ppl_write_by_entry(
 			pref->idx = new_bid;
 			pref->pageLSN = LSN;
 		}
-
+		
+		if (i == 0){
+			*ret_start_lsn = LSN;
+		}
 		cur_off += rec_size;
 		i++;
 	} //end while
-	
+	*ret_end_lsn = LSN;
+	assert(*ret_start_lsn <= *ret_end_lsn);	
+
 	assert(i == n_recs);
 }
 
-void __handle_pm_ppl_write_by_entry_old(
-			PMEMobjpool*		pop,
-			PMEM_PAGE_PART_LOG*	ppl,
-			uint64_t			tid,
-			//byte*				log_src,
-			mtr_buf_t*			dyn_buf,
-			uint64_t			size,
-			uint64_t			n_recs,
-			uint64_t*			key_arr,
-			uint64_t*			LSN_arr,
-			uint64_t*			size_arr,
-			PMEM_TT_ENTRY*		pe,
-			bool				is_new)
-{
-
-	ulint i, j;
-
-	uint64_t key;	
-	uint64_t LSN;	// log record LSN
-	uint64_t rec_size;// log record size
-	uint64_t cur_off;
-	uint64_t eid;
-
-	int64_t blodk_id;
-
-	byte* log_src;
-
-	PMEM_PAGE_REF* pref;
-	// Now the pe point to the entry to write on and the ret is the entry id
-
-	// for each input log record
-	cur_off = 0;
-	for (i = 0; i < n_recs; i++) {
-		key = key_arr[i];
-		LSN = LSN_arr[i];
-		if (i == n_recs - 1){
-			rec_size = size - size_arr[i];
-		}
-		else{
-			rec_size = size_arr[i + 1] - size_arr[i];
-		}
-		
-		//find the corresponding pageref with this log rec
-		for (j = 0; j < pe->n_dp_entries; j++) {
-			pref = D_RW(D_RW(pe->dp_arr)[j]);
-			if (pref->key == key){
-				//pageref already exist
-				break;
-			}
-		} //end for each pageref in entry
-
-		if (j < pe->n_dp_entries){
-			//pageref already exist, we don't increase count
-			//Note: Because pm_ppl_flush() may reset a plogblock even though it's count > 0, check for out-of-date
-			PMEM_PAGE_LOG_BLOCK* plog_block =
-				__get_log_block_by_id(pop, ppl, pref->idx);
-			if (!plog_block->is_free &&
-					plog_block->key == key){
-				pref->pageLSN = LSN;
-
-				//update log block			
-				__update_page_log_block_on_write(
-						pop,
-						ppl,
-						log_src,
-						cur_off,
-						rec_size,
-						key,
-						LSN,
-						pe->eid,
-						pref->idx);
-			}
-			else{
-				//pref is out-of-date, the plog_block is either reset now or the key is not match (another trx has occupied the reset plog_block)
-
-				pref->idx = -1;
-
-				uint64_t new_bid = __update_page_log_block_on_write(
-						pop,
-						ppl,
-						log_src,
-						cur_off,
-						rec_size,
-						key,
-						LSN,
-						pe->eid,
-						-1);
-
-				//update pref
-				pref->key = key;
-				pref->idx = new_bid;
-				pref->pageLSN = LSN;
-			}
-		}
-		else {
-			// new pageref, increase the count
-			//find the first free pageref from the beginning to reuse the reclaim index
-			for (j = 0; j < pe->n_dp_entries; j++) {
-				pref = D_RW(D_RW(pe->dp_arr)[j]);
-				if (pref->idx == -1){
-					//found
-					break;
-				}
-			}
-
-			if (j == pe->n_dp_entries){
-
-				//pe is full
-				if (pe->n_dp_entries == pe->max_dp_entries){
-					uint64_t old_size = pe->max_dp_entries;
-					//Realloc double size
-					__realloc_TT_entry(pop, ppl, pe, pe->max_dp_entries * 2);
-
-					mlog_id_t type;
-					type = (mlog_id_t)((ulint)*log_src & ~MLOG_SINGLE_REC_FLAG);
-
-					printf("\n\nREALLOC a PMEM_TT_ENTRY from %zu to %zu (eid %zu tid %zu log type %zu) \n", old_size, pe->max_dp_entries, pe->eid, pe->tid, type);
-					//assert(0);
-				}
-
-				pref = D_RW(D_RW(pe->dp_arr)[j]);
-				pe->n_dp_entries++;
-			}
-
-			//update log block
-			uint64_t new_bid = __update_page_log_block_on_write(
-					pop,
-					ppl,
-					log_src,
-					cur_off,
-					rec_size,
-					key,
-					LSN,
-					pe->eid,
-					-1);
-			
-			pref->key = key;
-			pref->idx = new_bid;
-			pref->pageLSN = LSN;
-		}
-
-		cur_off += rec_size;
-		//next log record
-	}//end for each input log record
-}
 
 /*
  * Write a log record on per-page partitioned log
  * log_src (in): pointer to the beginning of array log records in mini-transaction's heap
- * cur_off (in): start offset of current log record
- * rec_size (in): size of current log record
- * key (in): fold of page_no and space 
- * LSN (in): log record's LSN
- * eid (in): entry id of the TT entry
- * bid (in):
+ *@param[in] cur_off: start offset of current log record
+ *@param[in] rec_size: size of current log record
+ *@param[in] key: fold of page_no and space 
+ *@param[out] LSN : log record's LSN
+ *@param[in] eid: entry id of the TT entry
+ *@param[in] bid:
  * -1: no ref
  *  Otherwise: reference to the log block to write 
  *
- *  Return: the bid of the block written
+ *@return: the bid of the block written
  * */
 int64_t
 __update_page_log_block_on_write(
@@ -2337,7 +2329,7 @@ __update_page_log_block_on_write(
 			uint64_t			cur_off,
 			uint64_t			rec_size,
 			uint64_t			key,
-			uint64_t			LSN,
+			uint64_t*			LSN,
 			int64_t				eid,
 			int64_t				block_id)
 {
@@ -2363,19 +2355,6 @@ __update_page_log_block_on_write(
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 
 	PMEM_PAGE_LOG_BUF* plogbuf;
-	
-	////tdnguyen test, parset the log rec
-	//mlog_id_t type;
-	//ulint space;
-	//ulint page_no;
-
-	//mlog_parse_initial_log_record(log_src, log_src + rec_size, &type, &space, &page_no);	
-
-
-	//if (type == MLOG_UNDO_INSERT){
-	//	printf("==> PMEM_TEST Add REDO log rec of UNDO page (space %zu, page_no %zu)\n ", space, page_no);
-	//}
-	////end tdnguyen test
 	
 	n = ppl->n_buckets;
 	k = ppl->n_blocks_per_bucket;
@@ -2407,7 +2386,6 @@ __update_page_log_block_on_write(
 				__pm_write_log_buf(
 						pop,
 						ppl,
-						//pline,
 						hashed,
 						log_src,
 						cur_off,
@@ -2419,7 +2397,6 @@ __update_page_log_block_on_write(
 				//plog_block->n_log_recs++;
 
 				//(3) update metadata
-				plog_block->lastLSN = LSN;
 				//inc number of active tx on this page			
 				plog_block->count++;
 
@@ -2454,7 +2431,6 @@ __update_page_log_block_on_write(
 				__pm_write_log_buf(
 						pop,
 						ppl,
-						//pline,
 						hashed,
 						log_src,
 						cur_off,
@@ -2466,8 +2442,6 @@ __update_page_log_block_on_write(
 				//plog_block->n_log_recs++;
 
 				//(3) update metadata
-				/*firstLSN is updated only here*/
-				plog_block->lastLSN = LSN;
 
 				plog_block->count = 1;
 
@@ -2509,7 +2483,6 @@ __update_page_log_block_on_write(
 		__pm_write_log_buf(
 				pop,
 				ppl,
-				//pline,
 				bucket_id,
 				log_src,
 				cur_off,
@@ -2519,22 +2492,22 @@ __update_page_log_block_on_write(
 				false);
 		//plog_block->n_log_recs++;
 
-		//(3) update metadata
-		plog_block->lastLSN = LSN;
-
 		//because block_id != -1, the txref must exist, no need to update tx_idx_arr, n_tx_idx, and count
+		
 		pmemobj_rwlock_unlock(pop, &plog_block->lock);
 		return ret;
 	} //end case B
 }
 /*
  *Write a log rec to a log buf
- ppl (in):pointer to the part-log to get the free pool
- pline (in): pointer to the hashed line
- log_src (in): pointer to the log rec
- src_off (in): offset on the log_src of the log rec
- plog_block (in): pointer to the log block
- is_first_write (in): true if it is the first write on the log_block
+ @param[in] ppl:pointer to the part-log to get the free pool
+ @param[in] hashed_id: id of the hashed line
+ @param[in] log_src: pointer to the log rec
+ @param[in] src_off: offset on the log_src of the log rec
+ @param[in] rec_size: len of log rec
+ @param[out] rec_lsn LSN of the log rec, is the timestamp when it is insert to logbuf
+ @param[in] plog_block: pointer to the log block
+ @param[in] is_first_write: true if it is the first write on the log_block
  * */
 static inline void
 __pm_write_log_buf(
@@ -2545,13 +2518,18 @@ __pm_write_log_buf(
 			byte*						log_src,
 			uint64_t					src_off,
 			uint64_t					rec_size,
-			uint64_t					rec_lsn,
+			uint64_t*					rec_lsn,
 			PMEM_PAGE_LOG_BLOCK*		plog_block,
 			bool						is_first_write)
 {
 
 	byte* log_des;
 	byte* pdata;
+	byte* temp;
+
+	mlog_id_t type;
+	ulint space, page_no;
+	uint16_t check_size;
 
 	PMEM_PAGE_LOG_HASHED_LINE*	pline;
 	PMEM_PAGE_LOG_FREE_POOL* pfreepool;
@@ -2582,9 +2560,30 @@ retry:
 		pmemobj_rwlock_unlock(pop, &pline->lock);
 		goto retry;
 	}	
+	////////////////////////////////////////////	
+	// (0) We assign LSN used OS timpestamp
+	// check size and 
+	// write 8-byte rec_lsn field on log rec
+	// ////////////////////////////////////////
+	
+	*rec_lsn = ut_time_us(NULL);	
+	
+	//check size and type
+	temp = log_src + src_off;
+
+	temp = mlog_parse_initial_log_record(
+			temp, temp + rec_size, &type, &space, &page_no);
+	check_size = mach_read_from_2(temp);
+
+	assert (check_size == rec_size);
+	assert (type < MLOG_BIGGEST_TYPE);
+
+	temp += 2;
+	//write lsn to rec_lsn 8-byte slot, we reserved it in mlog_write_initial_log_record_low()
+	mach_write_to_8(temp, *rec_lsn);
 
 	////////////////////////////////////////////
-	// (1) Handle full log buf
+	// (1) Handle full log buf (if any)
 	// /////////////////////////////////////////
 	if (plogbuf->cur_off + rec_size > plogbuf->size) {
 
@@ -2642,8 +2641,11 @@ get_free_buf:
 			//Note that we save the offset and diskaddr for the first write of this block
 			plog_block->start_off = D_RW(free_buf)->cur_off;
 			plog_block->start_diskaddr = pline->diskaddr;
-			plog_block->firstLSN = rec_lsn;
+			plog_block->firstLSN = *rec_lsn;
 		}
+		assert(plog_block->lastLSN <= *rec_lsn);
+		plog_block->lastLSN = *rec_lsn;
+
 
 		__pm_write_log_rec_low(pop,
 				log_des,
@@ -2672,8 +2674,10 @@ get_free_buf:
 			//Note that we save the offset and diskaddr for the first write of this block
 			plog_block->start_off = plogbuf->cur_off;
 			plog_block->start_diskaddr = pline->diskaddr;
-			plog_block->firstLSN = rec_lsn;
+			plog_block->firstLSN = *rec_lsn;
 		}
+		assert(plog_block->lastLSN <= *rec_lsn);
+		plog_block->lastLSN = *rec_lsn;
 
 		log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
 

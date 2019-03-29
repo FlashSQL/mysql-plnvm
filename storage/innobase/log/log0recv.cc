@@ -985,8 +985,17 @@ recv_sys_init(
 		ut_malloc_nokey(RECV_PARSING_BUF_SIZE));
 	recv_sys->len = 0;
 	recv_sys->recovered_offset = 0;
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	if (!gb_pmw->ppl->is_new){
+		//just create dummy addr_hash
+		recv_sys->addr_hash = hash_create(128);
+	}
+	else {
+		recv_sys->addr_hash = hash_create(available_memory / 512);
+	}
+#else
 	recv_sys->addr_hash = hash_create(available_memory / 512);
+#endif
 	recv_sys->n_addrs = 0;
 
 	recv_sys->apply_log_recs = FALSE;
@@ -1793,14 +1802,6 @@ recv_parse_or_apply_log_rec_body(
 		page = block->frame;
 		page_zip = buf_block_get_page_zip(block);
 		ut_d(page_type = fil_page_get_type(page));
-#if defined (UNIV_PMEMOBJ_PART_PL)
-		if (page != NULL && page_type == 0 
-				&& type == 38){
-			printf("PMEM_WARN: page_type ERROR check in recv_parse_or_apply_log_rec_body() page_is_null %zu type %zu space %zu page_no %zu \n ", (page == NULL), type, space_id, page_no);
-			//skip
-			return ptr;
-		}
-#endif
 	} else {
 		/* Parsing a page log record. */
 		page = NULL;
@@ -1817,9 +1818,9 @@ recv_parse_or_apply_log_rec_body(
 		break;
 #endif /* UNIV_LOG_LSN_DEBUG */
 	case MLOG_1BYTE: case MLOG_2BYTES: case MLOG_4BYTES: case MLOG_8BYTES:
-#if defined (UNIV_PMEMOBJ_PART_PL)
-	goto skip_check; //skip debug check
-#endif
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	goto skip_check; //skip debug check
+//#endif
 
 #ifdef UNIV_DEBUG
 		if (page && page_type == FIL_PAGE_TYPE_ALLOCATED
@@ -1884,8 +1885,6 @@ recv_parse_or_apply_log_rec_body(
 				      || offs == PAGE_BTR_SEG_TOP
 				      + PAGE_HEADER + FSEG_HDR_PAGE_NO
 				      || offs == PAGE_BTR_SEG_TOP
-				      + PAGE_HEADER + FSEG_HDR_SPACE
-				      || offs == PAGE_BTR_IBUF_FREE_LIST_NODE
 				      + PAGE_HEADER + FIL_ADDR_PAGE
 				      + 0 /*FLST_PREV*/
 				      || offs == PAGE_BTR_IBUF_FREE_LIST_NODE
@@ -1896,9 +1895,9 @@ recv_parse_or_apply_log_rec_body(
 		}
 #endif /* UNIV_DEBUG */
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-skip_check: //skip debug check
-#endif
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//skip_check: //skip debug check
+//#endif
 		ptr = mlog_parse_nbytes(type, ptr, end_ptr, page, page_zip);
 		if (ptr != NULL && page != NULL
 		    && page_no == 0 && type == MLOG_4BYTES) {
@@ -2019,14 +2018,6 @@ skip_check: //skip debug check
 			ut_a(!page
 			     || (ibool)!!page_is_comp(page)
 			     == dict_table_is_comp(index->table));
-#if defined(UNIV_PMEMOBJ_PART_PL)
-			//test the len != 0
-			ulint log_data_len = mach_read_from_4(ptr);
-			if (log_data_len == 0){
-				printf("PMEM_ERROR: log_data_len == 0\n");
-				//assert(log_data_len > 0);
-			}
-#endif
 			ptr = page_parse_copy_rec_list_to_created_page(
 				ptr, end_ptr, block, index, mtr);
 		}
@@ -2292,7 +2283,7 @@ recv_add_to_hash_table(
 		recv_sys->n_addrs++;
 		//tdnguyen test how many UNDO pages
 		if (type == MLOG_UNDO_INSERT){
-			//printf("==> PMEM_RECV: UNDO page added to HT, space %zu page %zu\n", space, page_no);
+			printf("==> PMEM_RECV: UNDO page added to HT, space %zu page %zu\n", space, page_no);
 		}
 #if 0
 		fprintf(stderr, "Inserting log rec for space %lu, page %lu\n",
@@ -2391,7 +2382,8 @@ recv_recover_page_func(
 
 		assert(pline != NULL);
 
-		return pm_ppl_recv_recover_page_func(gb_pmw->pop, pline, just_read_in, block);
+		//return pm_ppl_recv_recover_page_func(gb_pmw->pop, pline, just_read_in, block);
+		return pm_ppl_recv_recover_page_func(gb_pmw->pop, gb_pmw->ppl, NULL, just_read_in, block);
 	}
 #endif
 	page_t*		page;
@@ -2724,7 +2716,82 @@ loop:
 	if (!allow_ibuf) {
 		recv_no_ibuf_operations = true;
 	}
+//tdnguyen test
+	ulint cnt1, cnt2;
 
+	cnt1 = cnt2 = 0;
+	printf("PMEM_TEST total recv_addrs %zu\n", recv_sys->n_addrs);
+	for (i = 0; i < hash_get_n_cells(recv_sys->addr_hash); i++) {
+		for (recv_addr = static_cast<recv_addr_t*>(
+				HASH_GET_FIRST(recv_sys->addr_hash, i));
+		     recv_addr != 0;
+		     recv_addr = static_cast<recv_addr_t*>(
+				HASH_GET_NEXT(addr_hash, recv_addr))) {
+			if (srv_is_tablespace_truncated(recv_addr->space)) {
+				continue;
+			}
+			if (recv_addr->state == RECV_DISCARDED) {
+				continue;
+			}
+			const page_id_t		page_id(recv_addr->space,
+							recv_addr->page_no);
+			bool			found;
+			const page_size_t&	page_size
+				= fil_space_get_page_size(recv_addr->space,
+							  &found);
+
+			ut_ad(found);
+
+
+				mutex_exit(&(recv_sys->mutex));
+
+				buf_block_t*	block;
+				dberr_t			err;
+				byte*			page;
+				bool read_ok;
+
+				mtr_start(&mtr);
+
+				if (buf_page_peek(page_id)) {
+
+					block = buf_page_get(
+						page_id, page_size,
+						RW_X_LATCH, &mtr);
+
+					buf_block_dbg_add_level(
+						block, SYNC_NO_ORDER_CHECK);
+
+					printf("PMEM_TEST get page from ht (%zu, %zu) \n", page_id.space(), page_id.page_no());
+					cnt1++;
+				} else {
+					read_ok = buf_read_page(
+							page_id, page_size);
+					assert(read_ok);
+					block = buf_page_get(
+							page_id, page_size,
+							RW_X_LATCH, &mtr);
+					printf("PMEM_TEST read page (%zu, %zu) \n", page_id.space(), page_id.page_no());
+					cnt2++;
+				}
+				assert(block != NULL);
+
+				mutex_enter(&(recv_sys->mutex));
+
+				page = block->frame;
+
+				ulint read_space_id = mach_read_from_4(page + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
+				ulint read_page_no = mach_read_from_4(page + FIL_PAGE_OFFSET);
+
+				if(read_space_id != block->page.id.space() || read_page_no != block->page.id.page_no()){
+					printf("PMEM_ERROR in pm_ppl_recv_check_hashed_line(), input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", block->page.id.space(), block->page.id.page_no(), read_space_id, read_page_no);
+			}
+
+		}
+	}
+	printf("PMEM_TEST: cnt1 %zu cnt2 %zu total %zu\n", cnt1, cnt2, recv_sys->n_addrs);
+	mutex_exit(&(recv_sys->mutex));
+	return;
+//end tdnguyen test
 	recv_sys->apply_log_recs = TRUE;
 	recv_sys->apply_batch_on = TRUE;
 
@@ -4117,6 +4184,7 @@ pm_ppl_recv_init(
 
 	uint32_t n, i;
     uint32_t size;
+	ulint avail_mem;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
@@ -4124,6 +4192,35 @@ pm_ppl_recv_init(
 
 	n = ppl->n_buckets;
 
+	//A: allocate global recv_line
+	avail_mem = buf_pool_get_curr_size();
+
+	ppl->recv_line = (PMEM_RECV_LINE*) malloc(sizeof(PMEM_RECV_LINE));
+	recv_line = ppl->recv_line;
+
+	recv_line->heap = mem_heap_create_typed(256,
+				MEM_HEAP_FOR_RECV_SYS);
+
+	recv_line-> buf = NULL;
+	recv_line->len = 0;
+	recv_line->recovered_offset = 0;
+
+	/*Hash table*/
+	recv_line->hashed_id = n + 1;	
+	//TODO: how to decide the size of the hashtable
+	recv_line->addr_hash = hash_create(avail_mem / 512);
+	recv_line->n_addrs = 0;
+
+	recv_line->apply_log_recs = FALSE;
+	recv_line->apply_batch_on = FALSE;
+
+	recv_line->found_corrupt_log = false;
+	recv_line->found_corrupt_fs = false;
+	recv_line->mlog_checkpoint_lsn = 0;
+
+	recv_line->encryption_list = NULL;
+
+	//B: allocate for each line
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
         
@@ -4176,6 +4273,27 @@ pm_ppl_recv_end(
 
 	n = ppl->n_buckets;
 
+	//A: free global recv_line
+		
+	recv_line = ppl->recv_line;
+	recv_line-> buf = NULL;
+	recv_line->len = 0;
+	recv_line->recovered_offset = 0;
+	recv_line->apply_log_recs = FALSE;
+	recv_line->apply_batch_on = FALSE;
+
+	if (recv_line->addr_hash != NULL) {
+		hash_table_free(recv_line->addr_hash);
+	}
+
+	if (recv_line->heap != NULL) {
+		mem_heap_free(recv_line->heap);
+	}
+
+	//ut_free(recv_line->buf);
+	free(recv_line);
+	recv_line = NULL;
+
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
 		recv_line = pline->recv_line;
@@ -4206,6 +4324,10 @@ pm_ppl_recovery(
         lsn_t flush_lsn
         ) 
 {
+
+	uint32_t i;
+	PMEM_PAGE_LOG_HASHED_LINE*		pline;
+	PMEM_RECV_LINE*					recv_line;
 
 	lsn_t		checkpoint_lsn;
 	lsn_t		max_recovered_lsn;
@@ -4247,9 +4369,12 @@ pm_ppl_recovery(
 	log_sys->lsn = max_recovered_lsn;
 
 	recv_needed_recovery = true;
+
+
     //this function call buf_dblwr_process() that correct tone page using DWB
 	err = pm_ppl_recv_init_crash_recovery_spaces(pop, ppl, max_recovered_lsn);
     
+	pm_ppl_recv_apply_prior_pages(pop, ppl, NULL, false);
 
     if (err != DB_SUCCESS) {
         log_mutex_exit();
@@ -4262,6 +4387,17 @@ pm_ppl_recovery(
 
 	/* Synchronize the uncorrupted log groups to the most up-to-date log
 	group; we also copy checkpoint info to groups */
+	
+	/*IMPORTANT 
+	 * Set apply_log_recs for each recv_line to TRUE, so that UNDO pages and other data pages can be applied (actual REDOing) when read on.
+*/	
+	
+	n = ppl->n_buckets;
+	for (i = 0; i < n; i++) {
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+		pline->recv_line->apply_log_recs = TRUE;
+	}
+
 
 	srv_start_lsn = max_recovered_lsn;
 
@@ -4354,7 +4490,7 @@ pm_ppl_analysis(
 			PMEM_PAGE_LOG_BLOCK*	plog_block2 = 
 				D_RW(D_RW(pline->arr)[min_id2]);
 			printf("PMEM_WARN: ANALYSIS min lsn is not in same block with low watermark\n");
-			//assert(min_id1 == min_id2);
+			assert(min_id1 == min_id2);
 		}
 
         pline->recv_diskaddr = low_diskaddr;
@@ -4490,7 +4626,11 @@ pm_ppl_redo_line(
     uint64_t len;
     uint64_t actual_len;
 	int64_t parsed_recs;
+
+	uint64_t need_recs;
+
 	int64_t total_parsed_recs;
+	uint64_t total_need_recs;
     dberr_t err;
 	
 	PMEM_RECV_LINE* recv_line = pline->recv_line;
@@ -4521,6 +4661,7 @@ pm_ppl_redo_line(
     read_off = 0;
 
 	total_parsed_recs = 0;
+	total_need_recs = 0;
     
     // pline->recv_diskaddr --> pline->write_diskaddr --> flush_logbuf->cur_off --> logbuf->cur_off
 loop:
@@ -4554,20 +4695,12 @@ loop:
         //read the actual buffer len (included the header)
         actual_len = mach_read_from_4(recv_buf);
 
-		////test debug actual_len == 0), how about next read?
-		//if (actual_len == 0){
-		//	cur_addr += scan_len;
-		//	read_off += scan_len;
-
-		//	goto loop; 
-		//}
-		////end test
         assert(actual_len > 0);
         ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
 
 
         //parse log recs in the recv_buf 
-        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE);
+        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &need_recs);
 
         if (parsed_recs < 0){
             printf("PMEM_ERROR case A error after pm_ppl_parse_recs() \n");
@@ -4575,6 +4708,7 @@ loop:
             assert(0);
         }
 		total_parsed_recs += parsed_recs;
+		total_need_recs += need_recs;
 
         cur_addr += scan_len;
         read_off += scan_len;
@@ -4601,7 +4735,7 @@ loop:
 
         ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
 
-        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE);
+        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &need_recs);
         if (parsed_recs < 0){
             printf("PMEM_ERROR case B error after pm_ppl_parse_recs() \n");
             assert(0);
@@ -4610,6 +4744,7 @@ loop:
         }
 
 		total_parsed_recs += parsed_recs;
+		total_need_recs += need_recs;
         cur_addr += scan_len;
     }
 
@@ -4625,7 +4760,7 @@ loop:
 
         ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
 
-        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE);
+        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &need_recs);
         if (parsed_recs < 0){
             printf("PMEM_ERROR case C error after pm_ppl_parse_recs() \n");
             assert(0);
@@ -4634,18 +4769,28 @@ loop:
         }
 
 		total_parsed_recs += parsed_recs;
+		total_need_recs += need_recs;
         cur_addr += scan_len;
     }
+	
+	printf("PMEM_INFO: FINISH parse line %zu need/parsed %zu/%zu\n", pline->hashed_id, total_need_recs, total_parsed_recs);
 
     return false; 
 }
 
 /*
  * Alternative to recv_parse_log_recs()
+ * Parse log recs on a line from start_ptr to start_ptr + parse_len
  *
  *Because we don't use checkpoint in PPL
  We do not distinguish single_rec and multi_rec
- Return number of parse recs
+ @param[in] pop
+ @param[in] ppl
+ @param[in] pline
+ @param[in] start_ptr pointer to the start of logbuf
+ @param[in] parse_len number bytes should be parsed
+ @param[out] n_need_recs number of log recs need to add to hashtable after parsing
+ @return: number of parsed recs
  * */
 int64_t
 pm_ppl_parse_recs(
@@ -4653,7 +4798,8 @@ pm_ppl_parse_recs(
 		PMEM_PAGE_PART_LOG*	        ppl,
 		PMEM_PAGE_LOG_HASHED_LINE*  pline,
 		byte*                       start_ptr,
-		uint64_t                    parse_len
+		uint64_t                    parse_len,
+		uint64_t					*n_need_recs
 		)
 {
     byte* ptr;
@@ -4672,15 +4818,15 @@ pm_ppl_parse_recs(
 
 	uint64_t n_parsed_recs;
 
+	bool	is_need;
+
 	PMEM_RECV_LINE* recv_line = pline->recv_line;
-
-	//store_t		store = STORE_YES;
 	store_t		store = STORE_YES;
-
     end_ptr = start_ptr + parse_len;
 
     cur_off = 0;
 	n_parsed_recs = 0;
+	*n_need_recs = 0;
 
 //parse each log recs, increase the recovered_off after each loop
 loop:
@@ -4691,6 +4837,7 @@ loop:
         //return false; //done, all log recs are scanned
         return n_parsed_recs; //done, all log recs are scanned
     }
+	is_need = false;
 
 	old_lsn = recv_line->recovered_lsn;
 	
@@ -4698,7 +4845,8 @@ loop:
 	len = pm_ppl_recv_parse_log_rec(
 			pop, ppl, recv_line,
 			&type, ptr, end_ptr, &space,
-			&page_no, true, &rec_lsn, &body);
+			&page_no, true, &rec_lsn, &body,
+			&is_need);
 
 	recv_line->found_corrupt_log = recv_sys->found_corrupt_log;
 	recv_line->found_corrupt_fs = recv_sys->found_corrupt_fs;
@@ -4721,23 +4869,18 @@ loop:
 		return -1;
 	}
 
-	//new_recovered_lsn = old_lsn +  len;
-	//new_recovered_lsn = rec_lsn;
-
-	//if (new_recovered_lsn > parse_len) {
-    //    return n_parsed_recs;
-	//}
-
-	//for recv_report_corrupt_log() to work
-	//recv_previous_parsed_rec_type = type;
-	//recv_previous_parsed_rec_offset = cur_off;
-	//recv_previous_parsed_rec_is_multi = 0;
-
 	//update
 	n_parsed_recs++;
 	cur_off += len;
 	recv_line->recovered_offset += len;
-	recv_line->recovered_lsn = rec_lsn;
+
+	//Note: if the rec_lsn < recv_line->recovered_lsn, this log rec has already applied in the database, we don't need it
+	if (rec_lsn < recv_line->recovered_lsn){
+		assert(!is_need);
+	}
+	else{
+		recv_line->recovered_lsn = rec_lsn;
+	}
 	
 	//add the parsed log record to HASH TABLE in apply phase
 	switch (type) {
@@ -4774,16 +4917,35 @@ loop:
 			case STORE_YES:
 				//pm_ppl_recv_add_to_hash_table(
 				//		pop, ppl, recv_line,
-				//		type, space, page_no, body,
-				//		ptr + len, old_lsn,
-				//		recv_line->recovered_lsn);
-				pm_ppl_recv_add_to_hash_table(
-						pop, ppl, recv_line,
-						type, space, page_no,
-					   	body, ptr + len,
-					   	rec_lsn, rec_lsn + len);
+				//		type, space, page_no,
+				//	   	body, ptr + len,
+				//	   	rec_lsn, rec_lsn + len);
+				pmemobj_rwlock_wrlock(pop, &ppl->lock);
+
+				if (is_need){
+					pm_ppl_recv_add_to_hash_table(
+							pop, ppl, ppl->recv_line,
+							type, space, page_no,
+							body, ptr + len,
+							rec_lsn, rec_lsn + len);
+
+					*n_need_recs = *n_need_recs + 1;
+				}
+
+				pmemobj_rwlock_unlock(pop, &ppl->lock);
+				break;
 		}
 		/* fall through */
+	}
+
+	//check mem heap
+	
+	ulint cur_heap_size = mem_heap_get_size(ppl->recv_line->heap);
+	ulint avail_mem = buf_pool_get_curr_size();
+
+	if (cur_heap_size > avail_mem){
+		printf("cur heap size %zu is reached avail mem %zu\n", cur_heap_size, avail_mem);
+		assert(0);
 	}
 	goto loop;
 }
@@ -4803,6 +4965,7 @@ loop:
 @param[in]	apply		whether to apply MLOG_FILE_* records
 @param [out] rec_lsn	lsn of the log record
 @param[out]	body		start of log record body
+@param[out]	is_need		true if we need to insert this log rec in hashtable.
  * */
 uint64_t
 pm_ppl_recv_parse_log_rec(
@@ -4816,14 +4979,19 @@ pm_ppl_recv_parse_log_rec(
 	ulint*		page_no,
 	bool		apply,
 	uint64_t*	rec_lsn,
-	byte**		body) {
+	byte**		body,
+	bool*		is_need) {
 	
+	PMEM_PAGE_LOG_BLOCK* plog_block;
+
 	uint32_t rec_len;
 
 	byte*	new_ptr;
-
+	
+	*is_need = false;
 	*body = NULL;
-
+	
+	//(1) Do some checks
 	UNIV_MEM_INVALID(type, sizeof *type);
 	UNIV_MEM_INVALID(space, sizeof *space);
 	UNIV_MEM_INVALID(page_no, sizeof *page_no);
@@ -4855,37 +5023,44 @@ pm_ppl_recv_parse_log_rec(
 		return(0);
 	}//end switch
 	
+	//(2) Parse the log header to get space, page_no
+		
 	//get the header of the log record, the return pointer should point to "rec_len"
 	new_ptr = mlog_parse_initial_log_record(ptr, end_ptr, type, space, page_no);
-	
-	//get the rec_len
-	//rec_len = mach_read_from_4(new_ptr);
-	//assert(rec_len > 0);
-	//new_ptr += 4;
 	
 	rec_len = mach_read_from_2(new_ptr);
 	assert(rec_len > 0);
 	new_ptr += 2;
 
-	//get the lsn
-	//*rec_lsn = mach_read_from_2(new_ptr);
 	*rec_lsn = mach_read_from_8(new_ptr);
 	new_ptr += 8;
-
+	
 	*body = new_ptr;
+
+	//(3) Varify whether this log rec is need
+	ulint key;
+	PMEM_FOLD(key, *space, *page_no);
+
+	plog_block = pm_ppl_get_log_block_by_key(pop, ppl, key);
+	if (plog_block == NULL){
+		//the page (space, page_no) has been flushed to disk before the crash
+		//do not need recover this page
+		return rec_len;
+	}
+
+	assert(plog_block->key == key);	
+
+	if ((*rec_lsn) < plog_block->firstLSN){
+		//this log rec is old, skip it
+		return rec_len;
+	}
+
+	//(4) Parse the body as original InnoDB
 
 	if (UNIV_UNLIKELY(!new_ptr)) {
 		assert(0);
 		return(0);
 	}
-	
-	//tdnguyen test, 
-	//If we skip recv_parse_or_apply_log_rec_body, recv_spaces is empty. Then pm_ppl_redo() may complete but in pm_ppl_recv_init_crash_recovery_spaces() we cannot correctly recovery tone pages using DWB pages
-	
-	////uncomment below for skip parsing	
-	//return (rec_len);
-	
-	//end tdnguyen test
 	
 	//we reuse this function, at this time only parse, not apply. The return pointer is the next byte after the body
 	new_ptr = recv_parse_or_apply_log_rec_body(
@@ -4907,6 +5082,8 @@ pm_ppl_recv_parse_log_rec(
 		assert ( (new_ptr - ptr) == rec_len);
 	}
 
+	*is_need = true;
+
 	return(new_ptr - ptr);
 	//return(rec_len);
 }
@@ -4919,13 +5096,24 @@ pm_ppl_recv_line_empty_hash(
 {
 	uint64_t size;	
 	PMEM_RECV_LINE* recv_line;
+	ulint avail_mem;
 
-	recv_line = pline->recv_line;
-	size = D_RW(pline->logbuf)->size;
+	avail_mem = buf_pool_get_curr_size();
+	
+	if (pline == NULL){
+		recv_line = ppl->recv_line;
+		size = avail_mem / 512;
+	}
+	else {
+		recv_line = pline->recv_line;
+		size = D_RW(pline->logbuf)->size;
+	}
+
 
 	hash_table_free(recv_line->addr_hash);
 	mem_heap_empty(recv_line->heap);
-	hash_create(size);
+
+	recv_line->addr_hash = hash_create(size);
 }
 
 /*simulate recv_add_to_hash_table()*/
@@ -4960,24 +5148,37 @@ pm_ppl_recv_add_to_hash_table(
 	len = rec_end - body;
 	
 	//(1) allocate recv obj to capture the log record
+	//recv = static_cast<recv_t*>(
+	//	mem_heap_alloc(recv_line->heap, sizeof(recv_t)));
+	//recv = static_cast<recv_t*>(
+	//	mem_heap_alloc(ppl->recv_line->heap, sizeof(recv_t)));
 	recv = static_cast<recv_t*>(
-		mem_heap_alloc(recv_line->heap, sizeof(recv_t)));
+		malloc(sizeof(recv_t)));
 
 	recv->type = type;
 	recv->len = rec_end - body;
 	recv->start_lsn = start_lsn;
 	recv->end_lsn = end_lsn;
 	
+	if (recv->len == 0){
+		assert(type == MLOG_INIT_FILE_PAGE2 
+				|| type == MLOG_COMP_PAGE_CREATE
+				|| type == MLOG_IBUF_BITMAP_INIT);
+	}	
+
 	// (2) get the recv_addr_t from the hash table in this recv_line
 	// or create the new one
-	ulint cur_size = mem_heap_get_size(recv_line->heap);
 
 	recv_addr = pm_ppl_recv_get_fil_addr_struct(recv_line, space, page_no);
 
 	if (recv_addr == NULL) {
 
+		//recv_addr = static_cast<recv_addr_t*>(
+		//	mem_heap_alloc(recv_line->heap, sizeof(recv_addr_t)));
+		//recv_addr = static_cast<recv_addr_t*>(
+		//	mem_heap_alloc(ppl->recv_line->heap, sizeof(recv_addr_t)));
 		recv_addr = static_cast<recv_addr_t*>(
-			mem_heap_alloc(recv_line->heap, sizeof(recv_addr_t)));
+			malloc(sizeof(recv_addr_t)));
 
 		recv_addr->space = space;
 		recv_addr->page_no = page_no;
@@ -4993,9 +5194,9 @@ pm_ppl_recv_add_to_hash_table(
 		recv_line->n_addrs++;
 
 		//tdnguyen test how many UNDO pages
-		//if (type == MLOG_UNDO_INSERT){
-			//printf("==> PMEM_RECV: UNDO page added to HT, space %zu page %zu\n", space, page_no);
-		//}
+		if (type == MLOG_UNDO_INSERT){
+		  printf("==> PMEM_RECV: UNDO page added to HT, space %zu page %zu\n", space, page_no);
+		}
 	}
 
 	UT_LIST_ADD_LAST(recv_addr->rec_list, recv);
@@ -5013,9 +5214,14 @@ pm_ppl_recv_add_to_hash_table(
 			len = RECV_DATA_BLOCK_SIZE;
 		}
 
+		//recv_data = static_cast<recv_data_t*>(
+		//	mem_heap_alloc(recv_line->heap,
+		//		       sizeof(recv_data_t) + len));
+		//recv_data = static_cast<recv_data_t*>(
+		//	mem_heap_alloc(ppl->recv_line->heap,
+		//		       sizeof(recv_data_t) + len));
 		recv_data = static_cast<recv_data_t*>(
-			mem_heap_alloc(recv_line->heap,
-				       sizeof(recv_data_t) + len));
+			malloc(sizeof(recv_data_t) + len));
 
 		*prev_field = recv_data;
 
@@ -5132,7 +5338,8 @@ pm_ppl_recv_init_crash_recovery_spaces(
 		} else if (i->second.space != NULL) {
 			/* The tablespace was found, and there
 			are some redo log records for it. */
-			fil_names_dirty(i->second.space);
+			//Simulate fil_names_dirty()
+			pm_ppl_fil_names_dirty(pop, ppl, max_recovered_lsn, i->second.space);
 		} else {
 			missing_spaces.insert(i->first);
 			flag_deleted = true;
@@ -5140,6 +5347,8 @@ pm_ppl_recv_init_crash_recovery_spaces(
 	}
 
 	if (flag_deleted) {
+		printf("PMEM_INFO flag_deleted in pm_ppl_recv_init_crash_recovery_spaces()\n");
+
 		for (i = 0; i < n; i++){
 			pline = D_RW(D_RW(ppl->buckets)[i]);
 			recv_line = pline->recv_line;
@@ -5152,7 +5361,7 @@ pm_ppl_recv_init_crash_recovery_spaces(
 				for (recv_addr_t* recv_addr
 						= static_cast<recv_addr_t*>(
 							HASH_GET_FIRST(
-								recv_sys->addr_hash, h));
+								recv_line->addr_hash, h));
 						recv_addr != 0;
 						recv_addr = static_cast<recv_addr_t*>(
 							HASH_GET_NEXT(addr_hash, recv_addr))) {
@@ -5234,37 +5443,37 @@ pm_ppl_recv_get_fil_addr_struct(
 	recv_addr_t*	recv_addr;
 	ulint hashed;
 	
-	hashed = pm_ppl_recv_hash(recv_line, space, page_no);
-	
-	//test
-	recv_addr_t* temp = (recv_addr_t*) HASH_GET_FIRST(recv_line->addr_hash, 1100);
-
-	recv_addr_t* temp2 = (recv_addr_t*) (recv_line->addr_hash->array + hashed);
-
-	recv_addr = (recv_addr_t*) HASH_GET_FIRST(recv_line->addr_hash, hashed);
-
-	while (recv_addr != NULL){
-		if (recv_addr->space == space
-		    && recv_addr->page_no == page_no) {
-
-			return(recv_addr);
-		}
-
-		recv_addr = (recv_addr_t*) HASH_GET_NEXT(addr_hash, recv_addr);
-	}
-//	for (recv_addr = static_cast<recv_addr_t*>(
-//			HASH_GET_FIRST(recv_line->addr_hash,
-//				       pm_ppl_recv_hash(recv_line, space, page_no)));
-//	     recv_addr != 0;
-//	     recv_addr = static_cast<recv_addr_t*>(
-//		     HASH_GET_NEXT(addr_hash, recv_addr))) {
+//	hashed = pm_ppl_recv_hash(recv_line, space, page_no);
+//	
+//	//test
+//	recv_addr_t* temp = (recv_addr_t*) HASH_GET_FIRST(recv_line->addr_hash, 1100);
 //
+//	recv_addr_t* temp2 = (recv_addr_t*) (recv_line->addr_hash->array + hashed);
+//
+//	recv_addr = (recv_addr_t*) HASH_GET_FIRST(recv_line->addr_hash, hashed);
+//
+//	while (recv_addr != NULL){
 //		if (recv_addr->space == space
 //		    && recv_addr->page_no == page_no) {
 //
 //			return(recv_addr);
 //		}
+//
+//		recv_addr = (recv_addr_t*) HASH_GET_NEXT(addr_hash, recv_addr);
 //	}
+	for (recv_addr = static_cast<recv_addr_t*>(
+			HASH_GET_FIRST(recv_line->addr_hash,
+				       pm_ppl_recv_hash(recv_line, space, page_no)));
+	     recv_addr != 0;
+	     recv_addr = static_cast<recv_addr_t*>(
+		     HASH_GET_NEXT(addr_hash, recv_addr))) {
+
+		if (recv_addr->space == space
+		    && recv_addr->page_no == page_no) {
+
+			return(recv_addr);
+		}
+	}
 
 	return(NULL);
 }
@@ -5280,16 +5489,22 @@ pm_ppl_recv_get_fil_addr_struct(
 void
 pm_ppl_recv_recover_page_func(
 	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
 	PMEM_PAGE_LOG_HASHED_LINE* pline,
 	ibool		just_read_in,
 				/*!< in: TRUE if the i/o handler calls
 				this for a freshly read page */
 	buf_block_t*	block)	/*!< in/out: buffer block */
 {
+	PMEM_PAGE_LOG_BLOCK* plog_block;
+	ulint key;
+
 	page_t*		page;
 	page_zip_des_t*	page_zip;
 	recv_addr_t*	recv_addr;
 	recv_t*		recv;
+	recv_t*		prev_recv;
+
 	byte*		buf;
 	lsn_t		start_lsn;
 	lsn_t		end_lsn;
@@ -5298,14 +5513,47 @@ pm_ppl_recv_recover_page_func(
 	ibool		modification_to_page;
 	mtr_t		mtr;
 	
-	pmemobj_rwlock_wrlock(pop, &pline->lock);	
+	bool is_gb_ht = (pline == NULL);
+
+	if(is_gb_ht){	
+		pmemobj_rwlock_wrlock(pop, &ppl->lock);	
+	}
+	else {
+		pmemobj_rwlock_wrlock(pop, &pline->lock);	
+	}
 	
-	PMEM_RECV_LINE* recv_line = pline->recv_line;
+	//PMEM_RECV_LINE* recv_line = pline->recv_line;
+	//Use the global recv_line
+	PMEM_RECV_LINE* recv_line = ppl->recv_line;
 
 	if (recv_line->apply_log_recs == FALSE) {
 		/* Log records should not be applied now */
 
-		pmemobj_rwlock_unlock(pop, &pline->lock);	
+		if(is_gb_ht){	
+			pmemobj_rwlock_unlock(pop, &ppl->lock);	
+		}
+		else{
+			pmemobj_rwlock_unlock(pop, &pline->lock);	
+		}
+		return;
+	}
+
+	//check read space_id and read page_no
+	page = block->frame;
+
+	ulint read_space_id = mach_read_from_4(page + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
+	ulint read_page_no = mach_read_from_4(page + FIL_PAGE_OFFSET);
+	
+	if(read_space_id != block->page.id.space() || read_page_no != block->page.id.page_no()){
+		//printf("PMEM_ERROR in pm_ppl_recv_recover_page_func(), input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", block->page.id.space(), block->page.id.page_no(), read_space_id, read_page_no);
+		recv_line->n_addrs--;
+
+		if(is_gb_ht){	
+			pmemobj_rwlock_unlock(pop, &ppl->lock);	
+		}
+		else{
+			pmemobj_rwlock_unlock(pop, &pline->lock);	
+		}
 		return;
 	}
 
@@ -5319,7 +5567,12 @@ pm_ppl_recv_recover_page_func(
 	    || (recv_addr->state == RECV_PROCESSED)) {
 		ut_ad(recv_addr == NULL || recv_needed_recovery);
 
-		pmemobj_rwlock_unlock(pop, &pline->lock);	
+		if(is_gb_ht){	
+			pmemobj_rwlock_unlock(pop, &ppl->lock);	
+		}
+		else{
+			pmemobj_rwlock_unlock(pop, &pline->lock);	
+		}
 		return;
 	}
 #ifndef UNIV_HOTBACKUP
@@ -5336,7 +5589,13 @@ pm_ppl_recv_recover_page_func(
 
 	page = block->frame;
 	page_zip = buf_block_get_page_zip(block);
-#ifndef UNIV_HOTBACKUP
+
+	//get pmem_log_block
+	PMEM_FOLD(key, recv_addr->space, recv_addr->page_no);
+	plog_block = pm_ppl_get_log_block_by_key(pop, ppl, key);
+	assert(plog_block != NULL);
+	
+
 	if (just_read_in) {
 		/* Move the ownership of the x-latch on the page to
 		this OS thread, so that we can acquire a second
@@ -5352,13 +5611,9 @@ pm_ppl_recv_recover_page_func(
 	ut_a(success);
 
 	buf_block_dbg_add_level(block, SYNC_NO_ORDER_CHECK);
-#endif /* !UNIV_HOTBACKUP */
+
 	/* Read the newest modification lsn from the page */
 	page_lsn = mach_read_from_8(page + FIL_PAGE_LSN);
-
-#ifndef UNIV_HOTBACKUP
-	/* It may be that the page has been modified in the buffer
-	pool: read the newest modification lsn there */
 
 	page_newest_lsn = buf_page_get_newest_modification(&block->page);
 
@@ -5366,19 +5621,31 @@ pm_ppl_recv_recover_page_func(
 
 		page_lsn = page_newest_lsn;
 	}
-#else /* !UNIV_HOTBACKUP */
-	/* In recovery from a backup we do not really use the buffer pool */
-	page_newest_lsn = 0;
-#endif /* !UNIV_HOTBACKUP */
+
+	assert(page_lsn <= plog_block->firstLSN);
 
 	modification_to_page = FALSE;
 	start_lsn = end_lsn = 0;
+	
+	fil_space_t* space = fil_space_get(recv_addr->space);
+	assert(space != NULL);
+
+	uint32_t count = 0;	
+	//printf("===> START apply REDO log for read page (%zu %zu)\n", recv_addr->space, recv_addr->page_no);
 
 	recv = UT_LIST_GET_FIRST(recv_addr->rec_list);
 	
-	//for each recv in the hashtable
+	//parse and apply each recv in the hashtable
+	ulint prev_start_lsn = 0;
+
+	prev_recv = NULL;	
+
 	while (recv) {
-		end_lsn = recv->end_lsn;
+		if (prev_recv != NULL){
+			assert(prev_recv->start_lsn <= recv->start_lsn);
+		}
+		//don't use end_lsn
+		//end_lsn = recv->end_lsn;
 
 		if (recv->len > RECV_DATA_BLOCK_SIZE) {
 			/* We have to copy the record body to a separate
@@ -5413,7 +5680,8 @@ pm_ppl_recv_recover_page_func(
 		Note: We can't skip complete recv_addr as same page may have
 		valid REDO records post truncate those needs to be applied. */
 		bool	skip_recv = false;
-		if (srv_was_tablespace_truncated(fil_space_get(recv_addr->space))) {
+
+		if (srv_was_tablespace_truncated(space)) {
 			lsn_t	init_lsn =
 				truncate_t::get_truncated_tablespace_init_lsn(
 				recv_addr->space);
@@ -5427,25 +5695,18 @@ pm_ppl_recv_recover_page_func(
 		redo will have action recorded on page before tablespace
 		was re-inited and that would lead to an error while applying
 		such action. */
+
 		if (recv->start_lsn >= page_lsn
 		    && !srv_is_tablespace_truncated(recv_addr->space)
 		    && !skip_recv) {
 
-			lsn_t	end_lsn;
+			//lsn_t	end_lsn;
 
 			if (!modification_to_page) {
 
 				modification_to_page = TRUE;
 				start_lsn = recv->start_lsn;
 			}
-
-			DBUG_PRINT("ib_log",
-				   ("apply " LSN_PF ":"
-				    " %s len " ULINTPF " page %u:%u",
-				    recv->start_lsn,
-				    get_mlog_string(recv->type), recv->len,
-				    recv_addr->space,
-				    recv_addr->page_no));
 
 			recv_parse_or_apply_log_rec_body(
 				recv->type, buf, buf + recv->len,
@@ -5454,30 +5715,49 @@ pm_ppl_recv_recover_page_func(
 			recv_line->found_corrupt_log = recv_sys->found_corrupt_log;
 			recv_line->found_corrupt_fs = recv_sys->found_corrupt_fs;
 
-			end_lsn = recv->start_lsn + recv->len;
-			mach_write_to_8(FIL_PAGE_LSN + page, end_lsn);
+			//end_lsn = recv->start_lsn + recv->len;
+			//mach_write_to_8(FIL_PAGE_LSN + page, end_lsn);
+			//mach_write_to_8(UNIV_PAGE_SIZE
+			//		- FIL_PAGE_END_LSN_OLD_CHKSUM
+			//		+ page, end_lsn);
+
+			//if (page_zip) {
+			//	mach_write_to_8(FIL_PAGE_LSN
+			//			+ page_zip->data, end_lsn);
+			//}
+			
+			//in PPL we write start_lsn on page header
+			mach_write_to_8(FIL_PAGE_LSN + page, start_lsn);
 			mach_write_to_8(UNIV_PAGE_SIZE
 					- FIL_PAGE_END_LSN_OLD_CHKSUM
-					+ page, end_lsn);
+					+ page, start_lsn);
 
 			if (page_zip) {
 				mach_write_to_8(FIL_PAGE_LSN
-						+ page_zip->data, end_lsn);
+						+ page_zip->data, start_lsn);
 			}
-		}
+		} //end check apply log rec
 
 		if (recv->len > RECV_DATA_BLOCK_SIZE) {
 			ut_free(buf);
 		}
+		
+		prev_start_lsn = recv->start_lsn;
+		prev_recv = recv;
 
 		recv = UT_LIST_GET_NEXT(rec_list, recv);
+
+		count++;
 	} //end while(recv)
+
+	//printf("===> END apply REDO log for read page (%zu %zu) %zu recs \n", recv_addr->space, recv_addr->page_no, count);
 
 	if (modification_to_page) {
 		ut_a(block);
 
 		log_flush_order_mutex_enter();
-		buf_flush_recv_note_modification(block, start_lsn, end_lsn);
+		//buf_flush_recv_note_modification(block, start_lsn, end_lsn);
+		buf_flush_recv_note_modification(block, start_lsn, start_lsn);
 		log_flush_order_mutex_exit();
 	}
 
@@ -5496,7 +5776,12 @@ pm_ppl_recv_recover_page_func(
 	ut_a(recv_line->n_addrs);
 	recv_line->n_addrs--;
 
-	pmemobj_rwlock_unlock(pop, &pline->lock);	
+	if(is_gb_ht){	
+		pmemobj_rwlock_unlock(pop, &ppl->lock);	
+	}
+	else{
+		pmemobj_rwlock_unlock(pop, &pline->lock);	
+	}
 }
 
 ulint
@@ -5540,6 +5825,128 @@ pm_ppl_recv_read_in_area(
 	return(n);
 }
 ///////////////// APPLY PHASE //////////////
+void
+pm_ppl_recv_apply_single_page(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_PAGE_LOG_HASHED_LINE* pline,
+	ulint space, ulint page_no)
+{
+
+	mtr_t	mtr;
+
+	const page_id_t		page_id(space, page_no);
+	bool			found;
+	const page_size_t&	page_size
+		= fil_space_get_page_size(space, &found);
+
+	ut_ad(found);
+	if (buf_page_peek(page_id)) {
+		buf_block_t*	block;
+
+		mtr_start(&mtr);
+
+		block = buf_page_get(
+				page_id, page_size,
+				RW_X_LATCH, &mtr);
+
+		buf_block_dbg_add_level(
+				block, SYNC_NO_ORDER_CHECK);
+
+		pm_ppl_recv_recover_page_func( 
+				pop, ppl, pline, FALSE, block);
+
+		mtr_commit(&mtr);
+	} else {
+		// apply is done in IO thread after this read call is called
+		bool read_ok = buf_read_page(
+				page_id, page_size);
+
+		assert(read_ok);
+	}
+}
+
+/*
+ *Apply important pages prior to apply other 
+ For system tablespace
+ 1) page 0
+ 2) trx_sys page (page 5)
+ For each dirty space we apply
+ 1) page 0
+ 2) INODE (page 2)
+ 3) root clustered index page
+ 4) root non-clustered index page
+ * */
+
+void
+pm_ppl_recv_apply_prior_pages(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_PAGE_LOG_HASHED_LINE* pline,
+	ibool	allow_ibuf)
+{
+	fil_space_t* space;
+	recv_addr_t* recv_addr;
+	uint32_t j;
+	
+	PMEM_RECV_LINE* recv_line;
+
+	uint32_t page_no_arr[] = {0, 2, 3, 4};
+	uint32_t page_no_arr_len = 4;
+
+	if (pline != NULL){ 
+		recv_line	= pline->recv_line;
+	} else {
+		recv_line = ppl->recv_line;
+	}
+
+	recv_line->apply_log_recs = TRUE;
+	recv_line->apply_batch_on = TRUE;
+
+	//System tablespace
+	recv_addr = pm_ppl_recv_get_fil_addr_struct(recv_line, 0, 0);
+	if (recv_addr != NULL){
+		printf("Apply space 0 page 0\n");
+		pm_ppl_recv_apply_single_page(pop, ppl, pline, recv_addr->space, recv_addr->page_no);
+	}
+
+	recv_addr = pm_ppl_recv_get_fil_addr_struct(recv_line, 0, 2);
+	if (recv_addr != NULL){
+		printf("Apply space 0 page 2 (INODE)\n");
+		pm_ppl_recv_apply_single_page(pop, ppl, pline, recv_addr->space, recv_addr->page_no);
+	}
+
+	recv_addr = pm_ppl_recv_get_fil_addr_struct(recv_line, 0, 5);
+	if (recv_addr != NULL){
+		printf("Apply space 0 page 5 (SYS_TRX)\n");
+		pm_ppl_recv_apply_single_page(pop, ppl, pline, recv_addr->space, recv_addr->page_no);
+	}
+	
+	//User tablespaces
+	for (recv_spaces_t::iterator i = recv_spaces.begin();
+	     i != recv_spaces.end(); i++) {
+
+		ut_ad(!is_predefined_tablespace(i->first));
+		space = i->second.space;
+		for (j = 0; j < page_no_arr_len; j++)
+		{
+			uint32_t page_no = page_no_arr[j];
+
+			recv_addr = pm_ppl_recv_get_fil_addr_struct(recv_line, space->id, page_no);
+
+			if (recv_addr != NULL){
+				printf("Apply page %zu for space %zu name %s\n", page_no, space->id, space->name);
+				pm_ppl_recv_apply_single_page(pop, ppl, pline, recv_addr->space, recv_addr->page_no);
+			} else {
+				printf("Page %zu of space %zu name %s is NOT in hashtable\n",page_no, space->id, space->name);
+			}
+		}
+
+	}//end for
+
+	printf("PMEM_INFO: END apply prior pages\n");
+}
+
 /*
  * Simulate recv_apply_hashed_log_recs()
  * for each line, get recv from hashtable and parse it
@@ -5559,10 +5966,25 @@ pm_ppl_recv_apply_hashed_log_recs(
 	PMEM_RECV_LINE*					recv_line;
     PMEM_LOG_REDOER*				redoer;
 	
+	//pm_ppl_recv_apply_prior_pages(pop, ppl, NULL, allow_ibuf);
+	//(0) Check
+	//pm_ppl_recv_check_hashed_line(pop, ppl, NULL);	
+	//return;
+	
 	//set this variable to a value > n lines to skip applying	
 	begin = 0;
 
 	n = ppl->n_buckets;
+
+	//test use global hashtable
+	recv_line = ppl->recv_line;
+	recv_line->is_ibuf_avail = allow_ibuf;
+	printf("===> PMEM_RECV Phase 2: START Applying GLOBAL line n_cell %zu\n", recv_line->n_addrs);
+	pm_ppl_recv_apply_hashed_line(pop, ppl, NULL, recv_line->is_ibuf_avail);
+
+	return;
+	//end test use global hashtable
+	
 	//set start i for fast debug a specific line
 	
 	if (!is_multi_redo){
@@ -5650,6 +6072,131 @@ finish:
 }
 
 /*
+ * Check a hashed line after PARSE and before APPLY
+ * */
+void
+pm_ppl_recv_check_hashed_line(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_PAGE_LOG_HASHED_LINE* pline) {
+
+	recv_addr_t* recv_addr;
+	ulint	i;
+
+	PMEM_RECV_LINE* recv_line;
+	recv_t*		recv;
+	recv_t*		prev_recv;
+
+	mtr_t	mtr;
+
+	PMEM_PAGE_LOG_BLOCK* plog_block;
+	ulint key;
+
+	ulint pass_cnt;
+	ulint zero_cnt;
+
+
+	if (pline != NULL){ 
+		recv_line	= pline->recv_line;
+	} else {
+		recv_line = ppl->recv_line;
+	}
+	
+	pass_cnt = zero_cnt = 0;
+
+	//for each cell in the hashtable
+	for (i = 0; i < hash_get_n_cells(recv_line->addr_hash); i++) {
+		//for each recv_addr
+
+		for (recv_addr = static_cast<recv_addr_t*>(
+				HASH_GET_FIRST(recv_line->addr_hash, i));
+		     recv_addr != 0;
+		     recv_addr = static_cast<recv_addr_t*>(
+				HASH_GET_NEXT(addr_hash, recv_addr))) {
+
+			if (srv_is_tablespace_truncated(recv_addr->space)) {
+				continue;
+			}
+			if (recv_addr->state == RECV_DISCARDED) {
+				continue;
+			}
+			
+			ulint n_recvs = UT_LIST_GET_LEN(recv_addr->rec_list);
+
+			//(1) Ensure the space is found
+			const page_id_t		page_id(recv_addr->space,
+							recv_addr->page_no);
+			bool			found;
+			const page_size_t&	page_size
+				= fil_space_get_page_size(recv_addr->space,
+							  &found);
+
+			ut_ad(found);
+			//(2) Check page in recv_addr is valid
+			buf_block_t*	block;
+			dberr_t			err;
+			byte*			page;
+			bool read_ok;
+
+			mtr_start(&mtr);
+			mtr_set_log_mode(&mtr, MTR_LOG_NONE);
+
+			if (buf_page_peek(page_id)) {
+				block = buf_page_get(
+						page_id, page_size,
+						RW_X_LATCH, &mtr);
+				buf_block_dbg_add_level(
+						block, SYNC_NO_ORDER_CHECK);
+			} else {
+				read_ok = buf_read_page(
+						page_id, page_size);
+
+				assert(read_ok);
+
+				block = buf_page_get(
+						page_id, page_size,
+						RW_X_LATCH, &mtr);
+
+			}
+			assert(block != NULL);
+			page = block->frame;
+
+			ulint read_space_id = mach_read_from_4(page + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
+			ulint read_page_no = mach_read_from_4(page + FIL_PAGE_OFFSET);
+
+			if(read_space_id != block->page.id.space() || read_page_no != block->page.id.page_no()){
+				printf("PMEM_ERROR in pm_ppl_recv_check_hashed_line(), input (space %zu, page_no %zu) differ read (space %zu, page_no %zu) n_recvs %zu\n", block->page.id.space(), block->page.id.page_no(), read_space_id, read_page_no, n_recvs);
+
+				zero_cnt++;
+			}
+			else{
+				pass_cnt++;
+			}
+
+			mtr.discard_modifications();
+
+			mtr_commit(&mtr);
+				
+
+			//(3) Check log record ordering LSN1 < LSN2 if log rec 1 write before log rec 2
+			recv = UT_LIST_GET_FIRST(recv_addr->rec_list);
+			prev_recv = NULL;	
+
+			while (recv) {
+				if (prev_recv != NULL){
+					assert(prev_recv->start_lsn <= recv->start_lsn);
+				}
+
+				prev_recv = recv;
+				recv = UT_LIST_GET_NEXT(rec_list, recv);
+			}//end while (recv)
+			
+		} //end for each recv_addr
+	}//end for each cell in the hashtable
+
+	printf("END TEST: pass_cnt %zu zero_cnt %zu total %zu \n", pass_cnt, zero_cnt, recv_line->n_addrs);
+}
+/*
  *allow_ibuf only is set FALSE in the begining of recv_group_scan_log_recs()
  * */
 void
@@ -5661,11 +6208,18 @@ pm_ppl_recv_apply_hashed_line(
 {
 	recv_addr_t* recv_addr;
 	ulint	i;
+	ulint	cnt, cnt2;
+	ulint	n;
 	ibool	has_printed	= FALSE;
 	mtr_t	mtr;
 
 	
-	PMEM_RECV_LINE* recv_line = pline->recv_line;
+	PMEM_RECV_LINE* recv_line;
+	if (pline != NULL){ 
+		recv_line	= pline->recv_line;
+	} else {
+		recv_line = ppl->recv_line;
+	}
 loop:
 	//if (recv_line->apply_batch_on) {
 	//	os_thread_sleep(500000);
@@ -5680,6 +6234,13 @@ loop:
 
 	recv_line->apply_log_recs = TRUE;
 	recv_line->apply_batch_on = TRUE;
+	
+	cnt = 0;
+	cnt2 = 10;
+
+	n = recv_line->n_addrs;
+	
+	printf("Start apply log recs ... \n");
 
 	for (i = 0; i < hash_get_n_cells(recv_line->addr_hash); i++) {
 
@@ -5695,12 +6256,14 @@ loop:
 				ut_a(recv_line->n_addrs);
 				recv_addr->state = RECV_DISCARDED;
 				recv_line->n_addrs--;
+				cnt++;
 				continue;
 			}
 
 			if (recv_addr->state == RECV_DISCARDED) {
 				ut_a(recv_line->n_addrs);
 				recv_line->n_addrs--;
+				cnt++;
 				continue;
 			}
 
@@ -5714,17 +6277,6 @@ loop:
 			ut_ad(found);
 
 			if (recv_addr->state == RECV_NOT_PROCESSED) {
-				if (!has_printed) {
-					ib::info() << "Starting an apply batch"
-						" of log records"
-						" to the database...";
-					fputs("InnoDB: Progress in percent: ",
-					      stderr);
-					has_printed = TRUE;
-				}
-
-				//mutex_exit(&(recv_sys->mutex));
-
 				if (buf_page_peek(page_id)) {
 					buf_block_t*	block;
 
@@ -5737,29 +6289,37 @@ loop:
 					buf_block_dbg_add_level(
 						block, SYNC_NO_ORDER_CHECK);
 
+					//pm_ppl_recv_recover_page_func( 
+					//		pop, pline, FALSE, block);
 					pm_ppl_recv_recover_page_func( 
-							pop, pline, FALSE, block);
+							pop, ppl, pline, FALSE, block);
 
 					mtr_commit(&mtr);
 				} else {
-					//tdnguyen test, skip applying for read page
-					//recv_addr->state = RECV_PROCESSED;
-					//recv_line->n_addrs--;
-					//continue;
-					//end tdnguyen test
+					// apply is done in IO thread after this read call is called
 
-					pm_ppl_recv_read_in_area (recv_line, page_id);
+					//pm_ppl_recv_read_in_area (recv_line, page_id);
+					bool read_ok = buf_read_page(
+						page_id, page_size);
+
+					assert(read_ok);
 				}
+			}
+			cnt++;
+			
+			if (((cnt * 100 / n) > cnt2) ){
+				printf("%zu ", cnt2);
+				cnt2 += 10;
 			}
 		}//end inner for
 
 	}//end outer for 
 
 	/* Wait until all the pages have been processed */
-	while (recv_line->n_addrs != 0) {
-		printf("recv_line %zu has n_addrs is %zu, wait until all the pages are done\n", recv_line->hashed_id, recv_line->n_addrs);
-		os_thread_sleep(500000);
-	}
+//	while (recv_line->n_addrs != 0) {
+//		printf("recv_line %zu has n_addrs is %zu, wait until all the pages are done\n", recv_line->hashed_id, recv_line->n_addrs);
+//		os_thread_sleep(500000);
+//	}
 
 	if (!allow_ibuf) {
 		//TODO: we don't implement this now

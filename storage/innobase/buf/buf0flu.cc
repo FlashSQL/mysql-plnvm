@@ -797,7 +797,23 @@ buf_flush_write_complete(
 	buf_pool_t*	buf_pool = buf_pool_from_bpage(bpage);
 
 	ut_ad(bpage);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//tdnguyen test
+	ulint page_no;
+	ulint space_id;
+	byte* frame = ((buf_block_t*) bpage)->frame;
+	page_no = mach_read_from_4(frame + FIL_PAGE_OFFSET);
+	space_id = mach_read_from_4(frame + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
 
+	if ((bpage->id.space() != 0 
+			    && bpage->id.space() != space_id)
+			   || bpage->id.page_no() != page_no) {
+		printf("PMEM_ERROR in buf_flush_write_complete, input (space %zu, page_no %zu) differ write (space %zu, page_no %zu)\n", bpage->id.space(), bpage->id.page_no(), space_id, page_no);
+
+		assert(0);
+	}
+
+#endif
 	buf_flush_remove(bpage);
 
 	flush_type = buf_page_get_flush_type(bpage);
@@ -1108,6 +1124,18 @@ buf_flush_write_block_low(
 #endif /*UNIV_PMEMOBJ_BUF*/
 
 #if defined (UNIV_PMEMOBJ_PART_PL) 
+
+	ulint read_space_id = mach_read_from_4(frame + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
+	ulint read_page_no = mach_read_from_4(frame + FIL_PAGE_OFFSET);
+
+	if(read_space_id != bpage->id.space() || read_page_no != bpage->id.page_no()){
+		printf("PMEM_ERROR before pm_ppl_flush_page(), input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", bpage->id.space(), bpage->id.page_no(), read_space_id, read_page_no);
+		assert(0);
+	}
+	else{
+		printf("PMEM_INFO pm_ppl_flush_page(), input (space %zu, page_no %zu)\n", bpage->id.space(), bpage->id.page_no());
+	}
+
 		// PL-NVM without PB-NVM
 		pm_ppl_flush_page(
 				gb_pmw->pop, gb_pmw->ppl,

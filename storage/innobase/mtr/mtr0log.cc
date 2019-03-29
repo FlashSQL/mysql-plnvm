@@ -545,6 +545,9 @@ mlog_open_and_write_index(
 	} else if (log_ptr + size > log_end) {
 		mlog_close(mtr, log_ptr);
 		log_ptr = mlog_open(mtr, size);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		assert(0);
+#endif
 	}
 	return(log_ptr);
 }

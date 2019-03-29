@@ -2090,6 +2090,9 @@ buf_page_realloc(
 		buf_block_modify_clock_inc(block);
 		memset(block->frame + FIL_PAGE_OFFSET, 0xff, 4);
 		memset(block->frame + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID, 0xff, 4);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		printf("PMEM_DEBUG buf_page_realloc() (%zu, %zu)\n", block->page.id.space(), block->page.id.page_no());
+#endif
 		UNIV_MEM_INVALID(block->frame, UNIV_PAGE_SIZE);
 		buf_block_set_state(block, BUF_BLOCK_REMOVE_HASH);
 		block->page.id.reset(ULINT32_UNDEFINED, ULINT32_UNDEFINED);
@@ -5721,6 +5724,14 @@ buf_page_io_complete(
 #if defined (UNIV_PMEMOBJ_BUF)
 			return 0;
 #endif
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+			//printf("PMEM_ERROR in buf_page_io_complete, input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", bpage->id.space(), bpage->id.page_no(), read_space_id, read_page_no);
+
+			//goto skip_recv_page;
+			goto skip_checksum;
+			//assert(0);
+#endif
 		}
 
 		compressed_page = Compression::is_compressed_page(frame);
@@ -5740,6 +5751,10 @@ buf_page_io_complete(
 				<< Compression::to_string(meta) << " "
 				<< "that is not supported by this instance";
 		}
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		//we don't use checksum from page_lsn 
+		goto skip_checksum;
+#endif
 
 		/* From version 3.23.38 up we store the page checksum
 		to the 4 first bytes of the page end lsn field */
@@ -5813,6 +5828,9 @@ corrupt:
 				}
 			}
 		}
+#if defined (UNIV_PMEMOBJ_PART_PL)
+skip_checksum:
+#endif
 
 		DBUG_EXECUTE_IF("buf_page_import_corrupt_failure",
 				page_not_corrupt:  bpage = bpage; );
@@ -5823,6 +5841,9 @@ corrupt:
 			recv_recover_page(TRUE, (buf_block_t*) bpage);
 		}
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+skip_recv_page:
+#endif
 		/* If space is being truncated then avoid ibuf operation.
 		During re-init we have already freed ibuf entries. */
 		if (uncompressed

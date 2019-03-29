@@ -770,6 +770,10 @@ buf_dblwr_process(void)
 			       0, page_size.physical(),
 			       const_cast<byte*>(page), NULL);
 
+			//tdnguyen trace debug
+			printf("recovered page %zu from the DWB\n", page_id);
+			//end tdnguyen trace debug
+			
 			ib::info()
 				<< "Recovered page "
 				<< page_id

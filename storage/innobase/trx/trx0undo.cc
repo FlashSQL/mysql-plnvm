@@ -1019,7 +1019,9 @@ trx_undo_free_page(
 
 	flst_remove(header_page + TRX_UNDO_SEG_HDR + TRX_UNDO_PAGE_LIST,
 		    undo_page + TRX_UNDO_PAGE_HDR + TRX_UNDO_PAGE_NODE, mtr);
-
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	printf("===> PMEM_DEBUG trx_undo_free_page() (%zu, %zu)\n", space, page_no);
+//#endif
 	fseg_free_page(header_page + TRX_UNDO_SEG_HDR + TRX_UNDO_FSEG_HEADER,
 		       space, page_no, false, mtr);
 

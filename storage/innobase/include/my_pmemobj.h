@@ -498,6 +498,9 @@ struct __pmem_page_part_log {
 
 	/*Flusher*/	
 	PMEM_LOG_FLUSHER*	flusher;
+	
+	/*RECOVERY*/
+	PMEM_RECV_LINE* recv_line;
 
 	/*Redoer*/	
 	PMEM_LOG_REDOER*	redoer;
@@ -891,6 +894,10 @@ __print_TT(
 
 ////////////////// PER-PAGE LOGGING //////////////////
 
+#define PMEM_FOLD(fold, space, page_no) do {\
+	fold = (space << 20) + space + page_no;\
+}while(0)
+
 PMEM_PAGE_PART_LOG* 
 pm_pop_get_ppl (PMEMobjpool* pop);
 
@@ -955,12 +962,13 @@ pm_ppl_write(
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
 			byte*				log_src,
-			//mtr_buf_t*			dyn_buf,
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
-			uint64_t*			LSN_arr,
 			uint64_t*			size_arr,
+			//uint64_t*			LSN_arr,
+			uint64_t*			ret_start_lsn,
+			uint64_t*			ret_end_lsn,
 			int64_t				block_id);
 
 void __handle_pm_ppl_write_by_entry(
@@ -968,12 +976,13 @@ void __handle_pm_ppl_write_by_entry(
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
 			byte*				log_src,
-			//mtr_buf_t*			dyn_buf,
 			uint64_t			size,
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
-			uint64_t*			LSN_arr,
 			uint64_t*			size_arr,
+			//uint64_t*			LSN_arr,
+			uint64_t*			ret_start_lsn,
+			uint64_t*			ret_end_lsn,
 			PMEM_TT_ENTRY*		pe,
 			bool				is_new);
 
@@ -985,7 +994,7 @@ __update_page_log_block_on_write(
 			uint64_t			cur_off,
 			uint64_t			rec_size,
 			uint64_t			key,
-			uint64_t			LSN,
+			uint64_t*			LSN,
 			int64_t				eid,
 			int64_t				bid);
 
@@ -994,6 +1003,12 @@ __get_log_block_by_id(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*	ppl,
 		uint64_t			bid);
+
+PMEM_PAGE_LOG_BLOCK*
+pm_ppl_get_log_block_by_key(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		uint64_t			key);
 
 /// write log_buf --> full --> assign flusher worker --> handle finish
 static inline void
@@ -1005,7 +1020,7 @@ __pm_write_log_buf(
 			byte*						log_src,
 			uint64_t					src_off,
 			uint64_t					rec_size,
-			uint64_t					rec_lsn,
+			uint64_t*					rec_lsn,
 			PMEM_PAGE_LOG_BLOCK*		plog_block,
 			bool						is_first_write);
 
@@ -1126,15 +1141,16 @@ pm_ppl_redo_line(
 		PMEM_PAGE_PART_LOG*	ppl,
 		PMEM_PAGE_LOG_HASHED_LINE* pline);
 
-//bool
 int64_t
 pm_ppl_parse_recs(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*	ppl,
 		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		byte* recv_buf,
-		uint64_t len
+		uint64_t len,
+		uint64_t* n_need_recs
 		);
+
 uint64_t
 pm_ppl_recv_parse_log_rec(
 	PMEMobjpool*		pop,
@@ -1147,7 +1163,8 @@ pm_ppl_recv_parse_log_rec(
 	ulint*		page_no,
 	bool		apply,
 	uint64_t*   rec_lsn,
-	byte**		body);
+	byte**		body,
+	bool*		is_need);
 
 
 void 
@@ -1185,16 +1202,30 @@ pm_ppl_get_max_lsn(
 	PMEMobjpool*		pop,
 	PMEM_PAGE_PART_LOG*	ppl);
 
+void
+pm_ppl_get_min_max_tid(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	ulint* min_tid,
+	ulint* max_tid);
+
 dberr_t
 pm_ppl_recv_init_crash_recovery_spaces(
 	PMEMobjpool*		pop,
 	PMEM_PAGE_PART_LOG*	ppl,
 	ulint max_recovered_lsn);
 
+void
+pm_ppl_fil_names_dirty(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	ulint max_recovered_lsn,
+	fil_space_t*		space);
 
 void
 pm_ppl_recv_recover_page_func(
 	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
 	PMEM_PAGE_LOG_HASHED_LINE* pline,
 	ibool		just_read_in,
 				/*!< in: TRUE if the i/o handler calls
@@ -1211,6 +1242,26 @@ pm_ppl_recv_apply_hashed_log_recs(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*	ppl,
 		ibool	allow_ibuf);
+
+void
+pm_ppl_recv_check_hashed_line(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_PAGE_LOG_HASHED_LINE* pline);
+
+void
+pm_ppl_recv_apply_prior_pages(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_PAGE_LOG_HASHED_LINE* pline,
+	ibool	allow_ibuf);
+
+void
+pm_ppl_recv_apply_single_page(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	PMEM_PAGE_LOG_HASHED_LINE* pline,
+	ulint space, ulint page_no);
 
 void
 pm_ppl_recv_apply_hashed_line(
@@ -1255,6 +1306,12 @@ __realloc_TT_entry(
 
 void 
 __reset_page_log_block(PMEM_PAGE_LOG_BLOCK* plog_block);
+
+PMEM_TT_ENTRY* 
+pm_ppl_get_tt_entry_by_tid(
+		PMEMobjpool*				pop,
+		PMEM_PAGE_PART_LOG*			ppl,
+		uint64_t tid);
 
 bool
 pm_ppl_check_and_reset_tt_entry(
@@ -2063,6 +2120,7 @@ hash_f1(
 	hashed = key ^ PMEM_HASH_MASK;\
 	hashed = hashed % n;\
 }while(0)
+
 
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
 

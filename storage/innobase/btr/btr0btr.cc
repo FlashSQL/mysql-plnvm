@@ -356,7 +356,9 @@ btr_page_create(
 	mtr_t*		mtr)	/*!< in: mtr */
 {
 	page_t*		page = buf_block_get_frame(block);
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	printf("==> PMEM_DEBUG: btr_page_create() (%zu, %zu)\n", block->page.id.space(), block->page.id.page_no());
+#endif
 	ut_ad(mtr_is_block_fix(mtr, block, MTR_MEMO_PAGE_X_FIX, index->table));
 
 	if (page_zip) {
@@ -615,6 +617,9 @@ btr_page_free_low(
 	}
 #endif
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	printf("====> PMEM_DEBUG: btr_page_free_low() free page(%zu, %zu)\n", block->page.id.space(), block->page.id.page_no());
+#endif
 	fseg_free_page(seg_header,
 		       block->page.id.space(),
 		       block->page.id.page_no(),
