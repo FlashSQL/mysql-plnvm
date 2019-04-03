@@ -723,7 +723,9 @@ fsp_init_file_page_low(
 	if (!fsp_is_system_temporary(block->page.id.space())) {
 		memset(page, 0, UNIV_PAGE_SIZE);
 	}
-
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	printf("PMEM_DEBUG: fsp_init_file_page_low() space %zu page %zu\n", block->page.id.space(), block->page.id.page_no());
+//#endif
 	mach_write_to_4(page + FIL_PAGE_OFFSET, block->page.id.page_no());
 	mach_write_to_4(page + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID,
 			block->page.id.space());

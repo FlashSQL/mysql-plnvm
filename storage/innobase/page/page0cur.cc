@@ -1262,10 +1262,10 @@ page_cur_parse_insert_rec(
 		return(const_cast<byte*>(ptr + (end_seg_len >> 1)));
 	}
 
-#if defined(UNIV_PMEMOBJ_PART_PL)
-	//test skip the below code
-	return(const_cast<byte*>(ptr + (end_seg_len >> 1)));
-#endif
+//#if defined(UNIV_PMEMOBJ_PART_PL)
+//	//test skip the below code
+//	return(const_cast<byte*>(ptr + (end_seg_len >> 1)));
+//#endif
 
 	ut_ad(!!page_is_comp(page) == dict_table_is_comp(index->table));
 	ut_ad(!buf_block_get_page_zip(block) || page_is_comp(page));
@@ -1325,13 +1325,7 @@ page_cur_parse_insert_rec(
 					       index, offsets, mtr))) {
 		/* The redo log record should only have been written
 		after the write was successful. */
-#if defined(UNIV_PMEMOBJ_PART_PL)
-		//tdnguyen test
-		//skip this error to see what happend next
-		printf("PMEM_ERROR CODE#2 page_cur_rec_insert() return NULL in page_cur_parse_insert_rec() SKIP ERROR !!! \n");
-#else
 		ut_error;
-#endif
 	}
 
 	if (buf != buf1) {
@@ -2485,7 +2479,11 @@ page_copy_rec_list_end_to_created_page(
 
 	ut_a(log_data_len < 100 * UNIV_PAGE_SIZE);
 	//update log_ptr, it may change if the mtr->buf is reallocate
-	log_ptr = mtr->get_buf() + log_data_len_off;
+	if (log_ptr != (mtr->get_buf() + log_data_len_off)){ 
+		printf("===> PMEM_NOTICE: previous log_ptr %zu diffs from current %zu, mtr.logbuf may reallocated\n",
+				log_ptr, (mtr->get_buf() + log_data_len_off));
+		log_ptr = mtr->get_buf() + log_data_len_off;
+	}
 
 	if (log_ptr != NULL) {
 		mach_write_to_4(log_ptr, log_data_len);
@@ -2601,10 +2599,10 @@ page_cur_parse_delete_rec(
 	ptr += 2;
 
 	ut_a(offset <= UNIV_PAGE_SIZE);
-#if defined (UNIV_PMEMOBJ_PART_PL)
-	//test, skip parse
-	return (ptr);
-#endif
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	//test, skip parse
+//	return (ptr);
+//#endif
 	if (block) {
 		page_t*		page		= buf_block_get_frame(block);
 		mem_heap_t*	heap		= NULL;

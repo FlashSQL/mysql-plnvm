@@ -748,6 +748,8 @@ struct __pmem_log_group {
  */
 struct __pmem_recv_line {
 	uint32_t	hashed_id;
+	
+	bool		skip_zero_page;
 
 	bool		apply_log_recs;
 	bool		apply_batch_on;

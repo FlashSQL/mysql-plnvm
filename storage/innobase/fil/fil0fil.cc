@@ -1429,7 +1429,7 @@ fil_space_create(
 
 	mutex_exit(&fil_system->mutex);
 //tdnguyen test
-	printf("=====>>|| fil_space_create() space id %zu name %s\n", id, name);
+//	printf("=====>>|| fil_space_create() space id %zu name %s\n", id, name);
 //end tdnguyen test
 	return(space);
 }

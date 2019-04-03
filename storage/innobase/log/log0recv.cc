@@ -5514,6 +5514,7 @@ pm_ppl_recv_recover_page_func(
 	mtr_t		mtr;
 	
 	bool is_gb_ht = (pline == NULL);
+	bool is_skip_zero_page = true;
 
 	if(is_gb_ht){	
 		pmemobj_rwlock_wrlock(pop, &ppl->lock);	
@@ -5546,15 +5547,16 @@ pm_ppl_recv_recover_page_func(
 	
 	if(read_space_id != block->page.id.space() || read_page_no != block->page.id.page_no()){
 		//printf("PMEM_ERROR in pm_ppl_recv_recover_page_func(), input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", block->page.id.space(), block->page.id.page_no(), read_space_id, read_page_no);
-		recv_line->n_addrs--;
-
-		if(is_gb_ht){	
-			pmemobj_rwlock_unlock(pop, &ppl->lock);	
+		//recv_line->n_addrs--;
+		if (recv_line->skip_zero_page){
+			if(is_gb_ht){	
+				pmemobj_rwlock_unlock(pop, &ppl->lock);	
+			}
+			else{
+				pmemobj_rwlock_unlock(pop, &pline->lock);	
+			}
+			return;
 		}
-		else{
-			pmemobj_rwlock_unlock(pop, &pline->lock);	
-		}
-		return;
 	}
 
 	recv_addr = pm_ppl_recv_get_fil_addr_struct(
@@ -5708,10 +5710,8 @@ pm_ppl_recv_recover_page_func(
 				start_lsn = recv->start_lsn;
 			}
 
-			recv_parse_or_apply_log_rec_body(
-				recv->type, buf, buf + recv->len,
-				recv_addr->space, recv_addr->page_no,
-				block, &mtr);
+			recv_parse_or_apply_log_rec_body(recv->type, buf, buf + recv->len, recv_addr->space, recv_addr->page_no, block, &mtr);
+
 			recv_line->found_corrupt_log = recv_sys->found_corrupt_log;
 			recv_line->found_corrupt_fs = recv_sys->found_corrupt_fs;
 
@@ -6220,7 +6220,6 @@ pm_ppl_recv_apply_hashed_line(
 	} else {
 		recv_line = ppl->recv_line;
 	}
-loop:
 	//if (recv_line->apply_batch_on) {
 	//	os_thread_sleep(500000);
 	//	goto loop;
@@ -6235,12 +6234,16 @@ loop:
 	recv_line->apply_log_recs = TRUE;
 	recv_line->apply_batch_on = TRUE;
 	
+	recv_line->skip_zero_page = true;
+
 	cnt = 0;
 	cnt2 = 10;
 
 	n = recv_line->n_addrs;
-	
+		
 	printf("Start apply log recs ... \n");
+	
+loop:
 
 	for (i = 0; i < hash_get_n_cells(recv_line->addr_hash); i++) {
 
@@ -6282,25 +6285,18 @@ loop:
 
 					mtr_start(&mtr);
 
-					block = buf_page_get(
-						page_id, page_size,
-						RW_X_LATCH, &mtr);
+					block = buf_page_get( page_id, page_size, RW_X_LATCH, &mtr);
 
-					buf_block_dbg_add_level(
-						block, SYNC_NO_ORDER_CHECK);
+					buf_block_dbg_add_level(block, SYNC_NO_ORDER_CHECK);
 
-					//pm_ppl_recv_recover_page_func( 
-					//		pop, pline, FALSE, block);
-					pm_ppl_recv_recover_page_func( 
-							pop, ppl, pline, FALSE, block);
+					pm_ppl_recv_recover_page_func(pop, ppl, pline, FALSE, block);
 
 					mtr_commit(&mtr);
 				} else {
 					// apply is done in IO thread after this read call is called
 
 					//pm_ppl_recv_read_in_area (recv_line, page_id);
-					bool read_ok = buf_read_page(
-						page_id, page_size);
+					bool read_ok = buf_read_page(page_id, page_size);
 
 					assert(read_ok);
 				}
@@ -6314,6 +6310,12 @@ loop:
 		}//end inner for
 
 	}//end outer for 
+	
+	if (recv_line->n_addrs > 0){
+		recv_line->skip_zero_page = false;
+		printf("=============\n HANDLE ZERO PAGES \n===============\n");
+		goto loop;
+	}
 
 	/* Wait until all the pages have been processed */
 //	while (recv_line->n_addrs != 0) {

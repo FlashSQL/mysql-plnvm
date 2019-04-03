@@ -1133,7 +1133,7 @@ buf_flush_write_block_low(
 		assert(0);
 	}
 	else{
-		printf("PMEM_INFO pm_ppl_flush_page(), input (space %zu, page_no %zu)\n", bpage->id.space(), bpage->id.page_no());
+		//printf("PMEM_INFO pm_ppl_flush_page(), input (space %zu, page_no %zu)\n", bpage->id.space(), bpage->id.page_no());
 	}
 
 		// PL-NVM without PB-NVM

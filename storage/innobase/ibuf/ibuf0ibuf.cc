@@ -4440,10 +4440,6 @@ ibuf_merge_or_delete_for_page(
 	ut_ad(block == NULL || page_id.equals_to(block->page.id));
 	ut_ad(block == NULL || buf_block_get_io_fix(block) == BUF_IO_READ);
 
-//#if defined (UNIV_PMEMOBJ_PART_PL)
-//	//tdnguyen test
-//	return;
-//#endif
 	if (srv_force_recovery >= SRV_FORCE_NO_IBUF_MERGE
 	    || trx_sys_hdr_page(page_id)
 	    || fsp_is_system_temporary(page_id.space())) {

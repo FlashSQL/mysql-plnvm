@@ -1791,6 +1791,8 @@ pm_ppl_get_tt_entry_by_tid(
 			}
 		}
 	}
+
+	return NULL;
 }
 
 /*
