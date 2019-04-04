@@ -1295,6 +1295,11 @@ pm_ppl_check_input_rec(
 		ulint*          page_no
 		);
 ////////////// END RECOVERY
+
+void
+pm_ppl_remove_fil_spaces();
+
+////////////// UTILITY////////////
 int64_t
 __update_tt_entry_on_write_log(
 		PMEMobjpool*		pop,

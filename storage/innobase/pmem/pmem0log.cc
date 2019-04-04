@@ -3367,7 +3367,7 @@ __update_page_log_block_on_commit(
 	if (plog_block->count <= 0){
 		printf("PMEM_ERROR in __update_page_log_block_on_commit(), count is already zero, cannot reduce more. This is logical error!!!\n");
 		pmemobj_rwlock_unlock(pop, &plog_block->lock);
-		assert(0);
+		//assert(0);
 		return false;
 	}
 

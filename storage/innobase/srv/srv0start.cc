@@ -3421,7 +3421,7 @@ pm_close_and_free_log_files(
 	fil_node_t* node;
 
 	n = ppl->n_buckets;
-	
+
 	//fil_node, follow the logic of fil_node_close_file() and fil_space_free_low()
 	for (i = 0; i < n; i++){
 		node = ppl->node_arr[i];

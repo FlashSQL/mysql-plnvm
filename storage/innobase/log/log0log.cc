@@ -2560,6 +2560,11 @@ loop:
 		fil_write_flushed_lsn(lsn);
 	}
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//Since PPL doesn't call log_checkpoint(), fil_names_clear() has never called. Result is fil_system->named_spaces() is not empty at shutdown. So, we manually empty it here
+	pm_ppl_remove_fil_spaces();
+#endif
+
 	fil_close_all_files();
 
 	/* Make some checks that the server really is quiet */

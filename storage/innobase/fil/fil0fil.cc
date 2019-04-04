@@ -8138,6 +8138,40 @@ fil_names_dirty_and_write(
 					bogus_name, mtr);
 			});
 }
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+void
+pm_ppl_remove_fil_spaces()
+{
+	uint32_t n = UT_LIST_GET_LEN(fil_system->named_spaces);
+	uint32_t i;
+
+	printf("total spaces %zu \n", UT_LIST_GET_LEN(fil_system->named_spaces));
+	fil_space_t* space;
+
+	space = UT_LIST_GET_FIRST(fil_system->named_spaces);
+
+	while (space != NULL){
+		printf("pm_ppl_remove_fil_spaces() id %zu name %s max_lsn %zu\n", space->id, space->name, space->max_lsn);
+
+		fil_space_t* next = UT_LIST_GET_NEXT(named_spaces, space);
+
+		if (space->max_lsn != 0) {
+			space->max_lsn = 0;
+		}
+		UT_LIST_REMOVE(fil_system->named_spaces, space);
+
+
+		n--;
+		if (n == 0){
+			break;	
+		}
+
+		space = next;
+	}
+}
+#endif //UNIV_PMEMOBJ_PART_PL
+
 #ifndef UNIV_HOTBACKUP
 /** On a log checkpoint, reset fil_names_dirty_and_write() flags
 and write out MLOG_FILE_NAME and MLOG_CHECKPOINT if needed.

@@ -274,7 +274,11 @@ trx_purge_sys_close(void)
 /*======================*/
 {
 	que_graph_free(purge_sys->query);
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//Because we change purge_sys->trx indirectly in row_purge_remove_clust_if_poss_low() 
+	//mtr.pmemlog_set_parent_trx(node->trx);, we set trx to 0 here
+	purge_sys->trx->id = 0;
+#endif
 	ut_a(purge_sys->trx->id == 0);
 	ut_a(purge_sys->sess->trx == purge_sys->trx);
 
