@@ -617,9 +617,6 @@ btr_page_free_low(
 	}
 #endif
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-	printf("====> PMEM_DEBUG: btr_page_free_low() free page(%zu, %zu)\n", block->page.id.space(), block->page.id.page_no());
-#endif
 	fseg_free_page(seg_header,
 		       block->page.id.space(),
 		       block->page.id.page_no(),

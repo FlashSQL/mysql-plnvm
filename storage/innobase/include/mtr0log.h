@@ -87,15 +87,6 @@ mlog_write_initial_log_record(
 
 /********************************************************//**
 Catenates 1 - 4 bytes to the mtr log. The value is not compressed. */
-#if defined (UNIV_PMEMOBJ_PART_PL)
-UNIV_INLINE
-void
-mlog_catenate_ulint(
-/*================*/
-	mtr_buf_t*	dyn_buf,	/*!< in/out: buffer to write */
-	ulint		val,		/*!< in: value to write */
-	mlog_id_t	type);		/*!< in: type of value to write */
-#else
 UNIV_INLINE
 void
 mlog_catenate_ulint(
@@ -112,7 +103,6 @@ mlog_catenate_ulint(
 	mtr_t*		mtr,	/*!< in: mtr */
 	ulint		val,	/*!< in: value to write */
 	mlog_id_t	type);	/*!< in: MLOG_1BYTE, MLOG_2BYTES, MLOG_4BYTES */
-#endif
 /********************************************************//**
 Catenates n bytes to the mtr log. */
 void

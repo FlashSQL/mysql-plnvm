@@ -545,8 +545,9 @@ struct __pmem_page_log_hashed_line {
 	uint64_t		recv_lsn; //min lsn of block's beginLSN in this line
 	/*end test */
 
-	uint64_t n_blocks; //the total log block in bucket
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
+	uint64_t n_blocks; //the current non-free blocks
+	uint64_t max_blocks; //the total log block in bucket
 
 	//Alternative to recv_sys_t in InnoDB, allocate in DRAM when recovery
 	PMEM_RECV_LINE* recv_line;
@@ -598,7 +599,7 @@ struct __pmem_page_log_buf {
 struct __pmem_page_log_block {
 	PMEMrwlock		lock;
 	bool			is_free; //flag
-	uint32_t		bid; //block id
+	uint64_t		bid; //block id
 	uint64_t		key; //fold id
 
 	//uint64_t		cur_size; //the current offset (0 - log block size) 
@@ -688,7 +689,8 @@ pm_log_redoer_close(PMEM_LOG_REDOER*	redoer);
 // Dirty Page Entry Ref in the log block
 struct __pmem_page_ref {
 	uint64_t	key; //fold of page_id_t.fold() in InnoDB
-	int64_t		idx; // index of the entry in DPT
+	//int64_t		idx; // index of the entry in DPT
+	uint64_t		idx; // index of the entry in DPT
 	uint64_t	pageLSN; //latest LSN on this page caused by the host transction, this value used in reclaiming logs
 };
 
@@ -708,8 +710,10 @@ struct __pmem_tt_hashed_line {
 	PMEMrwlock		lock;
 
 	uint64_t		hashed_id;
-	uint64_t		n_entries; //the total log block in bucket
+
 	TOID_ARRAY(TOID(PMEM_TT_ENTRY)) arr;
+	uint64_t		n_entries; //current number of entries
+	uint64_t		max_entries; //capacity (extendable)
 
 };
 
@@ -956,9 +960,20 @@ void __init_tt_entry(
 		uint64_t k,
 		uint64_t pages_per_tx);
 
+uint64_t
+pm_ppl_create_entry_id(
+	   	uint16_t type,
+	   	uint32_t row,
+	   	uint32_t col);
+void
+pm_ppl_parse_entry_id(
+		uint64_t val,
+	   	uint16_t* type,
+	   	uint32_t* row,
+	   	uint32_t* col);
 
 /*Called when a mini-transaction write log record to log buffer in the traditional InnoDB*/
-int64_t
+uint64_t
 pm_ppl_write(
 			PMEMobjpool*		pop,
 			PMEM_PAGE_PART_LOG*	ppl,
@@ -968,10 +983,9 @@ pm_ppl_write(
 			uint64_t			n_recs,
 			uint64_t*			key_arr,
 			uint64_t*			size_arr,
-			//uint64_t*			LSN_arr,
 			uint64_t*			ret_start_lsn,
 			uint64_t*			ret_end_lsn,
-			int64_t				block_id);
+			uint64_t			block_id);
 
 void __handle_pm_ppl_write_by_entry(
 			PMEMobjpool*		pop,
@@ -988,7 +1002,7 @@ void __handle_pm_ppl_write_by_entry(
 			PMEM_TT_ENTRY*		pe,
 			bool				is_new);
 
-int64_t
+uint64_t
 __update_page_log_block_on_write(
 			PMEMobjpool*		pop,
 			PMEM_PAGE_PART_LOG*	ppl,
@@ -998,7 +1012,7 @@ __update_page_log_block_on_write(
 			uint64_t			key,
 			uint64_t*			LSN,
 			int64_t				eid,
-			int64_t				bid);
+			uint64_t			bid);
 
 PMEM_PAGE_LOG_BLOCK*
 __get_log_block_by_id(
@@ -1094,7 +1108,7 @@ pm_ppl_commit(
 		PMEMobjpool*			pop,
 		PMEM_PAGE_PART_LOG*		ppl,
 		uint64_t				tid,
-		int64_t					eid);
+		uint64_t					eid);
 void 
 pm_ppl_flush_page(
 		PMEMobjpool*		pop,
@@ -1293,12 +1307,24 @@ __update_page_log_block_on_commit(
 		PMEMobjpool*				pop,
 		PMEM_PAGE_PART_LOG*			ppl,
 		PMEM_PAGE_REF*				pref,
-		int64_t						eid);
+		uint64_t					eid);
 void 
 __reset_TT_entry(
 		PMEMobjpool*				pop,
 		PMEM_PAGE_PART_LOG*			ppl,
 		PMEM_TT_ENTRY*				pe);
+
+void __realloc_page_log_block_line(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE*	pline,
+		uint64_t				new_size);
+
+void __realloc_TT_line(
+		PMEMobjpool*			pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_TT_HASHED_LINE*	pline,
+		uint64_t				new_size);
 void 
 __realloc_TT_entry(
 		PMEMobjpool*				pop,

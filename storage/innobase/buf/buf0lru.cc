@@ -2142,10 +2142,10 @@ buf_LRU_block_free_non_file_page(
 	/* Wipe page_no and space_id */
 	memset(block->frame + FIL_PAGE_OFFSET, 0xfe, 4);
 	memset(block->frame + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID, 0xfe, 4);
-#if defined (UNIV_PMEMOBJ_PART_PL)
-		printf("PMEM_DEBUG: buf_LRU_block_free_non_file_page() page (%zu, %zu)\n",
-				bpage->id.space(), bpage->id.page_no());
-#endif
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//		printf("PMEM_DEBUG: buf_LRU_block_free_non_file_page() page (%zu, %zu)\n",
+//				bpage->id.space(), bpage->id.page_no());
+//#endif
 #endif /* UNIV_DEBUG */
 	data = block->page.zip.data;
 

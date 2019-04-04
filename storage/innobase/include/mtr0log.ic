@@ -78,6 +78,19 @@ mlog_close(
 	mtr->set_cur_off(new_off);
 }
 
+/*Catenates 1 - 4 bytes to the mtr log. The value is not compressed. */
+UNIV_INLINE
+void
+mlog_catenate_ulint(
+/*================*/
+	mtr_buf_t*	mtr_buf,	/*!< in/out: buffer to write */
+	ulint		val,		/*!< in: value to write */
+	mlog_id_t	type)		/*!< in: type of value to write */
+{
+	//we don't use this function
+	assert(0);
+}
+
 /* PPL FUNCTION
 Catenates 1 - 4 bytes to the mtr log. The value is not compressed.
 This function use push instead of open_log and close_log 

@@ -912,7 +912,9 @@ struct trx_t {
 					this transaction must abort when
 					it can */
 #if defined(UNIV_PMEMOBJ_PART_PL)
-	int64_t		pm_log_block_id;
+	uint64_t		pm_log_block_id; /*1byte type (1: NEW, 2: REVISIT, 3: UNDEFINED
+									   3-byte line_id,
+									   4-byte offset*/
 #endif
 	trx_id_t	id;		/*!< transaction id */
 

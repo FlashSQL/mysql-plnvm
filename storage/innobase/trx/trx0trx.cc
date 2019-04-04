@@ -130,7 +130,8 @@ trx_init(
 
 	trx->id = 0;
 #if defined (UNIV_PMEMOBJ_PART_PL)
-	trx->pm_log_block_id = -1;
+	trx->pm_log_block_id = 0;
+	//trx->pm_log_block_id = -1;
 #endif
 	trx->no = TRX_ID_MAX;
 
@@ -2208,22 +2209,26 @@ trx_commit(
 	}
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-	//trx_commit_low write MLOG_2BYTES, we save the trx and trx_id here
+	uint64_t tid = 0;
+	uint64_t pm_log_block_id = 0;
+	//trx_commit_low() will clear trx, we save necessary info here
+	//
 	if (mtr != NULL){
 		mtr->pmemlog_set_parent_trx(trx);
 		mtr->pmemlog_set_trx_id(trx->id);
+
+		tid = trx->id;
+		pm_log_block_id = trx->pm_log_block_id;
 	}
 #endif
 
 	trx_commit_low(trx, mtr);
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-		if (trx->pm_log_block_id != -1){
-			pm_ppl_commit(
-					gb_pmw->pop,
-					gb_pmw->ppl,
-					trx->id,
-					trx->pm_log_block_id);
+		//if (trx->pm_log_block_id != -1)
+		if (pm_log_block_id != 0)
+		{
+			pm_ppl_commit(gb_pmw->pop, gb_pmw->ppl, tid, pm_log_block_id);
 		}	
 		else {
 			//printf("===> PMEM_WARN commit a trx with block_id == -1\n");

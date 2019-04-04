@@ -5948,8 +5948,8 @@ pm_ppl_test_write_rseg(
 	//get the pointer to the UNDO seg header page
 	buf_pool_t* buf_pool = buf_pool_get(page_id);
 	block = (buf_block_t*) buf_page_hash_get_low(buf_pool, page_id_t(page_id.space(), p1));
-	printf("///////////////////////\n");
-	printf("===>> IS_WRITE %zu FIL_IO: is in BP check RSEG page %zu header UNDO page (%zu, %zu) \n", req_type.is_write(), page_id.page_no(), p1, (block!=NULL));
+	//printf("///////////////////////\n");
+	//printf("===>> IS_WRITE %zu FIL_IO: is in BP check RSEG page %zu header UNDO page (%zu, %zu) \n", req_type.is_write(), page_id.page_no(), p1, (block!=NULL));
 
 	if (block == NULL) {
 		printf("///////////////////////\n");
@@ -8760,8 +8760,6 @@ pm_log_fil_io(
 
 	ulint		start_offset;
 	ulint		end_offset;
-	ulint		area_start;
-	ulint		area_end;
 
 	ulint		next_offset;
 	ulint		write_offset;
@@ -8784,14 +8782,10 @@ pm_log_fil_io(
 	log_src = pdata + plogbuf->pmemaddr;
 
 	start_offset = 0;
-	//end_offset = plogbuf->cur_off;
 	end_offset = plogbuf->size;
 
 	//(1) Align the offset with the page size
-	//area_start = ut_calc_align_down(start_offset, OS_FILE_LOG_BLOCK_SIZE);
-	//area_end = ut_calc_align_down(end_offset, OS_FILE_LOG_BLOCK_SIZE);
 	
-	//len = area_end - area_start;
 	len = plogbuf->size;
 	ut_ad(len > 0);
 	

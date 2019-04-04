@@ -70,6 +70,13 @@ enum PMEM_OBJ_TYPES {
 	BUF_TYPE,
 	META_DATA_TYPE
 };
+
+//use in pm_ppl_write()
+#define PMEM_EID_NEW 0
+#define PMEM_EID_REVISIT 1
+#define PMEM_EID_UNDEFINED 2
+
+
 enum PMEM_BLOCK_STATE {
     PMEM_FREE_BLOCK = 1,
     PMEM_IN_USED_BLOCK = 2,

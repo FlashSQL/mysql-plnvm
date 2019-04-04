@@ -1351,6 +1351,9 @@ skip_enclose:
 		else{
 			//assert(type > 0 && type <= 8);
 			//all type <= 8 is treat as trx_id 0
+			uint64_t dummy_eid;
+			dummy_eid = pm_ppl_create_entry_id(PMEM_EID_UNDEFINED, 0, 0);
+
 			pm_ppl_write(
 					gb_pmw->pop,
 					gb_pmw->ppl,
@@ -1362,7 +1365,7 @@ skip_enclose:
 					m_impl->size_arr,
 					&ret_start_lsn,
 					&ret_end_lsn,
-					-2);
+					dummy_eid);
 		}
 
 		//Update m_start_lsn and m_end_lsn. They are required for update pageLSN in release_block()
