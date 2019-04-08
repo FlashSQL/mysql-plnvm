@@ -2030,7 +2030,12 @@ innobase_start_or_create_for_mysql(void)
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	//os_thread_create(pm_flusher_coordinator, NULL, NULL);
-	printf("PMEM_INFO: ========>   create %d worker threads for PART-LOG\n", srv_ppl_n_log_flush_threads);
+	printf("PMEM_INFO: ========>   create %d catcher worker threads for PART-LOG\n", srv_ppl_n_log_flush_threads);
+	for (i = 0; i < srv_ppl_n_log_flush_threads; ++i) {
+		os_thread_create(pm_log_catcher_worker, NULL, NULL);
+	}
+
+	printf("PMEM_INFO: ========>   create %d flusher worker threads for PART-LOG\n", srv_ppl_n_log_flush_threads);
 	for (i = 0; i < srv_ppl_n_log_flush_threads; ++i) {
 		os_thread_create(pm_log_flusher_worker, NULL, NULL);
 	}

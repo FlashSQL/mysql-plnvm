@@ -52,6 +52,8 @@ static const size_t PMEM_MAX_LOG_BUF_SIZE = 1 * 1024 * PMEM_MB;
 static const size_t PMEM_PAGE_SIZE = 16*1024; //16KB
 static const size_t PMEM_MAX_DBW_PAGES= 128; // 2 * extent_size
 
+static const size_t PMEM_GROUP_PARTITION_TIME= 5000000;
+
 //#define PMEM_N_BUCKETS 128 
 //#define PMEM_USED_FREE_RATIO 0.2
 #define PMEM_MAX_LISTS_PER_BUCKET 2
@@ -88,6 +90,7 @@ enum PMEM_LOG_BUF_STATE{
 	PMEM_LOG_BUF_FREE = 1,
 	PMEM_LOG_BUF_IN_USED = 2,
 	PMEM_LOG_BUF_IN_FLUSH = 3,
+	PMEM_LOG_BUF_IN_PART = 4,
 };
 
 enum PMEM_REDO_PHASE{
@@ -110,6 +113,11 @@ enum PMEM_TX_STATE {
 enum PMEM_LOG_TYPE {
 	PMEM_REDO_LOG = 1,
 	PMEM_UNDO_LOG = 2
+};
+
+enum FLUSHER_TYPE{
+	CATCHER_LOG_BUF = 1,
+	FLUSHER_LOG_BUF = 2,
 };
 
 enum pm_list_cleaner_state {

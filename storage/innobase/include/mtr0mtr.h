@@ -641,9 +641,9 @@ struct mtr_t {
 
 			new_size = ((size / cur_max_size) + 2) * cur_max_size;
 			new_ptr = (byte*) realloc(m_impl.buf, new_size);
-			if (m_impl.buf != new_ptr){
-				printf("mtr::open_buf() reallocate from %zu to %zu\n", m_impl.buf, new_ptr);
-			}
+			//if (m_impl.buf != new_ptr){
+			//	printf("mtr::open_buf() reallocate from %zu to %zu\n", m_impl.buf, new_ptr);
+			//}
 			m_impl.buf = new_ptr;
 
 			m_impl.max_buf_size = new_size;

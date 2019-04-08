@@ -8855,7 +8855,9 @@ pm_log_fil_io(
 	}
 
 	if (next_offset + len > group->file_size){
-		printf("PMEM_INFO log file of line %zu is full, extend it to double size\n", plogbuf->hashed_id);
+		float size_temp = (group->file_size * 1.0) / (1024 * 1024);
+		printf("PMEM_INFO log file of line %zu is full, extend it from %f MB to %f MB\n", 
+				plogbuf->hashed_id, size_temp, size_temp * 2);
 		//assert(0);
 		bool ret = os_file_truncate(
 			   	node->name,

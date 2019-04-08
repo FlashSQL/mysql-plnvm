@@ -2480,8 +2480,8 @@ page_copy_rec_list_end_to_created_page(
 	ut_a(log_data_len < 100 * UNIV_PAGE_SIZE);
 	//update log_ptr, it may change if the mtr->buf is reallocate
 	if (log_ptr != (mtr->get_buf() + log_data_len_off)){ 
-		printf("===> PMEM_NOTICE: previous log_ptr %zu diffs from current %zu, mtr.logbuf may reallocated\n",
-				log_ptr, (mtr->get_buf() + log_data_len_off));
+		//printf("===> PMEM_NOTICE: previous log_ptr %zu diffs from current %zu, mtr.logbuf may reallocated\n",
+		//		log_ptr, (mtr->get_buf() + log_data_len_off));
 		log_ptr = mtr->get_buf() + log_data_len_off;
 	}
 

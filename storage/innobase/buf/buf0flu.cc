@@ -3563,6 +3563,9 @@ thread_exit:
 #endif //UNIV_PMEMOBJ_LSB
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
+	//wake up the sleeping threads to close them
+	
+	os_event_set(gb_pmw->ppl->catcher->is_log_req_not_empty);
 	os_event_set(gb_pmw->ppl->flusher->is_log_req_not_empty);
 #endif
 	my_thread_end();
@@ -3956,15 +3959,21 @@ FlushObserver::flush()
 //Defined in my_pmemobj.h
 
 /////////// FLUSHER /////////////////////
-
+/*
+ * Init flusher
+ * @param[in] size: number of items in the array
+ * */
 PMEM_LOG_FLUSHER*
 pm_log_flusher_init(
-				const size_t	size) {
+				const size_t	size,
+				FLUSHER_TYPE	type) {
 	PMEM_LOG_FLUSHER* flusher;
 	ulint i;
 
 	flusher = static_cast <PMEM_LOG_FLUSHER*> (
 			ut_zalloc_nokey(sizeof(PMEM_LOG_FLUSHER)));
+
+	flusher->type = type;
 
 	mutex_create(LATCH_ID_PM_LOG_FLUSHER, &flusher->mutex);
 
@@ -3977,6 +3986,13 @@ pm_log_flusher_init(
 	flusher->n_requested = 0;
 	flusher->is_running = false;
 
+	//partition array
+	flusher->part_list_arr = static_cast <PMEM_MINI_BUF**> (	calloc(size, sizeof(PMEM_MINI_BUF*)));
+	for (i = 0; i < size; i++) {
+		flusher->part_list_arr[i] = NULL;
+	}	
+		
+	//flush array
 	flusher->flush_list_arr = static_cast <PMEM_PAGE_LOG_BUF**> (	calloc(size, sizeof(PMEM_PAGE_LOG_BUF*)));
 	for (i = 0; i < size; i++) {
 		flusher->flush_list_arr[i] = NULL;
@@ -3994,20 +4010,35 @@ pm_log_flusher_close(
 	while (flusher->n_workers > 0) {
 		os_thread_sleep(10000);
 	}
+	
+	switch (flusher->type){
+		case CATCHER_LOG_BUF:
+			//free partition list
+			for (i = 0; i < flusher->size; i++) {
+				if (flusher->part_list_arr[i]){
+					flusher->part_list_arr[i] = NULL;
+				}
+			}	
+			if (flusher->flush_list_arr){
+				free(flusher->flush_list_arr);
+				flusher->flush_list_arr = NULL;
+			}	
+			break;
+		case FLUSHER_LOG_BUF:
+		default:
+			//free flush list
+			for (i = 0; i < flusher->size; i++) {
+				if (flusher->flush_list_arr[i]){
+					flusher->flush_list_arr[i] = NULL;
+				}
+			}	
+			if (flusher->flush_list_arr){
+				free(flusher->flush_list_arr);
+				flusher->flush_list_arr = NULL;
+			}	
+			break;
+	} //end switch(flusher->type)
 
-	for (i = 0; i < flusher->size; i++) {
-		if (flusher->flush_list_arr[i]){
-			//free(buf->flusher->flush_list_arr[i]);
-			flusher->flush_list_arr[i] = NULL;
-		}
-			
-	}	
-
-	if (flusher->flush_list_arr){
-		free(flusher->flush_list_arr);
-		flusher->flush_list_arr = NULL;
-	}	
-	//printf("free array ok\n");
 
 	mutex_destroy(&flusher->mutex);
 
@@ -4088,6 +4119,84 @@ DECLARE_THREAD(pm_log_flusher_coordinator)(
 	os_event_wait(flusher->is_log_all_closed);
 
 	printf("all pm_log workers closed\n");
+	my_thread_end();
+
+	os_thread_exit();
+
+	OS_THREAD_DUMMY_RETURN;
+}
+
+/*Worker thread of log catcher.
+ * number of threads are equal to the number of cleaner threds from config
+@return a dummy parameter */
+extern "C"
+os_thread_ret_t
+DECLARE_THREAD(pm_log_catcher_worker)(
+/*==========================================*/
+	void*	arg MY_ATTRIBUTE((unused)))
+			/*!< in: a dummy parameter required by
+			os_thread_create */
+{
+	ulint i;
+
+	PMEM_LOG_FLUSHER* catcher = gb_pmw->ppl->catcher;
+
+	PMEM_MINI_BUF* pmbuf = NULL;
+
+	my_thread_init();
+
+	mutex_enter(&catcher->mutex);
+	catcher->n_workers++;
+	os_event_reset(catcher->is_log_all_closed);
+	mutex_exit(&catcher->mutex);
+
+	while (true) {
+		//worker thread wait until there is is_requested signal 
+retry:
+		os_event_wait(catcher->is_log_req_not_empty);
+		//looking for a full list in wait-list and flush it
+		mutex_enter(&catcher->mutex);
+		if (catcher->n_requested > 0) {
+			for (i = 0; i < catcher->size; i++) {
+				pmbuf = catcher->part_list_arr[i];
+				if (pmbuf != NULL)
+				{
+					/*call back function*/
+					//printf("\t [CATCHER] thread #%zu BEGIN partition catcher->size %zu catcher->n_reqs %zu pmbuf id %zu\n", i, catcher->size, catcher->n_requested, pmbuf->id);
+					pm_log_partition_mini_buf(gb_pmw->pop, gb_pmw->ppl, pmbuf);
+
+					catcher->n_requested--;
+					os_event_set(catcher->is_log_req_full);
+					//we can set the pointer to null after the pm_buf_flush_list finished
+					//printf("\t [CATCHER] thread #%zu END partition catcher->size %zu catcher->n_reqs %zu pmbuf id %zu\n", i, catcher->size, catcher->n_requested, pmbuf->id);
+					catcher->part_list_arr[i] = NULL;
+					break;
+				}
+			}
+
+		} //end if flusher->n_requested > 0
+
+		if (catcher->n_requested == 0) {
+			if (buf_page_cleaner_is_active) {
+				//buf_page_cleaner is running, start waiting
+				os_event_reset(catcher->is_log_req_not_empty);
+			}
+			else {
+				mutex_exit(&catcher->mutex);
+				break;
+			}
+		}
+		mutex_exit(&catcher->mutex);
+	} //end while thread
+
+	mutex_enter(&catcher->mutex);
+	catcher->n_workers--;
+	if (catcher->n_workers == 0) {
+		printf("The last catcher worker is closing\n");
+		//os_event_set(flusher->is_all_closed);
+	}
+	mutex_exit(&catcher->mutex);
+
 	my_thread_end();
 
 	os_thread_exit();

@@ -4260,6 +4260,9 @@ pm_ppl_recv_init(
     }
 }
 
+/*
+ * Free resource created during recovery process
+ * */
 void 
 pm_ppl_recv_end(
 		PMEMobjpool*		pop,
@@ -4294,6 +4297,7 @@ pm_ppl_recv_end(
 	free(recv_line);
 	recv_line = NULL;
 
+	//B: free other recv_line
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
 		recv_line = pline->recv_line;
@@ -4312,6 +4316,9 @@ pm_ppl_recv_end(
 			recv_line = NULL;
 		}
     }
+
+	//C: reset data structures in PPL
+	pm_ppl_reset_all(pop, ppl);
 }
 
 /*

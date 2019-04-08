@@ -2361,10 +2361,10 @@ buf_LRU_block_remove_hashed(
 		       + FIL_PAGE_OFFSET, 0xff, 4);
 		memset(((buf_block_t*) bpage)->frame
 		       + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID, 0xff, 4);
-#if defined (UNIV_PMEMOBJ_PART_PL)
-		printf("PMEM_DEBUG: buf_LRU_block_remove_hashed() page (%zu, %zu)\n",
-				bpage->id.space(), bpage->id.page_no());
-#endif
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//		printf("PMEM_DEBUG: buf_LRU_block_remove_hashed() page (%zu, %zu)\n",
+//				bpage->id.space(), bpage->id.page_no());
+//#endif
 		UNIV_MEM_INVALID(((buf_block_t*) bpage)->frame,
 				 UNIV_PAGE_SIZE);
 		buf_page_set_state(bpage, BUF_BLOCK_REMOVE_HASH);
