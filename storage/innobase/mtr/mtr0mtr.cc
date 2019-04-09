@@ -1303,7 +1303,7 @@ skip_enclose:
 	if (len > 0)
 	{
 		if (trx != NULL){
-			printf("=====\n[IO] START call pm_ppl_write tid %zu\n", trx->id);
+			//printf("=====\n[IO] START call pm_ppl_write tid %zu\n", trx->id);
 			//fix node->trx->id == 0 even though node->trx_id != 0 in row_purge()
 			trx->pm_log_block_id = pm_ppl_write(
 					gb_pmw->pop,
@@ -1320,7 +1320,7 @@ skip_enclose:
 			//printf("[IO] END call pm_ppl_write tid %zu\n", trx->id);
 		}
 		else{
-			printf("====\n[IO] START call pm_ppl_write tid NULL n_recs %zu\n", n_recs);
+			//printf("====\n[IO] START call pm_ppl_write tid NULL n_recs %zu\n", n_recs);
 			//assert(type > 0 && type <= 8);
 			//all type <= 8 is treat as trx_id 0
 			uint64_t dummy_eid;

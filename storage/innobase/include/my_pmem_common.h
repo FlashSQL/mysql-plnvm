@@ -52,7 +52,12 @@ static const size_t PMEM_MAX_LOG_BUF_SIZE = 1 * 1024 * PMEM_MB;
 static const size_t PMEM_PAGE_SIZE = 16*1024; //16KB
 static const size_t PMEM_MAX_DBW_PAGES= 128; // 2 * extent_size
 
-static const size_t PMEM_GROUP_PARTITION_TIME= 5000000;
+//static const size_t PMEM_GROUP_PARTITION_TIME= 1000000;
+//static const size_t PMEM_GROUP_PARTITION_SIZE= 4196;
+
+static const size_t PMEM_GROUP_PARTITION_TIME= 10000;
+static const size_t PMEM_GROUP_PARTITION_SIZE= 512;
+
 
 //#define PMEM_N_BUCKETS 128 
 //#define PMEM_USED_FREE_RATIO 0.2

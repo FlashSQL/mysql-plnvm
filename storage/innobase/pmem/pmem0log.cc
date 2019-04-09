@@ -1639,6 +1639,7 @@ void __init_tt_entry(
 			pmbuf->entry_oid = (D_RW(pline->arr)[j]).oid;
 			pmbuf->self = (pe->mbuf).oid;
 			pmbuf->id = i * PMEM_TT_N_ENTRIES_PER_LINE  + j; //only assign id here
+			pmbuf->start_time = 0;
 		} //end for each entry
 }
 
@@ -1675,14 +1676,15 @@ void __reset_TT_entry(
 	//temp buffer
 	PMEM_MINI_BUF* pmbuf = D_RW(pe->mbuf);
 	
-	if (pmbuf->max_buf_size > PMEM_MINI_BUF_SIZE){
-		POBJ_REALLOC(pop, &pmbuf->buf, char, sizeof(char)  * PMEM_MINI_BUF_SIZE); 
-		pmbuf->max_buf_size = PMEM_MINI_BUF_SIZE;
-	}
+//	if (pmbuf->max_buf_size > PMEM_MINI_BUF_SIZE){
+//		POBJ_REALLOC(pop, &pmbuf->buf, char, sizeof(char)  * PMEM_MINI_BUF_SIZE); 
+//		pmbuf->max_buf_size = PMEM_MINI_BUF_SIZE;
+//	}
 
 	pmbuf->cur_buf_size = 0;
 	pmbuf->is_new_write = true;
 	pmbuf->entry_oid = OID_NULL;
+	pmbuf->start_time = 0;
 }
 
 void __realloc_page_log_block_line(
@@ -2034,6 +2036,7 @@ __init_mini_free_pool(
 		pmbuf->is_new_write = true;
 		pmbuf->entry_oid = OID_NULL;
 		pmbuf->self = mbuf.oid;
+		pmbuf->start_time = 0;
 
 		//insert to the free pool list
 		POBJ_LIST_INSERT_HEAD(pop, &pfreepool->head, mbuf, mlist_entries); 
@@ -2565,6 +2568,11 @@ void __handle_pm_ppl_write_by_entry(
 			bool				is_new)
 {
 
+	uint16_t type;
+	uint32_t row;
+	uint32_t col;
+	uint64_t eslapse_time;
+
 	byte* log_des;
 	PMEM_MINI_BUF* pmbuf;
 
@@ -2578,11 +2586,13 @@ void __handle_pm_ppl_write_by_entry(
 	pmbuf = D_RW(pe->mbuf);
 	assert(pmbuf != NULL);
 
+	pm_ppl_parse_entry_id(pe->eid, &type, &row, &col);
+
 	PMEM_MINI_BUF_FREE_POOL* pfreepool;
 
 	//(1) reallocate in-need
 	if (pmbuf->cur_buf_size + size > pmbuf->max_buf_size){
-		printf("PMEM_INFO reallocate pmbuf->buf of tid %zu pe_id %zu mbuf_id %zu. From %zu byes to %zu bytes\n", pe->tid, pe->eid, pmbuf->id, pmbuf->max_buf_size, pmbuf->max_buf_size * 2);
+		//printf("PMEM_INFO reallocate pmbuf->buf of tid %zu pe_id %zu mbuf_id %zu. From %zu byes to %zu bytes\n", pe->tid, pe->eid, pmbuf->id, pmbuf->max_buf_size, pmbuf->max_buf_size * 2);
 
 		pmbuf->max_buf_size = 2 * pmbuf->max_buf_size;
 		POBJ_REALLOC(pop, &(pmbuf->buf), char, sizeof(char) * pmbuf->max_buf_size);
@@ -2607,18 +2617,23 @@ void __handle_pm_ppl_write_by_entry(
 		return;
 	}
 	else{
-		if (is_new){
+		if (pmbuf->start_time == 0){
 			pmbuf->start_time = *ret_start_lsn;
 			//delegate partition to the last catcher thread or commit thread
 			return;
 		} else {
-			if ( (*ret_start_lsn - pmbuf->start_time) < PMEM_GROUP_PARTITION_TIME){
+			eslapse_time = (*ret_start_lsn - pmbuf->start_time);
+
+			if ( eslapse_time  < PMEM_GROUP_PARTITION_TIME &&
+				pmbuf->cur_buf_size < PMEM_GROUP_PARTITION_SIZE){
 				//delegate partition to the last catcher thread or commit thread
 				return;
 			}
 		}
 
 		//Perform group Partition
+		//printf("[QUERY] group partition tid %zu pe_id %zu line hashed_id %zu mbuf_id %zu. group_size %zu esplaptime %zu \n", pe->tid, pe->eid, row, pmbuf->id, pmbuf->cur_buf_size, eslapse_time);
+
 		__handle_partition(pop, ppl, entry);
 
 		return;
@@ -3516,16 +3531,17 @@ pm_log_partition_mini_buf(
 	//(2) handle finish
 handle_finish:	
 	//reset the mini buf
-	if (pmbuf->max_buf_size > PMEM_MINI_BUF_SIZE){
-		printf("realloc before push back to mini free pool\n");
-		POBJ_REALLOC(pop, &pmbuf->buf, char, sizeof(char) * PMEM_MINI_BUF_SIZE);
-		ppl->pmem_mini_free_pool_size -= (pmbuf->max_buf_size - PMEM_MINI_BUF_SIZE);
-		pmbuf->max_buf_size = PMEM_MINI_BUF_SIZE;
-	}
+	//if (pmbuf->max_buf_size > PMEM_MINI_BUF_SIZE){
+	//	//printf("realloc before push back to mini free pool\n");
+	//	POBJ_REALLOC(pop, &pmbuf->buf, char, sizeof(char) * PMEM_MINI_BUF_SIZE);
+	//	ppl->pmem_mini_free_pool_size -= (pmbuf->max_buf_size - PMEM_MINI_BUF_SIZE);
+	//	pmbuf->max_buf_size = PMEM_MINI_BUF_SIZE;
+	//}
 
 	pmbuf->cur_buf_size = 0;
 	pmbuf->is_new_write = true;
 	pmbuf->entry_oid = OID_NULL;
+	pmbuf->start_time = 0;
 
 	//put back to the mini free pool
 	pfree_pool = D_RW(ppl->mini_free_pool);
@@ -3866,6 +3882,8 @@ pm_ppl_commit(
 	uint16_t type;
 	uint32_t row, col;
 
+	uint64_t cur_time;
+
 	bool is_reclaim;
 
 	PMEM_TT* ptt;
@@ -3918,9 +3936,13 @@ pm_ppl_commit(
 	//Check for group partition	
 	pmbuf = D_RW(pe->mbuf);
 	assert(pmbuf != NULL);
-
-	if (pmbuf->cur_buf_size > 0){
+	
+	if (pmbuf->cur_buf_size > 0)
+	{
 		//delegate the commit work to the last catcher thread	
+		cur_time = ut_time_us(NULL);
+
+		//printf("[COMMIT] group partition tid %zu pe_id %zu mbuf_id %zu. group_size %zu elapse %zu (us)\n", pe->tid, pe->eid, pmbuf->id, pmbuf->cur_buf_size, (cur_time - pmbuf->start_time));
 		pe->is_commit = true;
 		__handle_partition(pop, ppl, entry);
 
@@ -3929,11 +3951,13 @@ pm_ppl_commit(
 	}
 
 	// This thread handle the commit work
-	pmemobj_rwlock_wrlock(pop, &pe->pref_lock);
+	//pmemobj_rwlock_wrlock(pop, &pe->pref_lock);
 
+	//cur_time = ut_time_us(NULL);
+	//printf("[COMMIT] reset tid %zu pe_id %zu mbuf_id %zu. group_size %zu elapse %zu (us)\n", pe->tid, pe->eid, pmbuf->id, pmbuf->cur_buf_size, (cur_time - pmbuf->start_time));
 	__handle_commit(pop, ppl, pe);
 
-	pmemobj_rwlock_unlock(pop, &pe->pref_lock);
+	//pmemobj_rwlock_unlock(pop, &pe->pref_lock);
 
 	pmemobj_rwlock_unlock(pop, &pe->lock);
 	return;
