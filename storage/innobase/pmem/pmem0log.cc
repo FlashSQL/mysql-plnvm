@@ -1177,9 +1177,6 @@ pm_wrapper_page_log_alloc_or_open(
 {
 	
 	// Get const variable from parameter and config value
-	uint64_t n_mini_bufs;
-	uint64_t n_in_use_mini_bufs;
-	uint64_t n_free_mini_bufs;
 
 	uint64_t n_log_bufs;
 	uint64_t n_free_log_bufs;
@@ -1198,11 +1195,7 @@ pm_wrapper_page_log_alloc_or_open(
 	PMEM_LOG_FILE_SIZE = srv_ppl_log_file_size; //in 4-KB pages (64MB)
 	PMEM_N_LOG_FILES_PER_BUCKET = srv_ppl_log_files_per_bucket;
 	
-	n_in_use_mini_bufs = PMEM_TT_N_LINES * PMEM_TT_N_ENTRIES_PER_LINE;
 
-	//n_free_mini_bufs = 2 * n_in_use_mini_bufs;
-	n_free_mini_bufs = 10 * n_in_use_mini_bufs;
-	n_mini_bufs = n_in_use_mini_bufs + n_free_mini_bufs;
 
 	n_free_log_bufs = PMEM_N_LOG_BUCKETS / 4;
 	n_log_bufs = PMEM_N_LOG_BUCKETS + n_free_log_bufs;
@@ -1214,8 +1207,6 @@ pm_wrapper_page_log_alloc_or_open(
 				pmw->pop,
 				PMEM_N_LOG_BUCKETS,
 				PMEM_N_BLOCKS_PER_BUCKET,
-				n_mini_bufs,
-				PMEM_MINI_BUF_SIZE,
 				n_log_bufs,
 				PMEM_LOG_BUF_SIZE);
 
@@ -1252,14 +1243,12 @@ pm_wrapper_page_log_alloc_or_open(
 	// In any case (new alloc or reused) we need to allocate below objects
 
 	// defined in my_pmemobj.h, implement in buf0flu.cc
-	pmw->ppl->catcher = pm_log_flusher_init(PMEM_N_LOG_CATCH_THREADS, CATCHER_LOG_BUF);
 
 	pmw->ppl->flusher = pm_log_flusher_init(PMEM_N_LOG_FLUSH_THREADS, FLUSHER_LOG_BUF);
 
-
-	pmw->ppl->free_mini_pool_event = os_event_create("pm_free_mini_pool_event");
-
 	pmw->ppl->free_log_pool_event = os_event_create("pm_free_log_pool_event");
+	
+	pm_page_part_log_hash_create(pmw->pop, pmw->ppl);
 
 	pmw->ppl->deb_file = fopen("part_log_debug.txt","a");
 }
@@ -1275,13 +1264,13 @@ pm_wrapper_page_log_close(
 	
 	//Free resource allocated in DRAM
 
-	pm_log_flusher_close(ppl->catcher);
 	pm_log_flusher_close(ppl->flusher);
-
-	os_event_destroy(ppl->free_mini_pool_event);
 	os_event_destroy(ppl->free_log_pool_event);
-	
+
+	pm_page_part_log_hash_free(pmw->pop, pmw->ppl);
+
 	pm_close_and_free_log_files(pmw->ppl);	
+
 #if defined (UNIV_PMEMOBJ_PART_PL_STAT)	
 //	__print_page_log_hashed_lines(debug_ptxl_file, pmw->ppl);
 #endif
@@ -1366,8 +1355,6 @@ __reset_tt(
  * @param[in] pop
  * @param[in] n_buckets - number of buckets in the PPL
  * @paramp[in] n_blocks_per_bucket
- * @param[in] n_mini_bufs - total number of mini bufs
- * @param[in] mbuf_size - default size of the mini-buf
  * @param[in] n_log_bufs - total number of log buf
  * @param[in] log_buf_size - default log buffer size
  * */
@@ -1375,8 +1362,6 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 		PMEMobjpool*	pop,
 		uint64_t		n_buckets,
 		uint64_t		n_blocks_per_bucket,
-		uint64_t		n_mini_bufs,
-		uint64_t		mbuf_size,
 		uint64_t		n_log_bufs,
 		uint64_t		log_buf_size) {
 
@@ -1446,9 +1431,6 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 
 	ppl->pmem_alloc_size += ppl->pmem_page_log_size;
 	ppl->pmem_alloc_size += ppl->pmem_mini_free_pool_size;
-
-	//(3) Mini Free Pool
-	__init_mini_free_pool(pop, ppl, n_mini_bufs, mbuf_size);
 
 	//(4) Free Pool
 	__init_page_log_free_pool(
@@ -1880,7 +1862,8 @@ pm_page_part_log_bucket_init(
 		uint64_t				n_blocks_per_bucket,
 		uint64_t				log_buf_size,
 		uint64_t				&log_buf_id,
-		uint64_t				&log_buf_offset) {
+		uint64_t				&log_buf_offset) 
+{
 
 	uint64_t i, j, n, k;
 	uint64_t cur_bucket;
@@ -1927,6 +1910,8 @@ pm_page_part_log_bucket_init(
 		pline->write_diskaddr = 0;
 
 		TOID_ASSIGN(pline->flush_logbuf, OID_NULL);
+
+
 #if defined(UNIV_PMEMOBJ_PPL_STAT)
 		pline->log_write_lock_wait_time = 0;
 		pline->n_log_write = 0;
@@ -1994,59 +1979,193 @@ pm_page_part_log_bucket_init(
 		}//end for each log block
 	}//end for each hashed line
 }
-
-/*
- * Allocate the free pool of mini bufs
+/////////////// HASH TABLE ///////////////////
+/* Init hash table for each line in PPL
+ *Must called after pm_page_part_log_bucket_init
  * */
-void 
-__init_mini_free_pool(
-		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		uint64_t				n,
-		uint64_t				size)
+void
+pm_page_part_log_hash_create(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl)
 {
-	uint64_t i;
-	PMEM_MINI_BUF_FREE_POOL* pfreepool;
-	TOID(PMEM_MINI_BUF) mbuf;
-	PMEM_MINI_BUF* pmbuf;
+	uint64_t i, j, n, k;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
 
-	POBJ_ZNEW(pop, &ppl->mini_free_pool, PMEM_MINI_BUF_FREE_POOL);
-	if (TOID_IS_NULL(ppl->mini_free_pool)){
-		fprintf(stderr, "POBJ_ALLOC\n");
-	}	
-
-	ppl->pmem_mini_free_pool_size = sizeof(PMEM_MINI_BUF_FREE_POOL);
-
-	pfreepool = D_RW(ppl->mini_free_pool);
-	pfreepool->max_bufs = n;
-	pfreepool->cur_free_bufs = 0;
+	n = ppl->n_buckets;
+	k = ppl->n_blocks_per_bucket;
 
 	for (i = 0; i < n; i++) {
-
-		//alloc the mini buf
-		POBJ_ZNEW(pop, &mbuf, PMEM_MINI_BUF);
-		ppl->pmem_mini_free_pool_size += sizeof(PMEM_MINI_BUF);
-
-		pmbuf = D_RW(mbuf);
-		POBJ_ALLOC(pop, &pmbuf->buf, char, sizeof(char)  *size, NULL, NULL); 
-		ppl->pmem_mini_free_pool_size += size;
-
-		pmbuf->cur_buf_size = 0;
-		pmbuf->max_buf_size = size;
-		pmbuf->is_new_write = true;
-		pmbuf->entry_oid = OID_NULL;
-		pmbuf->self = mbuf.oid;
-		pmbuf->start_time = 0;
-
-		//insert to the free pool list
-		POBJ_LIST_INSERT_HEAD(pop, &pfreepool->head, mbuf, mlist_entries); 
-		pfreepool->cur_free_bufs++;
-		pmbuf->id = i + (PMEM_TT_N_LINES * PMEM_TT_N_ENTRIES_PER_LINE); 
-
-	}//end for
-	
-	pmemobj_persist(pop, &ppl->mini_free_pool, sizeof(ppl->mini_free_pool));
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+		pline->addr_hash = hash_create(k);
+	}
 }
+
+void
+pm_page_part_log_hash_free(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl)
+{
+	uint64_t i, j, n, k;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	n = ppl->n_buckets;
+
+	for (i = 0; i < n; i++) {
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+		hash_table_free(pline->addr_hash);
+	}
+}
+
+void pm_ppl_hash_add_at_page_read(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		buf_page_t* bpage)
+{
+	enum buf_io_fix io_type;
+	byte* frame;
+	ulint read_page_no;
+	ulint read_space_id;
+
+	ulint n;
+	ulint hashed;
+	uint64_t key;
+
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	n = ppl->n_buckets;
+
+	io_type = buf_page_get_io_fix(bpage);
+	if (io_type == BUF_IO_READ){
+		if (bpage->size.is_compressed()){
+			frame = bpage->zip.data;
+		} else {
+			frame = ((buf_block_t*) bpage)->frame;
+		}
+
+		read_page_no = mach_read_from_4(frame + FIL_PAGE_OFFSET);
+		read_space_id = mach_read_from_4(frame + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
+
+		PMEM_FOLD(key, read_space_id, read_page_no);
+
+		PMEM_LOG_HASH_KEY(hashed, key, n);
+		pline = D_RW(D_RW(ppl->buckets)[hashed]);	
+
+		pmemobj_rwlock_wrlock(pop, &pline->lock);
+
+		pm_ppl_hash_add(pop, ppl, pline, key); 
+
+		pmemobj_rwlock_unlock(pop, &pline->lock);
+	} else {
+		// do nothing
+	}
+
+	return;
+}
+
+/*
+ * Add key to hashtable
+ * The caller reponse for holding the pline->lock
+ * */
+plog_hash_t*
+pm_ppl_hash_add(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
+		uint64_t			key	)
+{
+	
+	uint64_t i, k;
+	int64_t n_try;
+
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+	plog_hash_t* item;
+
+
+	item = pm_ppl_hash_get(pop, ppl, pline, key);
+
+	if (item == NULL){
+		item = (plog_hash_t*) malloc(sizeof(plog_hash_t));
+		item->key = key;
+retry:
+		//(1) search the free entry
+		n_try = pline->max_blocks;
+		PMEM_LOG_HASH_KEY(i, key, pline->max_blocks);
+		while (n_try > 0){
+			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			plog_block = D_RW(D_RW(pline->arr)[i]);
+			if (plog_block->is_free){
+				//found
+				plog_block->is_free = false;
+				plog_block->key = key;
+				item->block_off = i;
+				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+				//(2) Insert
+				HASH_INSERT(plog_hash_t, addr_hash, pline->addr_hash, key, item);
+				return item;
+			}
+
+			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
+			n_try--;
+			i = (i + 1) % pline->max_blocks;
+		}
+
+		//If you reach here, then there is no free block, extend
+		__realloc_page_log_block_line(pop, ppl, pline, pline->max_blocks * 2);
+
+		goto retry;
+		
+	}
+	//item has already existed, do nothing
+	return item;
+}
+
+plog_hash_t*
+pm_ppl_hash_get(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
+		uint64_t			key	)
+{
+	plog_hash_t* item;
+	ulint hashed;
+
+	hashed = hash_calc_hash(key, pline->addr_hash);
+
+	for (item = static_cast<plog_hash_t*> (
+				HASH_GET_FIRST(pline->addr_hash, hashed));
+		item != 0;
+		item = static_cast<plog_hash_t*> (
+				HASH_GET_NEXT(addr_hash, item))) {
+		if (item->key == key){
+			return item;
+		}
+	}
+
+	return (NULL);
+}
+
+void
+pm_ppl_hash_remove(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
+		uint64_t			key
+		) 
+{
+
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+	plog_hash_t* item;
+
+	item = pm_ppl_hash_get(pop, ppl, pline, key);
+
+	if (item != NULL){
+		HASH_DELETE(plog_hash_t, addr_hash, pline->addr_hash, key, item);
+	}
+
+	return;
+}
+///////////////END HASH TABLE ///////////////////
+
 
 /*
  * Allocate the free pool of log bufs
@@ -2249,6 +2368,163 @@ pm_ppl_parse_entry_id(
 }
 
 /*
+ * Write a log rec to PPL
+ * Called from mtr::execute()
+ * Directly use __pm_write_log_buf as the old version
+ * @param[in] pop
+ * @param[in] ppl
+ * @param[in] key
+ * @param[in] log_src
+ * @param[in] rec_size - rec size
+ * */
+void
+pm_ppl_write_rec(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			uint64_t			key,
+			byte*				log_src,
+			uint32_t			rec_size,
+			uint64_t			rec_lsn)
+{
+	uint32_t n;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+	PMEM_PAGE_LOG_FREE_POOL* pfreepool;
+	PMEM_PAGE_LOG_BUF* plogbuf;
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+	plog_hash_t* item;
+
+	ulint hashed;
+	ulint hashed2;
+	byte* log_des;
+
+	n = ppl->n_buckets;
+	PMEM_LOG_HASH_KEY(hashed, key, n);
+
+
+retry:
+	pline = D_RW(D_RW(ppl->buckets)[hashed]);
+	plogbuf = D_RW(pline->logbuf);
+
+	pmemobj_rwlock_wrlock(pop, &pline->lock);
+
+	if (plogbuf->state == PMEM_LOG_BUF_IN_FLUSH){
+		pmemobj_rwlock_unlock(pop, &pline->lock);
+		goto retry;
+	}	
+	
+	//if the hash key has already exist, get it
+	//otherwise, create the new item and add into the hashtable	
+	item = pm_ppl_hash_add(pop, ppl, pline, key); 
+
+	assert(item->block_off < pline->max_blocks);
+	plog_block = D_RW(D_RW(pline->arr)[item->block_off]);
+	assert(plog_block);
+
+
+	////////////////////////////////////////////
+	// (1) Handle full log buf (if any)
+	// /////////////////////////////////////////
+	if (plogbuf->cur_off + rec_size > plogbuf->size) {
+get_free_buf:
+		// (1.1) Get a free log buf
+		pfreepool = D_RW(ppl->free_pool);
+		pmemobj_rwlock_wrlock(pop, &pfreepool->lock);
+
+		TOID(PMEM_PAGE_LOG_BUF) free_buf = POBJ_LIST_FIRST (&pfreepool->head);
+		if (pfreepool->cur_free_bufs == 0 || 
+				TOID_IS_NULL(free_buf)){
+			//no empty free logbuf, wait for an available one
+			pmemobj_rwlock_unlock(pop, &pfreepool->lock);
+			os_event_wait(ppl->free_log_pool_event);
+			goto get_free_buf;
+		}
+		POBJ_LIST_REMOVE(pop, &pfreepool->head, free_buf, list_entries);
+		pfreepool->cur_free_bufs--;
+		
+		os_event_reset(ppl->free_log_pool_event);
+		pmemobj_rwlock_unlock(pop, &pfreepool->lock);
+
+		// (1.2) switch the free log buf with the full log buf
+
+		// save the flushing log buf for recovery
+		TOID_ASSIGN(pline->flush_logbuf, pline->logbuf.oid);
+		//asign new one
+		TOID_ASSIGN(pline->logbuf, free_buf.oid);
+		D_RW(free_buf)->hashed_id = pline->hashed_id; 
+		
+		//reserve 4 bytes for log buffer's header
+		assert(D_RW(free_buf)->cur_off == PMEM_LOG_BUF_HEADER_SIZE);
+		
+		//save the diskaddr should be written
+		plogbuf->diskaddr = pline->diskaddr;
+
+		//move the diskaddr on the line ahead, the written size should be aligned with 512B for DIRECT_IO works
+		//pline->diskaddr += end_off;
+		pline->diskaddr += plogbuf->size;
+
+		// (1.3)write log rec on new buf
+		log_des = ppl->p_align + D_RW(free_buf)->pmemaddr + D_RW(free_buf)->cur_off;
+
+		__pm_write_log_rec_low(pop,
+				log_des,
+				log_src,
+				rec_size);
+
+		D_RW(free_buf)->cur_off += rec_size;
+		D_RW(free_buf)->state = PMEM_LOG_BUF_IN_USED;
+
+		//update plog_block
+		if (plog_block->firstLSN == 0){
+			//first write
+			plog_block->start_off = D_RW(free_buf)->cur_off;
+			plog_block->start_diskaddr = pline->diskaddr;
+			plog_block->firstLSN = rec_lsn;
+		}
+		plog_block->lastLSN = rec_lsn;
+
+		// (1.4) write acutal log buffer's size to the header
+		byte* header = ppl->p_align + plogbuf->pmemaddr + 0;
+		mach_write_to_4(header, plogbuf->cur_off);
+		//fill zero the un-used len
+		uint64_t dif_len = plogbuf->size - plogbuf->cur_off;
+		if (dif_len > 0) {
+			memset(header + plogbuf->cur_off, 0, dif_len);
+		}
+
+		// (1.5) assign a pointer in the flusher to the full log buf, this function return immediately 
+		pm_log_buf_assign_flusher(ppl, plogbuf);
+
+	}//end handle full logbuf
+	else { 
+		//update plog_block
+		if (plog_block->firstLSN == 0){
+			//first write
+			plog_block->start_off = plogbuf->cur_off;
+			plog_block->start_diskaddr = pline->diskaddr;
+			plog_block->firstLSN = rec_lsn;
+		}
+
+		plog_block->lastLSN = rec_lsn;
+
+		log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
+		__pm_write_log_rec_low(pop,
+				log_des,
+				log_src,
+				rec_size);
+		if (plogbuf->cur_off == PMEM_LOG_BUF_HEADER_SIZE)		  {
+			//this is the first write on this logbuf
+			plogbuf->state = PMEM_LOG_BUF_IN_USED;
+		}
+		//pmemobj_memcpy_persist(pop, log_des, log_src, rec_size);
+
+		plogbuf->cur_off += rec_size;
+	} //end handle regular logbuf
+
+	pmemobj_rwlock_unlock(pop, &pline->lock);
+	return;
+}
+
+/*
  * Write REDO log records from mtr's heap to PMEM in partitioned-log   
  @param[in] pop
  @param[in] ppl
@@ -2337,12 +2613,15 @@ pm_ppl_write(
 			__handle_pm_ppl_write_by_entry(
 					pop,
 					ppl,
+					tid,
 					log_src,
 					size,
+					n_recs,
+					key_arr,
+					size_arr,
 					ret_start_lsn,
 					ret_end_lsn,
-					//pe,
-					entry,
+					pe,
 					true);
 		} else {
 			assert(pe->state == PMEM_TX_ACTIVE);
@@ -2351,12 +2630,15 @@ pm_ppl_write(
 		__handle_pm_ppl_write_by_entry(
 				pop,
 				ppl,
+				tid,
 				log_src,
 				size,
+				n_recs,
+				key_arr,
+				size_arr,
 				ret_start_lsn,
 				ret_end_lsn,
-				//pe,
-				entry,
+				pe,
 				false);
 		}
 		pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[local_id])->lock);
@@ -2401,12 +2683,15 @@ retry:
 				__handle_pm_ppl_write_by_entry(
 						pop,
 						ppl,
+						tid,
 						log_src,
 						size,
+						n_recs,
+						key_arr,
+						size_arr,
 						ret_start_lsn,
 						ret_end_lsn,
-						//pe,
-						entry,
+						pe,
 						true);
 
 				//handle update log
@@ -2453,12 +2738,15 @@ retry:
 		__handle_pm_ppl_write_by_entry(
 				pop,
 				ppl,
+				tid,
 				log_src,
 				size,
+				n_recs,
+				key_arr,
+				size_arr,
 				ret_start_lsn,
 				ret_end_lsn,
-				//pe,
-				entry,
+				pe,
 				false);
 
 		pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[local_id])->lock);
@@ -2544,165 +2832,7 @@ __get_log_block_by_id(
 	return plog_block;
 }
 
-/*
- * memcpy log_src to per-transaction logbuf and assign the partition log to the daemon thread
- * The caller responses for holding the lock on entry
- *
- * @param[in]: pop
- * @param[in]: ppl
- * @param[in]: log_src log records to be copied
- * @param[in] size - total size of log records 
- * @param[out]: ret_start_lsn
- * @param[out]: ret_end_lsn
- * @param[in]: pe pointer to the entry
- * @param[in]: is_new - true if it is the first time the transaction write on PPL
- * */
-void __handle_pm_ppl_write_by_entry(
-			PMEMobjpool*		pop,
-			PMEM_PAGE_PART_LOG*	ppl,
-			byte*				log_src,
-			uint64_t			size,
-			uint64_t*			ret_start_lsn,
-			uint64_t*			ret_end_lsn,
-			TOID(PMEM_TT_ENTRY)		entry,
-			bool				is_new)
-{
 
-	uint16_t type;
-	uint32_t row;
-	uint32_t col;
-	uint64_t eslapse_time;
-
-	byte* log_des;
-	PMEM_MINI_BUF* pmbuf;
-
-
-	TOID(PMEM_MINI_BUF) free_mbuf;
-	PMEM_MINI_BUF* pfree_mbuf;
-
-	PMEM_TT_ENTRY* pe = D_RW(entry);
-	assert(pe != NULL);
-
-	pmbuf = D_RW(pe->mbuf);
-	assert(pmbuf != NULL);
-
-	pm_ppl_parse_entry_id(pe->eid, &type, &row, &col);
-
-	PMEM_MINI_BUF_FREE_POOL* pfreepool;
-
-	//(1) reallocate in-need
-	if (pmbuf->cur_buf_size + size > pmbuf->max_buf_size){
-		//printf("PMEM_INFO reallocate pmbuf->buf of tid %zu pe_id %zu mbuf_id %zu. From %zu byes to %zu bytes\n", pe->tid, pe->eid, pmbuf->id, pmbuf->max_buf_size, pmbuf->max_buf_size * 2);
-
-		pmbuf->max_buf_size = 2 * pmbuf->max_buf_size;
-		POBJ_REALLOC(pop, &(pmbuf->buf), char, sizeof(char) * pmbuf->max_buf_size);
-	}
-
-	//(2) copy log recs to the mini-buffer
-	log_des = (byte*) D_RW(pmbuf->buf);
-
-	__pm_write_log_rec_low(pop, log_des + pmbuf->cur_buf_size, log_src, size);
-
-	pmbuf->cur_buf_size += size;
-	pmbuf->is_new_write = is_new;
-	pmbuf->entry_oid = entry.oid;
-
-	//(3) Compute the lsns
-	*ret_start_lsn = *ret_end_lsn = ut_time_us(NULL);
-	
-	if (pe->tid == 0){
-		//This is the special tt line. It doesn't have commit process, so we handle partition immediately
-		__handle_partition(pop, ppl, entry);
-
-		return;
-	}
-	else{
-		if (pmbuf->start_time == 0){
-			pmbuf->start_time = *ret_start_lsn;
-			//delegate partition to the last catcher thread or commit thread
-			return;
-		} else {
-			eslapse_time = (*ret_start_lsn - pmbuf->start_time);
-
-			if ( eslapse_time  < PMEM_GROUP_PARTITION_TIME &&
-				pmbuf->cur_buf_size < PMEM_GROUP_PARTITION_SIZE){
-				//delegate partition to the last catcher thread or commit thread
-				return;
-			}
-		}
-
-		//Perform group Partition
-		//printf("[QUERY] group partition tid %zu pe_id %zu line hashed_id %zu mbuf_id %zu. group_size %zu esplaptime %zu \n", pe->tid, pe->eid, row, pmbuf->id, pmbuf->cur_buf_size, eslapse_time);
-
-		__handle_partition(pop, ppl, entry);
-
-		return;
-	} //if (pe->tid == 0)
-}
-
-/*
- * Handle partition log recs from the mini-buf to PPL
- * Called by __handle_pm_ppl_write_by_entry() or pm_ppl_commit()
- * */
-void
-__handle_partition(
-		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		TOID(PMEM_TT_ENTRY) entry)
-{
-
-	PMEM_MINI_BUF_FREE_POOL* pfreepool;
-	TOID(PMEM_MINI_BUF) free_mbuf;
-	PMEM_MINI_BUF* pfree_mbuf;
-
-	PMEM_MINI_BUF* pmbuf;
-	PMEM_TT_ENTRY* pe = D_RW(entry);
-	assert(pe != NULL);
-
-	pmbuf = D_RW(pe->mbuf);
-	assert(pmbuf != NULL);
-
-get_free_buf:
-	//(4) get free mini-buf
-	pfreepool = D_RW(ppl->mini_free_pool);
-
-	pmemobj_rwlock_wrlock(pop, &pfreepool->lock);
-
-	free_mbuf = POBJ_LIST_FIRST (&pfreepool->head);
-	pfree_mbuf = D_RW(free_mbuf);
-
-	if (pfreepool->cur_free_bufs == 0 || 
-			TOID_IS_NULL(free_mbuf)){
-		printf("==> cur free %zu mini_free_pool is full, wait for it empty...\n", pfreepool->cur_free_bufs);
-		pmemobj_rwlock_unlock(pop, &pfreepool->lock);
-		os_event_wait(ppl->free_mini_pool_event);
-		goto get_free_buf;
-	}
-
-	POBJ_LIST_REMOVE(pop, &pfreepool->head, free_mbuf, mlist_entries);
-	pfreepool->cur_free_bufs--;
-
-	os_event_reset(ppl->free_mini_pool_event);
-	pmemobj_rwlock_unlock(pop, &pfreepool->lock);
-
-	// (5) switch
-	TOID_ASSIGN(pe->mbuf, free_mbuf.oid);
-	D_RW(free_mbuf)->entry_oid = entry.oid;
-
-	//(6) assing catcher
-	//printf("\t[IO-ASSIGN] START tid %zu pe_eid %zu n_mbuf_reqs %zu mbuf id %zu\n",pe->tid, pe->eid, pe->n_mbuf_reqs, pmbuf->id);
-
-	pm_log_buf_assign_catcher(ppl, pmbuf);
-
-	//pe->n_mbuf_reqs++;
-	__sync_fetch_and_add(&pe->n_mbuf_reqs, 1);
-	
-	//the commit thread should wait 
-	//printf("\t[IO-ASSIGN] END tid %zu pe_eid %zu n_mbuf_reqs %zu mbuf id %zu\n",pe->tid, pe->eid, pe->n_mbuf_reqs, pmbuf->id);
-
-	return;
-
-}
 /*
  * Sub-rountine to handle write log
  * Called by pm_ppl_write(), the caller has already acquired the lock on the entry
@@ -2711,7 +2841,7 @@ get_free_buf:
  * pe->count and pageref may change
  * */
 
-void __handle_pm_ppl_write_by_entry_old(
+void __handle_pm_ppl_write_by_entry(
 			PMEMobjpool*		pop,
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
@@ -2725,10 +2855,6 @@ void __handle_pm_ppl_write_by_entry_old(
 			PMEM_TT_ENTRY*		pe,
 			bool				is_new)
 {
-	//tdnguyen test
-	*ret_start_lsn = *ret_end_lsn = ut_time_us(NULL);	
-	return;
-
 	ulint i, j;
 
 	uint64_t key;	
@@ -3269,313 +3395,7 @@ get_free_buf:
 	pmemobj_rwlock_unlock(pop, &pline->lock);
 
 }
-///////////////////////////////////////////////////
-////////////////// CATCHER ////////////////////////
-////////////////////////////////////////////////////
 
-/*
- * Called by ??? when a logbuf is full
- * Assign the pointer in the catcher to the full logbuf
- * Trigger the worker thread if the number of full logbuf reaches a threshold
- * */
-void
-pm_log_buf_assign_catcher(
-		PMEM_PAGE_PART_LOG*			ppl,
-		PMEM_MINI_BUF*			pmbuf) 
-{
-	
-	PMEM_LOG_FLUSHER* catcher = ppl->catcher;
-
-	//printf("\t [IO-IN ASSIGN] 1. before mutex_enter catcher thread %zu to mbuf_id %zu\n", catcher->tail, pmbuf->id);
-assign_worker:
-	mutex_enter(&catcher->mutex);
-
-	if (catcher->n_requested == catcher->size) {
-		//all requested slot is full)
-		printf("PMEM_INFO: all log_buf in catcher are booked, sleep and wait \n");
-		mutex_exit(&catcher->mutex);
-		os_event_wait(catcher->is_log_req_full);	
-		goto assign_worker;	
-	}
-
-	//find an idle thread to assign task
-	int64_t n_try = catcher->size;
-	while (n_try > 0) {
-		if (catcher->part_list_arr[catcher->tail] == NULL) {
-			//found
-			//printf("\t [IO-IN ASSIGN] 2. found, assign catcher thread %zu to mbuf_id %zu\n", catcher->tail, pmbuf->id);
-			catcher->part_list_arr[catcher->tail] = pmbuf;
-			//plogbuf->state = PMEM_LOG_BUF_IN_PART;
-			++catcher->n_requested;
-			//delay calling flush up to a threshold
-			if (catcher->n_requested >= PMEM_LOG_CATCHER_WAKE_THRESHOLD) {
-				/*trigger the catcher 
-				 * pm_log_catcher_worker()
-				 * */
-				os_event_set(catcher->is_log_req_not_empty);
-				//see pm_catcher_worker() --> pm_log_partition_log_buf()
-			}
-
-			if (catcher->n_requested >= catcher->size) {
-				os_event_reset(catcher->is_log_req_full);
-			}
-			//for the next 
-			catcher->tail = (catcher->tail + 1) % catcher->size;
-			break;
-		}
-		//circled increase
-		catcher->tail = (catcher->tail + 1) % catcher->size;
-		n_try--;
-	} //end while 
-	//check
-	if (n_try == 0) {
-		/*This imply an logical error 
-		 * */
-		printf("PMEM_ERROR in pm_log_assign_catcher() requested/size = %zu /%zu / %zu\n", catcher->n_requested, catcher->size);
-		mutex_exit(&catcher->mutex);
-		assert (n_try);
-	}
-
-	mutex_exit(&catcher->mutex);
-}
-
-/*
- * Call back function from pm_log_catcher_worker thread
- * Partition log recs in the mini buffer to page log 
- * */
-void 
-pm_log_partition_mini_buf(
-		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		PMEM_MINI_BUF*			pmbuf)
-{
-	ulint i, j;
-
-	uint64_t rec_size;// log record size
-	uint64_t cur_off;
-	uint64_t eid;
-	
-	uint64_t LSN;	// log record LSN
-
-	byte* log_src;
-	byte* end_ptr;
-	byte* ptr;
-	byte* new_ptr;
-	uint64_t size;
-
-	uint64_t block_len;
-	uint64_t sum_len;
-	
-	/*for parse pe*/	
-	uint16_t pe_type;
-	uint32_t row;
-	uint32_t col;
-	
-	/*for parse log rec*/
-	mlog_id_t	type;
-	ulint		space;
-	ulint		page_no;
-	ulint		key;
-	
-	PMEM_TT* ptt;
-	PMEM_PAGE_REF* pref;
-	PMEM_TT_HASHED_LINE* pline;
-
-	TOID(PMEM_TT_ENTRY) entry;
-	PMEM_TT_ENTRY* pe;
-	TOID(PMEM_MINI_BUF) mbuf;
-
-	PMEM_MINI_BUF_FREE_POOL* pfree_pool;
-
-	i = 0;
-	cur_off = 0;
-
-	assert(pmbuf);
-	TOID_ASSIGN(mbuf, pmbuf->self);
-	
-
-	//(0) get the pe
-	TOID_ASSIGN(entry, pmbuf->entry_oid);
-
-	pe = D_RW(entry);
-
-	//printf("====> [CATCHER - START partition] mini buf, tid %zu eid %zu n_mbuf_reqs %zu mbuf_id %zu\n", pe->tid, pe->eid, pe->n_mbuf_reqs, pmbuf->id);
-	
-	/*This lock is contented by catcher threads only*/
-	//pmemobj_rwlock_wrlock(pop, &pe->lock);
-	pmemobj_rwlock_wrlock(pop, &pe->pref_lock);
-
-	assert(pe->state == PMEM_TX_ACTIVE);
-	/*Note that D_RO(pe->mbuf).oid != mbuf.oid*/
-	assert(!TOID_EQUALS(pe->mbuf, mbuf));	
-
-	log_src = (byte*) D_RW(pmbuf->buf);
-	size = pmbuf->cur_buf_size;
-	end_ptr = log_src + size;
-		
-	//tdnguyen test, skip complex part
-	//goto handle_finish;
-
-	//(1) parse the log records, see pm_ppl_parse_recs()
-	while (cur_off < size){
-		ptr = log_src + cur_off;
-
-		//////////////////////////////////
-		//parse log rec to get key and rec_len
-		new_ptr = mlog_parse_initial_log_record(ptr, end_ptr, &type, &space, &page_no);
-		///////////////////////////////////
-
-		PMEM_FOLD(key, space, page_no);
-
-		rec_size = mach_read_from_2(new_ptr);
-		assert(rec_size > 0);
-		new_ptr += 2;
-
-		//find the corresponding pageref with this log rec
-		for (j = 0; j < pe->max_dp_entries; j++) 
-		{
-			pref = D_RW(D_RW(pe->dp_arr)[j]);
-			if (pref->key == key){
-				//pageref already exist
-				break;
-			}
-		} //end for each pageref in entry
-
-		if (j < pe->max_dp_entries)
-		{
-			//pageref already exist, we don't increase count
-			//Note: Because pm_ppl_flush() may reset a plogblock even though it's count > 0, check for out-of-date
-			PMEM_PAGE_LOG_BLOCK* plog_block =
-				__get_log_block_by_id(pop, ppl, pref->idx);
-			if (!plog_block->is_free &&
-					plog_block->key == key){
-				
-				//update log block			
-				__update_page_log_block_on_write(
-						pop,
-						ppl,
-						log_src,
-						cur_off,
-						rec_size,
-						key,
-						&LSN,
-						pref->idx);
-
-				pref->pageLSN = LSN;
-			}
-			else{
-				//pref is out-of-date, the plog_block is either reset now or the key is not match (another trx has occupied the reset plog_block)
-				//pref->idx = -1;
-
-				uint64_t new_bid = __update_page_log_block_on_write(
-						pop,
-						ppl,
-						log_src,
-						cur_off,
-						rec_size,
-						key,
-						&LSN,
-						PMEM_DUMMY_EID);
-
-				//update pref
-				pref->key = key;
-				pref->idx = new_bid;
-				pref->pageLSN = LSN;
-			}
-		}
-		else {
-			// new pageref, increase the count
-			//find the first free pageref from the beginning to reuse the reclaim index
-			//for (j = 0; j < pe->n_dp_entries; j++) 
-			for (j = 0; j < pe->max_dp_entries; j++) 
-			{
-				pref = D_RW(D_RW(pe->dp_arr)[j]);
-				if (pref->idx == PMEM_DUMMY_EID){
-					//found
-					break;
-				}
-			}
-
-			//if (j == pe->n_dp_entries)
-			if (j == pe->max_dp_entries)
-			{
-
-				//pe is full
-				__realloc_TT_entry(pop, ppl, pe, pe->max_dp_entries * 2);
-
-				pref = D_RW(D_RW(pe->dp_arr)[j]);
-				//pe->n_dp_entries++;
-			}
-
-			//update log block
-			uint64_t new_bid = __update_page_log_block_on_write(
-					pop,
-					ppl,
-					log_src,
-					cur_off,
-					rec_size,
-					key,
-					&LSN,
-					PMEM_DUMMY_EID);
-
-			pref->key = key;
-			pref->idx = new_bid;
-			pref->pageLSN = LSN;
-
-		}
-
-		cur_off += rec_size;
-		i++;
-	}//end while 
-	
-	//(2) handle finish
-handle_finish:	
-	//reset the mini buf
-	//if (pmbuf->max_buf_size > PMEM_MINI_BUF_SIZE){
-	//	//printf("realloc before push back to mini free pool\n");
-	//	POBJ_REALLOC(pop, &pmbuf->buf, char, sizeof(char) * PMEM_MINI_BUF_SIZE);
-	//	ppl->pmem_mini_free_pool_size -= (pmbuf->max_buf_size - PMEM_MINI_BUF_SIZE);
-	//	pmbuf->max_buf_size = PMEM_MINI_BUF_SIZE;
-	//}
-
-	pmbuf->cur_buf_size = 0;
-	pmbuf->is_new_write = true;
-	pmbuf->entry_oid = OID_NULL;
-	pmbuf->start_time = 0;
-
-	//put back to the mini free pool
-	pfree_pool = D_RW(ppl->mini_free_pool);
-
-	pmemobj_rwlock_wrlock(pop, &pfree_pool->lock);
-
-	POBJ_LIST_INSERT_TAIL(pop, &pfree_pool->head, mbuf, mlist_entries);
-	pfree_pool->cur_free_bufs++;
-	
-	//wakeup who is waitting for free_pool available
-	os_event_set(ppl->free_mini_pool_event);
-
-	pmemobj_rwlock_unlock(pop, &pfree_pool->lock);
-	
-	//This lock is contention between query threads and ccatcher threads
-	//pmemobj_rwlock_wrlock(pop, &pe->lock);
-	__sync_fetch_and_add(&pe->n_mbuf_reqs, -1);
-	//pe->n_mbuf_reqs--;
-
-	if (pe->n_mbuf_reqs == 0 &&
-		pe->is_commit){
-		//the commit thread has called before this thread. This thread handle the commit work
-		__handle_commit(pop, ppl, pe);
-	}
-	//pmemobj_rwlock_unlock(pop, &pe->lock);
-	
-
-	//printf("====> [CATCHER - END partition] mini buf, tid %zu cur free %zu eid %zu n_mbuf_reqs %zu mbuf_id %zu\n", pe->tid, pfree_pool->cur_free_bufs, pe->eid, pe->n_mbuf_reqs, pmbuf->id);
-
-	//pmemobj_rwlock_unlock(pop, &pe->lock);
-	pmemobj_rwlock_unlock(pop, &pe->pref_lock);
-		
-	return;
-}
 ///////////////////////////////////////////////////
 ////////////////// FLUSHER ////////////////////////
 ////////////////////////////////////////////////////
@@ -3876,6 +3696,9 @@ pm_ppl_commit(
 		uint64_t				tid,
 		uint64_t				eid) 
 {
+	//test new DAL
+	return;
+
 	uint64_t n, k, i;
 	uint64_t bucket_id, local_id;
 
@@ -3909,8 +3732,6 @@ pm_ppl_commit(
 	n = ptt->n_buckets;
 	k = ptt->n_entries_per_bucket;
 
-	//bucket_id = eid / k;
-	//local_id = eid % k;
 	bucket_id = row;
 	local_id = col;
 
@@ -3924,60 +3745,6 @@ pm_ppl_commit(
 
 	pmemobj_rwlock_wrlock(pop, &pe->lock);
 	
-	if (pe->n_mbuf_reqs > 0){
-		/*there are some log recs in-processing, set the flag to true. The last catcher thread will handle the commit work*/
-		pe->is_commit = true;
-		pmemobj_rwlock_unlock(pop, &pe->lock);
-		return;
-	}
-
-	// There is no in-process mini-buf.
-	
-	//Check for group partition	
-	pmbuf = D_RW(pe->mbuf);
-	assert(pmbuf != NULL);
-	
-	if (pmbuf->cur_buf_size > 0)
-	{
-		//delegate the commit work to the last catcher thread	
-		cur_time = ut_time_us(NULL);
-
-		//printf("[COMMIT] group partition tid %zu pe_id %zu mbuf_id %zu. group_size %zu elapse %zu (us)\n", pe->tid, pe->eid, pmbuf->id, pmbuf->cur_buf_size, (cur_time - pmbuf->start_time));
-		pe->is_commit = true;
-		__handle_partition(pop, ppl, entry);
-
-		pmemobj_rwlock_unlock(pop, &pe->lock);
-		return;
-	}
-
-	// This thread handle the commit work
-	//pmemobj_rwlock_wrlock(pop, &pe->pref_lock);
-
-	//cur_time = ut_time_us(NULL);
-	//printf("[COMMIT] reset tid %zu pe_id %zu mbuf_id %zu. group_size %zu elapse %zu (us)\n", pe->tid, pe->eid, pmbuf->id, pmbuf->cur_buf_size, (cur_time - pmbuf->start_time));
-	__handle_commit(pop, ppl, pe);
-
-	//pmemobj_rwlock_unlock(pop, &pe->pref_lock);
-
-	pmemobj_rwlock_unlock(pop, &pe->lock);
-	return;
-}
-
-/*
- * Handle the commit work by commit thread if there is no mini-buf is in-process. Otherwise, handled by the last catcher thread
- *
- * The caller response for holding the pref_lock 
- * */
-void
-__handle_commit(
-		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		PMEM_TT_ENTRY* pe)
-{
-
-	uint64_t n, k, i;
-	PMEM_PAGE_REF* pref;
-
 	//(2) for each pageref in the entry	
 	for (i = 0; i < pe->max_dp_entries; i++) 
 	{
@@ -4000,7 +3767,11 @@ __handle_commit(
 	} //end for each pageref in the entry
 
 	__reset_TT_entry(pop, ppl, pe);
+	
+	pmemobj_rwlock_unlock(pop, &pe->lock);
+	return;
 }
+
 
 /*
  * Update the page log block on commit
@@ -4134,11 +3905,14 @@ pm_ppl_flush_page(
 		uint64_t			key,
 		uint64_t			pageLSN) 
 {
+
 	ulint hashed;
 	uint32_t n, k, i, j;
 
 	int64_t free_idx;
 	int64_t n_try;
+
+	plog_hash_t* item;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
@@ -4160,13 +3934,38 @@ pm_ppl_flush_page(
 	pline = D_RW(line);
 	assert(pline);
 	//assert(pline->n_blocks == k);
+
+	//new implement using hashtable
+	item = pm_ppl_hash_get(pop, ppl, pline, key);
+	if (item != NULL){
+		assert(item->block_off < pline->max_blocks);
+
+		plog_block = D_RW(D_RW(pline->arr)[item->block_off]);
+		assert(plog_block->key == key);
+
+		__reset_page_log_block(plog_block);
+
+		pmemobj_rwlock_wrlock(pop, &pline->lock);
+
+		HASH_DELETE(plog_hash_t, addr_hash, pline->addr_hash, key, item);
+
+		pmemobj_rwlock_unlock(pop, &pline->lock);
+	}	
 	
+	return;
+////////////////////////////////////////////////////
 	//find the log block by hashing key O(k)
 	//n_try = k;
 	n_try = pline->max_blocks;
 
 	//PMEM_LOG_HASH_KEY(i, key, k);
 	PMEM_LOG_HASH_KEY(i, key, pline->max_blocks);
+	
+	//test	
+	//plog_block = D_RW(D_RW(pline->arr)[i]);
+	//__reset_page_log_block(plog_block);
+	//return;
+	//end test
 
 	while (n_try > 0){
 		//for (i = 0; i < k; i++){}
@@ -4210,38 +4009,6 @@ pm_ppl_flush_page(
 	
 	//Now we skip this case
 	return;
-/*	
-	//Case B: new log block on flush
-	// We start searching from the beginning for a free block to write on
-	for (i = 0; i < k; i++){
-			pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
-			plog_block = D_RW(D_RW(pline->arr)[i]);
-
-			if (plog_block->is_free){
-				//found 
-				plog_block->is_free = false;
-				plog_block->key = key;
-				plog_block->pageLSN = pageLSN;
-
-				assert(plog_block->count == 0);
-				assert(plog_block->n_tx_idx == 0);
-
-				pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
-				return;
-			}
-			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
-			//next
-	}
-	// No free log block
-	// TODO: reclaim log block by flushing committed log block to log files	
-		pmemobj_rwlock_wrlock(pop, &pline->lock);
-		printf("PMEM_ERROR in pm_ppl_flush_page(), no free log block on hashed %zu\n", hashed);
-		__print_TT(debug_ptxl_file, ptt);
-		__print_page_blocks_state(debug_ptxl_file, ppl);
-		pmemobj_rwlock_unlock(pop, &pline->lock);
-		assert(0);
-		return;	
-*/
 }
 
 //////////// RECOVERY ////////////////

@@ -502,11 +502,6 @@ struct __pmem_page_part_log {
 	 * DRAM objects, alloc every time the server start
 	 * */
 
-	/*Cacher*/	
-	os_event_t free_mini_pool_event; //event for free_pool
-	PMEM_LOG_FLUSHER*	catcher;
-	TOID(PMEM_MINI_BUF_FREE_POOL)	mini_free_pool;
-
 	/*Flusher*/	
 	os_event_t free_log_pool_event; //event for free_pool
 	PMEM_LOG_FLUSHER*	flusher;
@@ -540,6 +535,13 @@ struct __pmem_page_part_log {
 	FILE*				deb_file;
 
 };
+
+struct plog_hash_t {
+	uint64_t	key;
+	uint32_t	block_off; /*block offset in the line*/
+	hash_node_t	addr_hash;/*!< hash node in the hash bucket chain */
+};
+
 /*
  * A hashed line has array of log blocks share the same hashed value and log buffer
  * */
@@ -562,6 +564,9 @@ struct __pmem_page_log_hashed_line {
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
 	uint64_t n_blocks; //the current non-free blocks
 	uint64_t max_blocks; //the total log block in bucket
+
+	/*Hash table*/
+	hash_table_t* addr_hash; //hash the log block in this line
 
 	//Alternative to recv_sys_t in InnoDB, allocate in DRAM when recovery
 	PMEM_RECV_LINE* recv_line;
@@ -617,13 +622,7 @@ struct __pmem_page_log_block {
 	uint64_t		bid; //block id
 	uint64_t		key; //fold id
 
-	//uint64_t		cur_size; //the current offset (0 - log block size) 
-	//uint16_t		n_log_recs; //the current number of log records 
-
 	int32_t			count; //number of active tx
-
-//	TOID(int64_t)	tx_idx_arr; //array of transaction index
-//	uint16_t		n_tx_idx; //array length
 
 	/*LSN */
 	uint64_t		pageLSN; // pageLSN of the NVM-page
@@ -633,19 +632,6 @@ struct __pmem_page_log_block {
 	uint32_t		start_diskaddr;// diskaddr when the first log rec is written 
 };
 
-////////////////     CATCHER         /////////////////
-
-void
-pm_log_buf_assign_catcher(
-		PMEM_PAGE_PART_LOG*			ppl,
-		PMEM_MINI_BUF*	pmbuf);
-
-//log catcher worker call back
-void 
-pm_log_partition_mini_buf(
-		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		PMEM_MINI_BUF*			pmbuf);
 
 ////////////////     FLUSHER         /////////////////
 /*
@@ -667,11 +653,10 @@ struct __pmem_log_flusher {
 	//ulint n_flushing;
 
 	bool is_running;
-	FLUSHER_TYPE type; //flusher type (CATCHER, FLUSHER)
+	FLUSHER_TYPE type; //flusher type , FLUSHER)
 
 	//pointer array
 	PMEM_PAGE_LOG_BUF** flush_list_arr;
-	PMEM_MINI_BUF** part_list_arr;
 
 };
 
@@ -733,11 +718,6 @@ pm_log_fil_read(
 extern "C"
 os_thread_ret_t
 DECLARE_THREAD(pm_log_flusher_coordinator)(
-		void* arg);
-
-extern "C"
-os_thread_ret_t
-DECLARE_THREAD(pm_log_catcher_worker)(
 		void* arg);
 
 extern "C"
@@ -1053,8 +1033,6 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 		PMEMobjpool*	pop,
 		uint64_t		n_buckets,
 		uint64_t		n_blocks_per_bucket,
-		uint64_t		n_mini_bufs,
-		uint64_t		mbuf_size,
 		uint64_t		n_log_bufs,
 		uint64_t		log_buf_size);
 
@@ -1068,6 +1046,43 @@ pm_page_part_log_bucket_init(
 		uint64_t			&log_buf_id,
 		uint64_t			&log_buf_offset
 		); 
+void
+pm_page_part_log_hash_create(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl);
+void
+pm_page_part_log_hash_free(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl);
+
+plog_hash_t*
+pm_ppl_hash_get(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
+		uint64_t			key	);
+
+void pm_ppl_hash_add_at_page_read(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		buf_page_t* bpage);
+
+plog_hash_t*
+pm_ppl_hash_add(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
+		uint64_t			key
+		);
+
+void
+pm_ppl_hash_remove(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
+		uint64_t			key
+		);
+
 void 
 __init_page_log_free_pool(
 		PMEMobjpool*			pop,
@@ -1078,13 +1093,6 @@ __init_page_log_free_pool(
 		uint64_t				&log_buf_offset
 		); 
 
-void 
-__init_mini_free_pool(
-		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		uint64_t				n,
-		uint64_t				size
-		); 
 
 void 
 __init_tt(
@@ -1114,6 +1122,15 @@ pm_ppl_parse_entry_id(
 	   	uint32_t* row,
 	   	uint32_t* col);
 
+void
+pm_ppl_write_rec(
+			PMEMobjpool*		pop,
+			PMEM_PAGE_PART_LOG*	ppl,
+			uint64_t			key,
+			byte*				log_src,
+			uint32_t			rec_size,
+			uint64_t			rec_lsn);
+
 /*Called when a mini-transaction write log record to log buffer in the traditional InnoDB*/
 uint64_t
 pm_ppl_write(
@@ -1129,19 +1146,7 @@ pm_ppl_write(
 			uint64_t*			ret_end_lsn,
 			uint64_t			block_id);
 
-
 void __handle_pm_ppl_write_by_entry(
-			PMEMobjpool*		pop,
-			PMEM_PAGE_PART_LOG*	ppl,
-			byte*				log_src,
-			uint64_t			size,
-			uint64_t*			ret_start_lsn,
-			uint64_t*			ret_end_lsn,
-			//PMEM_TT_ENTRY*		pe,
-			TOID(PMEM_TT_ENTRY)		entry,
-			bool				is_new);
-
-void __handle_pm_ppl_write_by_entry_old(
 			PMEMobjpool*		pop,
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			tid,
@@ -1156,11 +1161,6 @@ void __handle_pm_ppl_write_by_entry_old(
 			PMEM_TT_ENTRY*		pe,
 			bool				is_new);
 
-void
-__handle_partition(
-		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		TOID(PMEM_TT_ENTRY) entry);
 
 uint64_t
 __update_page_log_block_on_write(
@@ -1221,13 +1221,6 @@ pm_ppl_commit(
 		PMEM_PAGE_PART_LOG*		ppl,
 		uint64_t				tid,
 		uint64_t				eid);
-
-void
-__handle_commit(
-		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		PMEM_TT_ENTRY* pe);
-
 
 void 
 pm_ppl_flush_page(

@@ -1179,6 +1179,23 @@ mtr_t::pmem_check_mtrlog(mtr_t* mtr)
 	}//end while
 	
 }
+/*
+ * Directly add log rec to PPL
+ * @param[in]: key - the fold value of space and page_no
+ * @param[in]: src - log src
+ * @param[in]: size - log rec size
+ * */
+void mtr_t::add_rec_to_ppl(
+		uint64_t key,
+	   	byte* log_src,
+	   	uint32_t rec_size,
+		uint64_t rec_lsn){
+	pm_ppl_write_rec(
+			gb_pmw->pop,
+			gb_pmw->ppl,
+			key, log_src, rec_size, rec_lsn);
+
+}
 
 void
 mtr_t::Command::execute()
@@ -1203,6 +1220,8 @@ mtr_t::Command::execute()
 	uint16_t	prev_off;
 	uint16_t	prev_len_off;
 	uint16_t	rec_size;
+
+	uint64_t prev_key;
 
 	bool was_clean;
 
@@ -1292,66 +1311,81 @@ skip_enclose:
 	mach_write_to_2(begin_ptr + prev_len_off, rec_size);
 	mtr->add_size_at(rec_size, n_recs - 1);
 	
+	//new in DAL
+	m_start_lsn = mtr->get_LSN_at(0);
+	m_end_lsn = mtr->get_LSN_at(n_recs - 1);
+
+	prev_key = mtr->get_key_at(n_recs - 1);	
+
+	mtr->add_rec_to_ppl(prev_key, begin_ptr + prev_off, rec_size, m_end_lsn);
+	
+
+	if (len > 0){
+		if (was_clean){
+			space->max_lsn = m_end_lsn;
+		}
+	}
+	// end new DAL
+	
 	//(3) Check, remove this section in run mode
 	//mtr->pmem_check_mtrlog(mtr);
 		
 	//(4) Add log recs to PPL log
 	
-	//tdnguyen test
-	//m_end_lsn = m_start_lsn = ut_time_us(NULL);
-	//if (len > 0 && 0)
-	if (len > 0)
-	{
-		if (trx != NULL){
-			//printf("=====\n[IO] START call pm_ppl_write tid %zu\n", trx->id);
-			//fix node->trx->id == 0 even though node->trx_id != 0 in row_purge()
-			trx->pm_log_block_id = pm_ppl_write(
-					gb_pmw->pop,
-					gb_pmw->ppl,
-					trx->id,
-					begin_ptr,
-					len,
-					n_recs,
-					m_impl->key_arr,
-					m_impl->size_arr,
-					&ret_start_lsn,
-					&ret_end_lsn,
-					trx->pm_log_block_id);
-			//printf("[IO] END call pm_ppl_write tid %zu\n", trx->id);
-		}
-		else{
-			//printf("====\n[IO] START call pm_ppl_write tid NULL n_recs %zu\n", n_recs);
-			//assert(type > 0 && type <= 8);
-			//all type <= 8 is treat as trx_id 0
-			uint64_t dummy_eid;
-			dummy_eid = pm_ppl_create_entry_id(PMEM_EID_UNDEFINED, 0, 0);
-
-			pm_ppl_write(
-					gb_pmw->pop,
-					gb_pmw->ppl,
-					0,
-					begin_ptr,
-					len,
-					n_recs,
-					m_impl->key_arr,
-					m_impl->size_arr,
-					&ret_start_lsn,
-					&ret_end_lsn,
-					dummy_eid);
-			//printf("[IO] END call pm_ppl_write tid NULL n_recs %zu\n", n_recs);
-		}
-
-		//Update m_start_lsn and m_end_lsn. They are required for update pageLSN in release_block()
-		m_start_lsn = ret_start_lsn;
-		m_end_lsn = ret_end_lsn;
-		ut_ad(m_start_lsn <= m_end_lsn);
-		
-		//update space->max_lsn
-		if (was_clean){
-			space->max_lsn = m_end_lsn;
-		}
-	
-	}//end if(len > 0)
+	//old method
+//	m_end_lsn = m_start_lsn = ut_time_us(NULL);
+//	if (len > 0 && 0)
+//	//if (len > 0)
+//	{
+//		if (trx != NULL){
+//			//printf("=====\n[IO] START call pm_ppl_write tid %zu\n", trx->id);
+//			trx->pm_log_block_id = pm_ppl_write(
+//					gb_pmw->pop,
+//					gb_pmw->ppl,
+//					trx->id,
+//					begin_ptr,
+//					len,
+//					n_recs,
+//					m_impl->key_arr,
+//					m_impl->size_arr,
+//					&ret_start_lsn,
+//					&ret_end_lsn,
+//					trx->pm_log_block_id);
+//			//printf("[IO] END call pm_ppl_write tid %zu\n", trx->id);
+//		}
+//		else{
+//			//printf("====\n[IO] START call pm_ppl_write tid NULL n_recs %zu\n", n_recs);
+//			//assert(type > 0 && type <= 8);
+//			//all type <= 8 is treat as trx_id 0
+//			uint64_t dummy_eid;
+//			dummy_eid = pm_ppl_create_entry_id(PMEM_EID_UNDEFINED, 0, 0);
+//
+//			pm_ppl_write(
+//					gb_pmw->pop,
+//					gb_pmw->ppl,
+//					0,
+//					begin_ptr,
+//					len,
+//					n_recs,
+//					m_impl->key_arr,
+//					m_impl->size_arr,
+//					&ret_start_lsn,
+//					&ret_end_lsn,
+//					dummy_eid);
+//			//printf("[IO] END call pm_ppl_write tid NULL n_recs %zu\n", n_recs);
+//		}
+//
+//		//Update m_start_lsn and m_end_lsn. They are required for update pageLSN in release_block()
+//		m_start_lsn = ret_start_lsn;
+//		m_end_lsn = ret_end_lsn;
+//		ut_ad(m_start_lsn <= m_end_lsn);
+//		
+//		//update space->max_lsn
+//		if (was_clean){
+//			space->max_lsn = m_end_lsn;
+//		}
+//	
+//	}//end if(len > 0)
 skip_prepare:
 	//(4) add the block to the flush list 
 	if (m_impl->m_made_dirty) {

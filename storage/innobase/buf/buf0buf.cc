@@ -5842,7 +5842,8 @@ skip_checksum:
 		}
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-skip_recv_page:
+		//Add read page to hash table
+
 #endif
 		/* If space is being truncated then avoid ibuf operation.
 		During re-init we have already freed ibuf entries. */

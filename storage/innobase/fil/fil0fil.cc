@@ -6864,6 +6864,12 @@ fil_aio_wait(
 			}
 #else //original
 			buf_page_io_complete(static_cast<buf_page_t*>(message));
+#if defined (UNIV_PMEMOBJ_PART_PL)
+			pm_ppl_hash_add_at_page_read(
+					gb_pmw->pop,
+					gb_pmw->ppl,
+					static_cast<buf_page_t*>(message));
+#endif //UNIV_PMEMOBJ_PART_PL
 #endif /* UNIV_PMEMOBJ_BUF*/
 		}
 		return;
