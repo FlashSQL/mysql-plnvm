@@ -354,7 +354,8 @@ struct ReleaseBlocks {
 
 		block = reinterpret_cast<buf_block_t*>(slot->object);
 
-#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
+//#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
+#if defined (UNIV_SKIPLOG)
 		//simulate buf_flush_note_modification()
 		mutex_enter(&block->mutex);
 		block->page.newest_modification = m_end_lsn;
@@ -1185,16 +1186,12 @@ mtr_t::pmem_check_mtrlog(mtr_t* mtr)
  * @param[in]: src - log src
  * @param[in]: size - log rec size
  * */
-void mtr_t::add_rec_to_ppl(
-		uint64_t key,
-	   	byte* log_src,
-	   	uint32_t rec_size,
-		uint64_t rec_lsn){
-	pm_ppl_write_rec(
-			gb_pmw->pop,
-			gb_pmw->ppl,
-			key, log_src, rec_size, rec_lsn);
-
+uint64_t mtr_t::add_rec_to_ppl(
+		uint64_t	key,
+	   	byte*		log_src,
+	   	uint32_t	rec_size)
+{
+	return pm_ppl_write_rec(gb_pmw->pop, gb_pmw->ppl, key, log_src, rec_size);
 }
 
 void
@@ -1312,13 +1309,14 @@ skip_enclose:
 	mtr->add_size_at(rec_size, n_recs - 1);
 	
 	//new in DAL
-	m_start_lsn = mtr->get_LSN_at(0);
-	m_end_lsn = mtr->get_LSN_at(n_recs - 1);
+	//m_end_lsn = mtr->get_LSN_at(n_recs - 1);
 
 	prev_key = mtr->get_key_at(n_recs - 1);	
 
-	mtr->add_rec_to_ppl(prev_key, begin_ptr + prev_off, rec_size, m_end_lsn);
+	m_end_lsn = mtr->add_rec_to_ppl(prev_key, begin_ptr + prev_off, rec_size);
+	mtr->add_LSN_at(m_end_lsn, n_recs - 1);
 	
+	m_start_lsn = mtr->get_LSN_at(0);
 
 	if (len > 0){
 		if (was_clean){

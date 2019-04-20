@@ -71,6 +71,9 @@ bool	recv_replay_file_ops	= true;
 #if defined(UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 #include "my_pmemobj.h"
 extern PMEM_WRAPPER* gb_pmw;
+
+static bool IS_GLOBAL_HASHTABLE = true;
+//static bool IS_GLOBAL_HASHTABLE = false;
 #endif
 
 
@@ -1818,9 +1821,9 @@ recv_parse_or_apply_log_rec_body(
 		break;
 #endif /* UNIV_LOG_LSN_DEBUG */
 	case MLOG_1BYTE: case MLOG_2BYTES: case MLOG_4BYTES: case MLOG_8BYTES:
-//#if defined (UNIV_PMEMOBJ_PART_PL)
-//	goto skip_check; //skip debug check
-//#endif
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	goto skip_check; //skip debug check
+#endif
 
 #ifdef UNIV_DEBUG
 		if (page && page_type == FIL_PAGE_TYPE_ALLOCATED
@@ -1895,9 +1898,9 @@ recv_parse_or_apply_log_rec_body(
 		}
 #endif /* UNIV_DEBUG */
 
-//#if defined (UNIV_PMEMOBJ_PART_PL)
-//skip_check: //skip debug check
-//#endif
+#if defined (UNIV_PMEMOBJ_PART_PL)
+skip_check: //skip debug check
+#endif
 		ptr = mlog_parse_nbytes(type, ptr, end_ptr, page, page_zip);
 		if (ptr != NULL && page != NULL
 		    && page_no == 0 && type == MLOG_4BYTES) {
@@ -2381,9 +2384,13 @@ recv_recover_page_func(
 				bpage->id.fold());
 
 		assert(pline != NULL);
-
-		//return pm_ppl_recv_recover_page_func(gb_pmw->pop, pline, just_read_in, block);
-		return pm_ppl_recv_recover_page_func(gb_pmw->pop, gb_pmw->ppl, NULL, just_read_in, block);
+		
+		if (IS_GLOBAL_HASHTABLE){
+			/*the global hashtable approach*/
+			return pm_ppl_recv_recover_page_func(gb_pmw->pop, gb_pmw->ppl, NULL, just_read_in, block);
+		} else {
+			return pm_ppl_recv_recover_page_func(gb_pmw->pop, gb_pmw->ppl, pline, just_read_in, block);
+		}
 	}
 #endif
 	page_t*		page;
@@ -4380,8 +4387,9 @@ pm_ppl_recovery(
 
     //this function call buf_dblwr_process() that correct tone page using DWB
 	err = pm_ppl_recv_init_crash_recovery_spaces(pop, ppl, max_recovered_lsn);
-    
-	pm_ppl_recv_apply_prior_pages(pop, ppl, NULL, false);
+   
+   /*this function only used in global hashtable approach*/	
+	//pm_ppl_recv_apply_prior_pages(pop, ppl, NULL, false);
 
     if (err != DB_SUCCESS) {
         log_mutex_exit();
@@ -4405,6 +4413,9 @@ pm_ppl_recovery(
 		pline->recv_line->apply_log_recs = TRUE;
 	}
 
+	if (IS_GLOBAL_HASHTABLE){
+		ppl->recv_line->apply_log_recs = TRUE;	
+	}
 
 	srv_start_lsn = max_recovered_lsn;
 
@@ -4425,6 +4436,10 @@ pm_ppl_recovery(
 
 /*
  * Compute the low-water mark recv_diskaddr and corresponding LSN for each lines
+ *
+ * We still need this step even though  pline->oldest_block_off could tell the same info.
+ *
+ * pline->oldest_block_off could be out-of-date if the system crashes after the plogblock is reset but before the pm_ppl_update_oldest()
  * */
 void 
 pm_ppl_analysis(
@@ -4432,13 +4447,17 @@ pm_ppl_analysis(
 		PMEM_PAGE_PART_LOG*	ppl)
 {
 
-	uint32_t n, k, i, j;
-	uint32_t min_id1, min_id2;
+	uint32_t n, i, j;
+	int32_t min_id1, min_id2;
 
     uint64_t low_diskaddr;
     uint64_t low_offset;
     uint64_t low_watermark;
 	uint64_t min_lsn;
+	
+	int64_t delta;
+	uint64_t min_delta;
+	uint64_t max_delta;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
@@ -4447,8 +4466,11 @@ pm_ppl_analysis(
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 
 	n = ppl->n_buckets;
-	k = ppl->n_blocks_per_bucket;
-    
+	//k = ppl->n_blocks_per_bucket;
+	
+	min_delta = ULONG_MAX;
+	max_delta = 0;
+
     //find low_watermark for each line
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
@@ -4457,16 +4479,16 @@ pm_ppl_analysis(
         low_diskaddr = ULONG_MAX;
         low_offset = 0;
 		min_lsn = ULONG_MAX;
+		min_id1 = min_id2 = -1;
 
         //for each block in the line
-        for (j = 0; j < k; j++){
+        for (j = 0; j < pline->max_blocks; j++){
             plog_block = D_RW(D_RW(pline->arr)[j]);
 
             if (!plog_block->is_free){
                 if(low_watermark > 
                         (plog_block->start_diskaddr + plog_block->start_off)){
 				
-
                     low_watermark = (plog_block->start_diskaddr + plog_block->start_off);
                     low_diskaddr = plog_block->start_diskaddr;
                     low_offset = plog_block->start_off;
@@ -4474,11 +4496,10 @@ pm_ppl_analysis(
 					//assert(min_lsn > plog_block->firstLSN);
 					min_id1 = j;
                 }
-
             }
         } //end for each block in the line
 
-        for (j = 0; j < k; j++){
+        for (j = 0; j < pline->max_blocks; j++){
             plog_block = D_RW(D_RW(pline->arr)[j]);
 
             if (!plog_block->is_free){
@@ -4503,7 +4524,18 @@ pm_ppl_analysis(
         pline->recv_diskaddr = low_diskaddr;
         pline->recv_off = low_offset;
 		pline->recv_lsn = min_lsn;
+
+		PMEM_PAGE_LOG_BUF* plogbuf = D_RW(pline->logbuf);
+		delta = (pline->diskaddr + plogbuf->cur_off) - (pline->recv_diskaddr + pline->recv_off);
+		if (min_delta > delta)
+			min_delta = delta;
+		if (max_delta < delta)
+			max_delta = delta;
+
+		printf ("ANALYSIS: pline %zu need to REDO %zu bytes\n", pline->hashed_id, delta);
     } //end for each line
+
+	printf ("ANALYSIS: min_delta %zu bytes max_delta %zu bytes\n", min_delta, max_delta);
 }
 
 /*
@@ -4516,7 +4548,8 @@ pm_ppl_redo(
 
 	uint32_t n, i;
     bool is_err;
-	bool is_multi_redo = false;
+	//bool is_multi_redo = false;
+	bool is_multi_redo = true;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE*		pline;
@@ -4553,6 +4586,7 @@ pm_ppl_redo(
 
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
+
 		recv_line = pline->recv_line;
 		
 		recv_line->mlog_checkpoint_lsn = 0;
@@ -4600,6 +4634,7 @@ finish:
 }
 
 /*
+ * Call back funtion from pm_log_redoer_worker()
 //Simulate recv_group_scan_log_recs()
 // Read all on-disk log rec from start_lsn to the buffer
 // Apply REDO
@@ -4780,7 +4815,7 @@ loop:
         cur_addr += scan_len;
     }
 	
-	printf("PMEM_INFO: FINISH parse line %zu need/parsed %zu/%zu\n", pline->hashed_id, total_need_recs, total_parsed_recs);
+	//printf("PMEM_INFO: FINISH parse line %zu need/parsed %zu/%zu\n", pline->hashed_id, total_need_recs, total_parsed_recs);
 
     return false; 
 }
@@ -4883,10 +4918,13 @@ loop:
 
 	//Note: if the rec_lsn < recv_line->recovered_lsn, this log rec has already applied in the database, we don't need it
 	if (rec_lsn < recv_line->recovered_lsn){
-		assert(!is_need);
+		if (is_need){
+			printf("pline %zu cur_off %zu rec_lsn %zu < recv_line->recovered_lsn %zu, but is_need is true, logical error!!!\n", pline->hashed_id, cur_off, rec_lsn, recv_line->recovered_lsn);
+		}
+		//assert(!is_need);
 	}
 	else{
-		recv_line->recovered_lsn = rec_lsn;
+		//recv_line->recovered_lsn = rec_lsn;
 	}
 	
 	//add the parsed log record to HASH TABLE in apply phase
@@ -4922,24 +4960,31 @@ loop:
 				}
 				/* fall through */
 			case STORE_YES:
-				//pm_ppl_recv_add_to_hash_table(
-				//		pop, ppl, recv_line,
-				//		type, space, page_no,
-				//	   	body, ptr + len,
-				//	   	rec_lsn, rec_lsn + len);
-				pmemobj_rwlock_wrlock(pop, &ppl->lock);
-
 				if (is_need){
-					pm_ppl_recv_add_to_hash_table(
-							pop, ppl, ppl->recv_line,
-							type, space, page_no,
-							body, ptr + len,
-							rec_lsn, rec_lsn + len);
+					if (!IS_GLOBAL_HASHTABLE){
+						pm_ppl_recv_add_to_hash_table(
+								pop, ppl, recv_line,
+								type, space, page_no,
+								body, ptr + len,
+								rec_lsn, rec_lsn + len);
+						*n_need_recs = *n_need_recs + 1;
+					} else {
+						/*the global hashtable approach*/
+						pmemobj_rwlock_wrlock(pop, &ppl->lock);
+						/*put the recv_addr to the global hashtable in ppl->recv_line.
+						 * Contention between redoer workers
+						 * */
+						pm_ppl_recv_add_to_hash_table(
+								pop, ppl, ppl->recv_line,
+								type, space, page_no,
+								body, ptr + len,
+								rec_lsn, rec_lsn + len);
 
-					*n_need_recs = *n_need_recs + 1;
+						*n_need_recs = *n_need_recs + 1;
+
+						pmemobj_rwlock_unlock(pop, &ppl->lock);
+					}
 				}
-
-				pmemobj_rwlock_unlock(pop, &ppl->lock);
 				break;
 		}
 		/* fall through */
@@ -5043,7 +5088,15 @@ pm_ppl_recv_parse_log_rec(
 	new_ptr += 8;
 	
 	*body = new_ptr;
+	//debug UNDO bug
+	//if (*type == MLOG_UNDO_HDR_CREATE &&
+	//	   	*page_no == 28796) {
+	//	const byte** temp_ptr = (const byte**) body;
+	//	trx_id_t    trx_id = mach_u64_parse_compressed(temp_ptr, end_ptr);
+	//	printf("parse MLOG_UNDO_HDR_CREATE page %zu tid %zu\n", *page_no, trx_id);
 
+	//	*body = new_ptr;
+	//}
 	//(3) Varify whether this log rec is need
 	ulint key;
 	PMEM_FOLD(key, *space, *page_no);
@@ -5123,7 +5176,9 @@ pm_ppl_recv_line_empty_hash(
 	recv_line->addr_hash = hash_create(size);
 }
 
-/*simulate recv_add_to_hash_table()*/
+/*simulate recv_add_to_hash_table()
+ *The caller reponse for holding the lock of hashtable
+ * */
 void
 pm_ppl_recv_add_to_hash_table(
 	PMEMobjpool*		pop,
@@ -5503,6 +5558,7 @@ pm_ppl_recv_recover_page_func(
 				this for a freshly read page */
 	buf_block_t*	block)	/*!< in/out: buffer block */
 {
+	PMEM_RECV_LINE* recv_line;
 	PMEM_PAGE_LOG_BLOCK* plog_block;
 	ulint key;
 
@@ -5521,18 +5577,15 @@ pm_ppl_recv_recover_page_func(
 	mtr_t		mtr;
 	
 	bool is_gb_ht = (pline == NULL);
-	bool is_skip_zero_page = true;
 
 	if(is_gb_ht){	
 		pmemobj_rwlock_wrlock(pop, &ppl->lock);	
+		recv_line = ppl->recv_line;
 	}
 	else {
 		pmemobj_rwlock_wrlock(pop, &pline->lock);	
+		recv_line = pline->recv_line;
 	}
-	
-	//PMEM_RECV_LINE* recv_line = pline->recv_line;
-	//Use the global recv_line
-	PMEM_RECV_LINE* recv_line = ppl->recv_line;
 
 	if (recv_line->apply_log_recs == FALSE) {
 		/* Log records should not be applied now */
@@ -5552,19 +5605,19 @@ pm_ppl_recv_recover_page_func(
 	ulint read_space_id = mach_read_from_4(page + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
 	ulint read_page_no = mach_read_from_4(page + FIL_PAGE_OFFSET);
 	
-	if(read_space_id != block->page.id.space() || read_page_no != block->page.id.page_no()){
-		//printf("PMEM_ERROR in pm_ppl_recv_recover_page_func(), input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", block->page.id.space(), block->page.id.page_no(), read_space_id, read_page_no);
-		//recv_line->n_addrs--;
-		if (recv_line->skip_zero_page){
-			if(is_gb_ht){	
-				pmemobj_rwlock_unlock(pop, &ppl->lock);	
-			}
-			else{
-				pmemobj_rwlock_unlock(pop, &pline->lock);	
-			}
-			return;
-		}
-	}
+//	if(read_space_id != block->page.id.space() || read_page_no != block->page.id.page_no()){
+//		//printf("PMEM_ERROR in pm_ppl_recv_recover_page_func(), input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", block->page.id.space(), block->page.id.page_no(), read_space_id, read_page_no);
+//		//recv_line->n_addrs--;
+//		if (recv_line->skip_zero_page){
+//			if(is_gb_ht){	
+//				pmemobj_rwlock_unlock(pop, &ppl->lock);	
+//			}
+//			else{
+//				pmemobj_rwlock_unlock(pop, &pline->lock);	
+//			}
+//			return;
+//		}
+//	}
 
 	recv_addr = pm_ppl_recv_get_fil_addr_struct(
 			recv_line,
@@ -5964,7 +6017,8 @@ pm_ppl_recv_apply_hashed_log_recs(
 		PMEM_PAGE_PART_LOG*	ppl,
 		ibool	allow_ibuf)
 {
-	bool is_multi_redo = false;	
+	//bool is_multi_redo = false;	
+	bool is_multi_redo = true;	
 	uint32_t n, i;
 	uint32_t begin;
 
@@ -5973,26 +6027,22 @@ pm_ppl_recv_apply_hashed_log_recs(
 	PMEM_RECV_LINE*					recv_line;
     PMEM_LOG_REDOER*				redoer;
 	
-	//pm_ppl_recv_apply_prior_pages(pop, ppl, NULL, allow_ibuf);
-	//(0) Check
-	//pm_ppl_recv_check_hashed_line(pop, ppl, NULL);	
-	//return;
 	
 	//set this variable to a value > n lines to skip applying	
 	begin = 0;
 
 	n = ppl->n_buckets;
 
-	//test use global hashtable
-	recv_line = ppl->recv_line;
-	recv_line->is_ibuf_avail = allow_ibuf;
-	printf("===> PMEM_RECV Phase 2: START Applying GLOBAL line n_cell %zu\n", recv_line->n_addrs);
-	pm_ppl_recv_apply_hashed_line(pop, ppl, NULL, recv_line->is_ibuf_avail);
+	if (IS_GLOBAL_HASHTABLE) {
+		//test use global hashtable
+		recv_line = ppl->recv_line;
+		recv_line->is_ibuf_avail = allow_ibuf;
+		printf("===> PMEM_RECV Phase 2: START Applying GLOBAL line n_cell %zu\n", recv_line->n_addrs);
+		pm_ppl_recv_apply_hashed_line(pop, ppl, NULL, recv_line->is_ibuf_avail);
 
-	return;
-	//end test use global hashtable
-	
-	//set start i for fast debug a specific line
+		return;
+		//end test use global hashtable
+	}
 	
 	if (!is_multi_redo){
 		for (i = begin; i < n; i++) {
@@ -6015,7 +6065,7 @@ pm_ppl_recv_apply_hashed_log_recs(
 		return;
 	}
 	
-	/* Parallelism REDO*/
+	/* Parallelism APPLYING*/
 
     //(1) Init the redoers and create threads
     redoer = pm_log_redoer_init(n);
@@ -6216,7 +6266,7 @@ pm_ppl_recv_apply_hashed_line(
 	recv_addr_t* recv_addr;
 	ulint	i;
 	ulint	cnt, cnt2;
-	ulint	n;
+	ulint	n, n_cells;
 	ibool	has_printed	= FALSE;
 	mtr_t	mtr;
 
@@ -6249,11 +6299,11 @@ pm_ppl_recv_apply_hashed_line(
 	n = recv_line->n_addrs;
 		
 	printf("Start apply log recs ... \n");
-	
+	n_cells = hash_get_n_cells(recv_line->addr_hash);
+
 loop:
 
 	for (i = 0; i < hash_get_n_cells(recv_line->addr_hash); i++) {
-
 		for (recv_addr = static_cast<recv_addr_t*>(
 				HASH_GET_FIRST(recv_line->addr_hash, i));
 		     recv_addr != 0;
@@ -6302,33 +6352,39 @@ loop:
 				} else {
 					// apply is done in IO thread after this read call is called
 
-					//pm_ppl_recv_read_in_area (recv_line, page_id);
-					bool read_ok = buf_read_page(page_id, page_size);
+					pm_ppl_recv_read_in_area (recv_line, page_id);
+					//bool read_ok = buf_read_page(page_id, page_size);
 
-					assert(read_ok);
+					//assert(read_ok);
 				}
 			}
 			cnt++;
 			
-			if (((cnt * 100 / n) > cnt2) ){
-				printf("%zu ", cnt2);
-				cnt2 += 10;
+			if (IS_GLOBAL_HASHTABLE){
+				if (cnt * 1.0 * 100 / n > cnt2){
+					printf("Global HT, Apply cell %zu / %zu cnt %zu cnt2 %zu percentage processed \n", i, n_cells, cnt, cnt2);
+					cnt2 += 10;
+				}
 			}
+			//if (((cnt * 100 / n) > cnt2) ){
+			//	printf("%zu ", cnt2);
+			//	cnt2 += 10;
+			//}
 		}//end inner for
 
 	}//end outer for 
 	
-	if (recv_line->n_addrs > 0){
-		recv_line->skip_zero_page = false;
-		printf("=============\n HANDLE ZERO PAGES \n===============\n");
-		goto loop;
-	}
+	//if (recv_line->n_addrs > 0){
+	//	recv_line->skip_zero_page = false;
+	//	printf("=============\n HANDLE ZERO PAGES \n===============\n");
+	//	goto loop;
+	//}
 
 	/* Wait until all the pages have been processed */
-//	while (recv_line->n_addrs != 0) {
-//		printf("recv_line %zu has n_addrs is %zu, wait until all the pages are done\n", recv_line->hashed_id, recv_line->n_addrs);
-//		os_thread_sleep(500000);
-//	}
+	while (recv_line->n_addrs != 0) {
+		printf("recv_line %zu has n_addrs is %zu, wait until all the pages are done\n", recv_line->hashed_id, recv_line->n_addrs);
+		os_thread_sleep(500000);
+	}
 
 	if (!allow_ibuf) {
 		//TODO: we don't implement this now

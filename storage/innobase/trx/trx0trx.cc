@@ -1025,7 +1025,6 @@ trx_lists_init_at_db_start(void)
 		if (rseg == NULL) {
 			continue;
 		}
-
 		/* Resurrect transactions that were doing inserts. */
 		for (undo = UT_LIST_GET_FIRST(rseg->insert_undo_list);
 		     undo != NULL;

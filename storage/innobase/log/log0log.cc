@@ -2061,14 +2061,61 @@ log_checkpoint(
 	return(true);
 }
 #if defined (UNIV_PMEMOBJ_PART_PL)
-/*simulate log_checkpoint
- **/
-bool
+/*
+ * Compute the final checkpoint lsn in PPL and flush pages to that lsn
+ * Altenative to log_checkpoint_margin(void)
+ * Called by srv_master_do_active_tasks()
+ * */
+uint64_t
 pm_ppl_checkpoint(
-		bool sync,
-		bool write_always)
+			PMEMobjpool*				pop,
+			PMEM_PAGE_PART_LOG*			ppl
+			)
 {
+	uint32_t i,  n;
+	bool success;
+	lsn_t		oldest_lsn;
+	lsn_t		new_oldest;
+	lsn_t		min_oldest;
+	lsn_t		max_oldest;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
 
+	//(1) Compute the real checkpoint lsn
+	n = ppl->n_buckets;
+	min_oldest = ULONG_MAX;
+	max_oldest = 0;
+	
+	new_oldest = ppl->max_oldest_lsn;
+
+	printf("PMEM_INFO: call pm_ppl_checkpoint new_oldest %zu ppl->ckpt_lsn %zu\n",
+		   	new_oldest, ppl->ckpt_lsn);
+	
+	/*(2) simulate fil_names_clear()*/
+	pm_ppl_fil_names_clear(new_oldest);
+
+	/*(3) Write pages in buffer pool upto the ckpt_lsn*/
+	//success = log_preflush_pool_modified_pages(new_oldest);
+	
+	/*simulate buf_flush_request_force() without call buf_flush_wait_flushed() as in log_preflush_pool_modified_pages() */
+	pm_ppl_buf_flush_request_force(new_oldest);
+
+	buf_flush_wait_flushed(new_oldest);
+
+	///*(4) reset the ckpt_lsn */
+	//for (i = 0; i < n; i++){
+	//	pline = D_RW(D_RW(ppl->buckets)[i]);
+
+	//	pmemobj_rwlock_wrlock(pop, &pline->lock);
+	//	if (pline->ckpt_lsn > 0){
+	//		pline->ckpt_lsn = 0;
+	//	}
+	//	pmemobj_rwlock_unlock(pop, &pline->lock);
+	//}
+
+	/* (5) update the global ckpt_lsn*/
+	pmemobj_rwlock_wrlock(pop, &ppl->lock);
+	ppl->ckpt_lsn = new_oldest;
+	pmemobj_rwlock_unlock(pop, &ppl->lock);
 }
 #endif //UNIV_PMEMOBJ_PART_PL
 

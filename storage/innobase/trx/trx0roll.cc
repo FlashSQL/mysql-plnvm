@@ -740,17 +740,6 @@ trx_rollback_resurrected(
 {
 	ut_ad(trx_sys_mutex_own());
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-	//Get the TT entry by tid
-	PMEM_TT_ENTRY* pe;
-	pe = pm_ppl_get_tt_entry_by_tid(
-			gb_pmw->pop,
-			gb_pmw->ppl,
-			trx->id);
-	if (pe == NULL){
-		printf("PMEM_WARN: trx_rollback_reserrected() trx %zu is not in PPL \n");
-	}
-#endif
 	/* The trx->is_recovered flag and trx->state are set
 	atomically under the protection of the trx->mutex (and
 	lock_sys->mutex) in lock_trx_release_locks(). We do not want

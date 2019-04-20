@@ -478,7 +478,13 @@ struct __pmem_dpt {
  * The high-level struc of page-level logging
  * */
 struct __pmem_page_part_log {
+	//we only use this lock to protect below values
 	PMEMrwlock		lock;
+	uint64_t	max_oldest_lsn;
+	uint64_t	min_oldest_lsn;
+	uint64_t	ckpt_lsn;
+	/// end lock
+	
 	/*log buffer area*/
 
 	uint64_t			size; //the total size 
@@ -555,7 +561,12 @@ struct __pmem_page_log_hashed_line {
 	uint64_t		diskaddr; //log file offset, update when flush log, reset when purging file
 	uint64_t		write_diskaddr; //diskaddr that log recs are durable write write_diskaddr < diskaddr
 
-	/* test */
+	/*for checkpoint*/	
+	uint32_t		oldest_block_off;//offset of the block has min (start_diskaddr + start_off)
+	uint64_t		ckpt_lsn;
+	bool			is_req_checkpoint;
+
+	/* recovery */
 	uint64_t		recv_diskaddr; //the diskaddr begin the recover, min of log blocks diskaddr
 	uint64_t		recv_off; //the offset begin the recover
 	uint64_t		recv_lsn; //min lsn of block's beginLSN in this line
@@ -598,15 +609,15 @@ struct __pmem_page_log_buf {
 	uint64_t				pmemaddr; //the begin offset to the pmem data in PMEM_PAGE_PART_LOG
 
 	uint64_t				id;
-	int64_t				hashed_id;
+	int64_t					hashed_id;
 
 	PMEM_LOG_BUF_STATE		state;
 	uint64_t				size;
 	uint64_t				cur_off; //the current offset (0 - log buf size), reset when switching log_buf 
 
-	int					check; //for AIO
+	int						check; //for AIO
 	
-	uint64_t		diskaddr; //write address assigned when the buffer is full
+	uint64_t				diskaddr; //write address assigned when the buffer is full
 
 	//link with the list free pool
 	POBJ_LIST_ENTRY(PMEM_PAGE_LOG_BUF) list_entries;
@@ -632,6 +643,41 @@ struct __pmem_page_log_block {
 	uint32_t		start_diskaddr;// diskaddr when the first log rec is written 
 };
 
+/*
+ * per-line mini recovery system
+ * folow the design of recv_sys_t in InnoDB
+ */
+struct __pmem_recv_line {
+	uint32_t	hashed_id;
+	
+	bool		skip_zero_page;
+	bool		apply_log_recs;
+	bool		apply_batch_on;
+
+	byte*		buf;	/*!< buffer for parsing log records */
+	ulint		len;	/*!< amount of data in buf */
+
+	lsn_t		parse_start_lsn;
+	lsn_t		scanned_lsn;
+	ulint		scanned_checkpoint_no;
+
+	ulint		recovered_offset;
+	lsn_t		recovered_lsn;
+
+	bool		found_corrupt_log;
+	bool		found_corrupt_fs;
+
+	bool		is_ibuf_avail; //used in applying phase
+
+	lsn_t		mlog_checkpoint_lsn;
+
+	mem_heap_t*	heap;	/*!< memory heap of log records and file addresses */
+
+	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
+	ulint		n_addrs;/*!< number of not processed hashed file addresses in the hash table */
+	recv_dblwr_t	dblwr;
+	encryption_list_t* encryption_list;
+};
 
 ////////////////     FLUSHER         /////////////////
 /*
@@ -859,42 +905,6 @@ struct __pmem_log_group {
 	byte**				file_header_bufs;
 };
 
-/*
- * per-line mini recovery system
- * folow the design of recv_sys_t in InnoDB
- */
-struct __pmem_recv_line {
-	uint32_t	hashed_id;
-	
-	bool		skip_zero_page;
-
-	bool		apply_log_recs;
-	bool		apply_batch_on;
-
-	byte*		buf;	/*!< buffer for parsing log records */
-	ulint		len;	/*!< amount of data in buf */
-
-	lsn_t		parse_start_lsn;
-	lsn_t		scanned_lsn;
-	ulint		scanned_checkpoint_no;
-
-	ulint		recovered_offset;
-	lsn_t		recovered_lsn;
-
-	bool		found_corrupt_log;
-	bool		found_corrupt_fs;
-
-	bool		is_ibuf_avail; //used in applying phase
-
-	lsn_t		mlog_checkpoint_lsn;
-
-	mem_heap_t*	heap;	/*!< memory heap of log records and file addresses */
-
-	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
-	ulint		n_addrs;/*!< number of not processed hashed file addresses in the hash table */
-	recv_dblwr_t	dblwr;
-	encryption_list_t* encryption_list;
-};
 
 /////////////// End Per-Page Logging ///////////////////
 
@@ -1062,6 +1072,7 @@ pm_ppl_hash_get(
 		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		uint64_t			key	);
 
+
 void pm_ppl_hash_add_at_page_read(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*	ppl,
@@ -1122,14 +1133,28 @@ pm_ppl_parse_entry_id(
 	   	uint32_t* row,
 	   	uint32_t* col);
 
-void
+//void
+uint64_t
 pm_ppl_write_rec(
 			PMEMobjpool*		pop,
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			key,
 			byte*				log_src,
-			uint32_t			rec_size,
-			uint64_t			rec_lsn);
+			uint32_t			rec_size);
+
+void
+pm_ppl_check_for_ckpt(
+			PMEMobjpool*				pop,
+			PMEM_PAGE_PART_LOG*			ppl,
+			PMEM_PAGE_LOG_HASHED_LINE*	pline,
+			PMEM_PAGE_LOG_BUF*			plogbuf,
+			uint64_t					cur_lsn
+			);
+uint64_t
+pm_ppl_compute_ckpt_lsn(
+			PMEMobjpool*				pop,
+			PMEM_PAGE_PART_LOG*			ppl
+			);
 
 /*Called when a mini-transaction write log record to log buffer in the traditional InnoDB*/
 uint64_t
@@ -1230,12 +1255,27 @@ pm_ppl_flush_page(
 		uint64_t			page_no,
 		uint64_t			key,
 		uint64_t			pageLSN);
+void
+pm_ppl_update_oldest(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline
+		);
 //////////////// CHECKPOINT ///////////
-bool
-pm_ppl_checkpoint(
-		bool sync,
-		bool write_always);
 
+//implemented in log0log.cc
+uint64_t
+pm_ppl_checkpoint(
+			PMEMobjpool*				pop,
+			PMEM_PAGE_PART_LOG*			ppl
+			);
+void
+pm_ppl_fil_names_clear(
+		lsn_t lsn
+		);
+void
+pm_ppl_buf_flush_request_force(
+		uint64_t lsn);
 ////// RECOVERY
 void 
 pm_ppl_recv_init(

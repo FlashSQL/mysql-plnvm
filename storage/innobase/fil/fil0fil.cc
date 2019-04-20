@@ -1429,7 +1429,7 @@ fil_space_create(
 
 	mutex_exit(&fil_system->mutex);
 //tdnguyen test
-//	printf("=====>>|| fil_space_create() space id %zu name %s\n", id, name);
+	printf("=====>>|| fil_space_create() space id %zu name %s\n", id, name);
 //end tdnguyen test
 	return(space);
 }
@@ -5509,8 +5509,11 @@ fil_report_invalid_page_access(
 		<< " at " << __FILE__ << "[" << __LINE__ << "]"
 #endif
 		<< ".";
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	assert(0);
+#else
 	_exit(1);
+#endif //UNIV_PMEMOBJ_PART_PL
 }
 
 /** Set encryption information for IORequest.
@@ -6864,12 +6867,12 @@ fil_aio_wait(
 			}
 #else //original
 			buf_page_io_complete(static_cast<buf_page_t*>(message));
-#if defined (UNIV_PMEMOBJ_PART_PL)
-			pm_ppl_hash_add_at_page_read(
-					gb_pmw->pop,
-					gb_pmw->ppl,
-					static_cast<buf_page_t*>(message));
-#endif //UNIV_PMEMOBJ_PART_PL
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//			pm_ppl_hash_add_at_page_read(
+//					gb_pmw->pop,
+//					gb_pmw->ppl,
+//					static_cast<buf_page_t*>(message));
+//#endif //UNIV_PMEMOBJ_PART_PL
 #endif /* UNIV_PMEMOBJ_BUF*/
 		}
 		return;
@@ -8255,6 +8258,49 @@ fil_names_clear(
 
 	return(do_write);
 }
+#if defined (UNIV_PMEMOBJ_PART_PL)
+void
+pm_ppl_fil_names_clear(
+	lsn_t	lsn	)
+{
+	mtr_t	mtr;
+
+	mtr.start();
+	
+	/*for each space in fil_system, call fil_names_write()*/
+	for (fil_space_t* space = UT_LIST_GET_FIRST(fil_system->named_spaces);
+	     space != NULL; ) {
+
+		fil_space_t*	next = UT_LIST_GET_NEXT(named_spaces, space);
+		ut_ad(space->max_lsn > 0);
+		if (space->max_lsn < lsn) {
+			/* The tablespace was last dirtied before the
+			checkpoint LSN. Remove it from the list, so
+			that if the tablespace is not going to be
+			modified any more, subsequent checkpoints will
+			avoid calling fil_names_write() on it. */
+			space->max_lsn = 0;
+			UT_LIST_REMOVE(fil_system->named_spaces, space);
+		}
+		/* max_lsn is the last LSN where fil_names_dirty_and_write() was called. If we kept track of "min_lsn" (the first LSN where max_lsn turned nonzero), we could avoid the fil_names_write() call if min_lsn > lsn. */
+
+		fil_names_write(space, &mtr);
+
+		/*In PPL, we do not need mtr_checkpoint_size*/
+		space = next;
+	} 
+
+	/*In PPL we don't use centralized log buffer, so it does not make sense to write MLOG_CHECKPOINT because if we do so, we don't know which log buffer should have MLOG_CHECKPOINT*/
+
+	//if (do_write) {
+	//	mtr.commit_checkpoint(lsn, true);
+	//} else {
+	//	ut_ad(!mtr.has_modifications());
+	//}
+	
+	mtr.commit();
+}
+#endif //UNIV_PMEMOBJ_PART_PL
 
 /** Truncate a single-table tablespace. The tablespace must be cached
 in the memory cache.
@@ -8803,7 +8849,6 @@ pm_log_fil_io(
 
 	ulint		next_offset;
 	ulint		write_offset;
-	ulint		write_len;
 
 	ulint		len;
 	ulint		i;
@@ -8848,7 +8893,8 @@ pm_log_fil_io(
 
 	space = ppl->log_space;
 	node = ppl->node_arr[plogbuf->hashed_id];
-
+	
+	//open node if not
 	if (!node->is_open) {
 		bool success;
 		node->handle = os_file_create(
@@ -8859,11 +8905,12 @@ pm_log_fil_io(
 		}
 		node->is_open = true;
 	}
-
+	
+	/*if a log group is full, we extend it to double size*/
 	if (next_offset + len > group->file_size){
 		float size_temp = (group->file_size * 1.0) / (1024 * 1024);
-		printf("PMEM_INFO log file of line %zu is full, extend it from %f MB to %f MB\n", 
-				plogbuf->hashed_id, size_temp, size_temp * 2);
+		//printf("PMEM_INFO log file of line %zu is full, extend it from %f MB to %f MB\n", 
+		//		plogbuf->hashed_id, size_temp, size_temp * 2);
 		//assert(0);
 		bool ret = os_file_truncate(
 			   	node->name,
@@ -8877,14 +8924,11 @@ pm_log_fil_io(
 		group->file_size = group->file_size * 2;
 
 	}
-	else {
-		write_len = len;
-	}
-	
+	// Call Async IO	
 	err = os_aio(
 		req_type,
 		mode, node->name, node->handle,
-	   	log_src, next_offset, write_len,
+	   	log_src, next_offset, len,
 		srv_read_only_mode,
 		node, plogbuf);
 

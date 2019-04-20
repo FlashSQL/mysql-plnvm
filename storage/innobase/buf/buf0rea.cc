@@ -271,12 +271,12 @@ buf_read_page_low(
 	if (sync) {
 		/* The i/o is already completed when we arrive from
 		fil_read */
-#if defined (UNIV_PMEMOBJ_PART_PL)
-		pm_ppl_hash_add_at_page_read(
-				gb_pmw->pop,
-				gb_pmw->ppl,
-				bpage);
-#endif 
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//		pm_ppl_hash_add_at_page_read(
+//				gb_pmw->pop,
+//				gb_pmw->ppl,
+//				bpage);
+//#endif 
 		if (!buf_page_io_complete(bpage)) {
 			return(0);
 		}

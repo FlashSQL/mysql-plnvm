@@ -36,6 +36,9 @@ static uint64_t PMEM_N_BLOCKS_PER_BUCKET;
 /*Log Buf*/
 static uint64_t PMEM_LOG_BUF_SIZE;
 
+static double PMEM_CKPT_THRESHOLD = 0.7;
+static double PMEM_CKPT_MAX_OFFSET;
+
 /*Transaction Table*/
 static uint64_t PMEM_TT_N_LINES;
 static uint64_t PMEM_TT_N_ENTRIES_PER_LINE;
@@ -1187,13 +1190,19 @@ pm_wrapper_page_log_alloc_or_open(
 	PMEM_TT_N_LINES = srv_ppl_tt_n_lines;
 	PMEM_TT_N_ENTRIES_PER_LINE = srv_ppl_tt_entries_per_line;
 	PMEM_TT_MAX_DIRTY_PAGES_PER_TX = srv_ppl_tt_pages_per_tx;
+
+/*Log files*/
+	PMEM_LOG_FILE_SIZE = srv_ppl_log_file_size; //in 4-KB pages (64MB)
+	PMEM_N_LOG_FILES_PER_BUCKET = srv_ppl_log_files_per_bucket;
+
+/*Checkpoint*/
+	PMEM_CKPT_THRESHOLD = srv_ppl_ckpt_threshold;
+	PMEM_CKPT_MAX_OFFSET = (PMEM_LOG_FILE_SIZE * UNIV_PAGE_SIZE) * 1.0 * PMEM_CKPT_THRESHOLD;
+
 /*Flush Log*/
 	PMEM_LOG_BUF_FLUSH_PCT = srv_ppl_log_buf_flush_pct;
 	PMEM_LOG_FLUSHER_WAKE_THRESHOLD = srv_ppl_log_flusher_wake_threshold;
 	PMEM_N_LOG_FLUSH_THREADS = srv_ppl_n_log_flush_threads;
-/*Log files*/
-	PMEM_LOG_FILE_SIZE = srv_ppl_log_file_size; //in 4-KB pages (64MB)
-	PMEM_N_LOG_FILES_PER_BUCKET = srv_ppl_log_files_per_bucket;
 	
 
 
@@ -1243,6 +1252,9 @@ pm_wrapper_page_log_alloc_or_open(
 	// In any case (new alloc or reused) we need to allocate below objects
 
 	// defined in my_pmemobj.h, implement in buf0flu.cc
+	pmw->ppl->ckpt_lsn = 0;	
+	pmw->ppl->max_oldest_lsn = 0;
+	pmw->ppl->min_oldest_lsn = ULONG_MAX;
 
 	pmw->ppl->flusher = pm_log_flusher_init(PMEM_N_LOG_FLUSH_THREADS, FLUSHER_LOG_BUF);
 
@@ -1400,8 +1412,9 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 	ppl->log_file_size = PMEM_LOG_FILE_SIZE;
 
 	ppl->is_new = true;
-	ppl->data = pm_pop_alloc_bytes(pop, align_size);
 
+	ppl->data = pm_pop_alloc_bytes(pop, align_size);
+	
 	ppl->pmem_alloc_size += align_size;
 
 	//align the pmem address for DIRECT_IO
@@ -1710,7 +1723,9 @@ void __realloc_page_log_block_line(
 
 			plog_block->is_free = true;
 			//plog_block->bid = i * k + j;
-			plog_block->bid = PMEM_DUMMY_EID;
+			//plog_block->bid = PMEM_DUMMY_EID;
+			plog_block->bid = 
+				pm_ppl_create_entry_id(PMEM_EID_NEW, pline->hashed_id, i) ;
 
 			plog_block->key = 0;
 			plog_block->count = 0;
@@ -1857,7 +1872,7 @@ void __realloc_TT_entry(
 void 
 pm_page_part_log_bucket_init(
 		PMEMobjpool*			pop,
-		PMEM_PAGE_PART_LOG*		pl,
+		PMEM_PAGE_PART_LOG*		ppl,
 		uint64_t				n_buckets,
 		uint64_t				n_blocks_per_bucket,
 		uint64_t				log_buf_size,
@@ -1874,40 +1889,46 @@ pm_page_part_log_bucket_init(
 
 	offset = 0;
 	cur_bucket = 0;
-
+	
+	//we need extra one bucket for all pages of space 0
+	//n = n_buckets;
 	n = n_buckets;
 	k = n_blocks_per_bucket;
 
 	//allocate the pointer array buckets
 	POBJ_ALLOC(pop,
-			&pl->buckets,
+			&ppl->buckets,
 			TOID(PMEM_PAGE_LOG_HASHED_LINE),
 			sizeof(TOID(PMEM_PAGE_LOG_HASHED_LINE)) * n,
 			NULL,
 			NULL);
-	if (TOID_IS_NULL(pl->buckets)) {
+	if (TOID_IS_NULL(ppl->buckets)) {
 		fprintf(stderr, "POBJ_ALLOC\n");
 	}
 
-	pl->pmem_page_log_size = sizeof(TOID(PMEM_PAGE_LOG_HASHED_LINE)) * n;
+	ppl->pmem_page_log_size = sizeof(TOID(PMEM_PAGE_LOG_HASHED_LINE)) * n;
 
 	//for each hashed line
 	for (i = 0; i < n; i++) {
 		POBJ_ZNEW(pop,
-				&D_RW(pl->buckets)[i],
+				&D_RW(ppl->buckets)[i],
 				PMEM_PAGE_LOG_HASHED_LINE);
-		if (TOID_IS_NULL(D_RW(pl->buckets)[i])) {
+		if (TOID_IS_NULL(D_RW(ppl->buckets)[i])) {
 			fprintf(stderr, "POBJ_ZNEW\n");
 		}
 
-		pl->pmem_page_log_size += sizeof(PMEM_PAGE_LOG_HASHED_LINE);
-		pline = D_RW(D_RW(pl->buckets)[i]);
+		ppl->pmem_page_log_size += sizeof(PMEM_PAGE_LOG_HASHED_LINE);
+		pline = D_RW(D_RW(ppl->buckets)[i]);
 
 		pline->hashed_id = i;
 		pline->n_blocks = 0;
 		pline->max_blocks = k;
 		pline->diskaddr = 0;
 		pline->write_diskaddr = 0;
+		
+		pline->ckpt_lsn = 0;
+		pline->oldest_block_off = UINT32_MAX;
+		pline->is_req_checkpoint = false;
 
 		TOID_ASSIGN(pline->flush_logbuf, OID_NULL);
 
@@ -1921,7 +1942,7 @@ pm_page_part_log_bucket_init(
 
 		//Log buf, after the alloca call, log_buf_id and log_buf_offset increase
 		POBJ_ZNEW(pop, &pline->logbuf, PMEM_PAGE_LOG_BUF);
-		pl->pmem_page_log_size += sizeof(PMEM_PAGE_LOG_BUF);
+		ppl->pmem_page_log_size += sizeof(PMEM_PAGE_LOG_BUF);
 
 		PMEM_PAGE_LOG_BUF* plogbuf = D_RW(pline->logbuf);
 
@@ -1949,7 +1970,7 @@ pm_page_part_log_bucket_init(
 				sizeof(TOID(PMEM_PAGE_LOG_BLOCK)) * k,
 				NULL,
 				NULL);
-		pl->pmem_page_log_size += sizeof(TOID(PMEM_PAGE_LOG_BLOCK)) * k;
+		ppl->pmem_page_log_size += sizeof(TOID(PMEM_PAGE_LOG_BLOCK)) * k;
 		//for each log block
 		for (j = 0; j < k; j++) {
 			POBJ_ZNEW(pop,
@@ -1958,13 +1979,15 @@ pm_page_part_log_bucket_init(
 			if (TOID_IS_NULL(D_RW(pline->arr)[j])) {
 				fprintf(stderr, "POBJ_ZNEW\n");
 			}
-			pl->pmem_page_log_size += sizeof(PMEM_PAGE_LOG_BLOCK);
+			ppl->pmem_page_log_size += sizeof(PMEM_PAGE_LOG_BLOCK);
 			plog_block = D_RW(D_RW(pline->arr)[j]);
 
 			plog_block->is_free = true;
 
 			//plog_block->bid = i * k + j;
-			plog_block->bid = PMEM_DUMMY_EID;
+			//plog_block->bid = PMEM_DUMMY_EID;
+			plog_block->bid = 
+				pm_ppl_create_entry_id(PMEM_EID_NEW, i, j) ;
 
 			plog_block->key = 0;
 			plog_block->count = 0;
@@ -2377,16 +2400,16 @@ pm_ppl_parse_entry_id(
  * @param[in] log_src
  * @param[in] rec_size - rec size
  * */
-void
+//void
+uint64_t
 pm_ppl_write_rec(
 			PMEMobjpool*		pop,
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			key,
 			byte*				log_src,
-			uint32_t			rec_size,
-			uint64_t			rec_lsn)
+			uint32_t			rec_size)
 {
-	uint32_t n;
+	uint32_t n, n2;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
 	PMEM_PAGE_LOG_FREE_POOL* pfreepool;
 	PMEM_PAGE_LOG_BUF* plogbuf;
@@ -2396,10 +2419,35 @@ pm_ppl_write_rec(
 	ulint hashed;
 	ulint hashed2;
 	byte* log_des;
+	byte* temp;
+	
+	mlog_id_t type;
+	ulint space, page_no;
+	uint16_t check_size;
+	
+	uint64_t rec_lsn;
 
+
+	temp = mlog_parse_initial_log_record(
+			log_src, log_src + rec_size, &type, &space, &page_no);
+	check_size = mach_read_from_2(temp);
+
+	assert (check_size == rec_size);
+	assert (type < MLOG_BIGGEST_TYPE);
+	temp += 2;
+	
+	/*The last bucket is reserved for space 0*/	
 	n = ppl->n_buckets;
-	PMEM_LOG_HASH_KEY(hashed, key, n);
+	//n2 = n - 1;
 
+	PMEM_LOG_HASH_KEY(hashed, key, n);
+	//if (space == 0){
+	//	hashed = n - 1;
+	//} else {
+	//	PMEM_LOG_HASH_KEY(hashed, key, n2);
+	//}
+
+	assert(hashed < n);
 
 retry:
 	pline = D_RW(D_RW(ppl->buckets)[hashed]);
@@ -2417,9 +2465,13 @@ retry:
 	item = pm_ppl_hash_add(pop, ppl, pline, key); 
 
 	assert(item->block_off < pline->max_blocks);
+
 	plog_block = D_RW(D_RW(pline->arr)[item->block_off]);
 	assert(plog_block);
 
+	//assign LSN
+	rec_lsn = ut_time_us(NULL);	
+	mach_write_to_8(temp, rec_lsn);
 
 	////////////////////////////////////////////
 	// (1) Handle full log buf (if any)
@@ -2472,6 +2524,7 @@ get_free_buf:
 
 		D_RW(free_buf)->cur_off += rec_size;
 		D_RW(free_buf)->state = PMEM_LOG_BUF_IN_USED;
+		D_RW(free_buf)->diskaddr = pline->diskaddr;
 
 		//update plog_block
 		if (plog_block->firstLSN == 0){
@@ -2479,6 +2532,12 @@ get_free_buf:
 			plog_block->start_off = D_RW(free_buf)->cur_off;
 			plog_block->start_diskaddr = pline->diskaddr;
 			plog_block->firstLSN = rec_lsn;
+
+			//update the oldest
+			if (pline->oldest_block_off == UINT32_MAX) {
+				pline->oldest_block_off = item->block_off;
+			}
+
 		}
 		plog_block->lastLSN = rec_lsn;
 
@@ -2502,6 +2561,11 @@ get_free_buf:
 			plog_block->start_off = plogbuf->cur_off;
 			plog_block->start_diskaddr = pline->diskaddr;
 			plog_block->firstLSN = rec_lsn;
+
+			//update the oldest
+			if (pline->oldest_block_off == UINT32_MAX) {
+				pline->oldest_block_off = item->block_off;
+			}
 		}
 
 		plog_block->lastLSN = rec_lsn;
@@ -2518,10 +2582,77 @@ get_free_buf:
 		//pmemobj_memcpy_persist(pop, log_des, log_src, rec_size);
 
 		plogbuf->cur_off += rec_size;
+
+		// Call checkpoint (in necessary)
+		if (!pline->is_req_checkpoint){
+			pm_ppl_check_for_ckpt(pop, ppl, pline, plogbuf, rec_lsn);
+		}
+
 	} //end handle regular logbuf
 
 	pmemobj_rwlock_unlock(pop, &pline->lock);
-	return;
+	//return;
+	return rec_lsn;
+}
+
+/*
+ * Check and compute the ckpt_lsn value if the logbuf's tail go too far from the head
+ * Later, the master thread (1s interval) will call checkpoint based on this value 
+ * The caller thread response for holding the pline->lock
+ * See log_preflush_pool_modified_pages() in InnoDB
+ * */
+void
+pm_ppl_check_for_ckpt(
+			PMEMobjpool*				pop,
+			PMEM_PAGE_PART_LOG*			ppl,
+			PMEM_PAGE_LOG_HASHED_LINE*	pline,
+			PMEM_PAGE_LOG_BUF*			plogbuf,
+			uint64_t					cur_lsn
+			)
+{
+	uint64_t new_oldest_lsn;
+	uint64_t new_oldest;
+	uint64_t oldest_off;
+	uint64_t cur_off;
+	uint64_t oldest_lsn;
+	uint64_t age;
+
+	PMEM_PAGE_LOG_BLOCK*	plog_block_oldest;
+	
+	if (pline->oldest_block_off == UINT32_MAX){
+		//there is no log recs in this partition, nothing to do
+		return;
+	}
+
+	assert(!pline->is_req_checkpoint);
+
+	plog_block_oldest = D_RW(D_RW(pline->arr)[pline->oldest_block_off]);
+	assert (plog_block_oldest);
+	
+	oldest_off = plog_block_oldest->start_diskaddr + plog_block_oldest->start_off;
+	//cur_off = plogbuf->diskaddr + plogbuf->cur_off;
+	cur_off = pline->diskaddr + plogbuf->cur_off;
+	age = cur_off - oldest_off;
+	
+	//we only set ckpt_lsn if it has not set yet
+	if ( age > PMEM_CKPT_MAX_OFFSET) {
+
+		pline->is_req_checkpoint = true;	
+		//now compute the checkpoint lsn for this pline 
+		oldest_lsn = plog_block_oldest->firstLSN;
+		uint64_t delta = (uint64_t) ((cur_lsn - oldest_lsn) * 1.0 *  PMEM_CKPT_THRESHOLD); 
+
+		pline->ckpt_lsn = oldest_lsn + delta;
+		
+		//update the global checkpoint lsn	
+		pmemobj_rwlock_wrlock(pop, &ppl->lock);
+		if (ppl->max_oldest_lsn < pline->ckpt_lsn){
+			ppl->max_oldest_lsn = pline->ckpt_lsn;
+		}
+
+		//printf("SET is_req_checkpoint to true pline %zu \n", pline->hashed_id);
+		pmemobj_rwlock_unlock(pop, &ppl->lock);
+	}
 }
 
 /*
@@ -3907,7 +4038,7 @@ pm_ppl_flush_page(
 {
 
 	ulint hashed;
-	uint32_t n, k, i, j;
+	uint32_t n, n2, k, i, j;
 
 	int64_t free_idx;
 	int64_t n_try;
@@ -3923,11 +4054,19 @@ pm_ppl_flush_page(
 	PMEM_TT* ptt = D_RW(ppl->tt);
 
 	n = ppl->n_buckets;
+	//n2 = n - 1;
 	k = ppl->n_blocks_per_bucket;
-
+	
 	//(1) Start from the per-page log block
 	
 	PMEM_LOG_HASH_KEY(hashed, key, n);
+	///*The last bucket is reserved for space 0*/	
+	//if (space == 0) {
+	//	hashed = n - 1;
+	//} else {
+	//	PMEM_LOG_HASH_KEY(hashed, key, n2);
+	//}
+
 	assert (hashed < n);
 
 	TOID_ASSIGN(line, (D_RW(ppl->buckets)[hashed]).oid);
@@ -3946,10 +4085,18 @@ pm_ppl_flush_page(
 		__reset_page_log_block(plog_block);
 
 		pmemobj_rwlock_wrlock(pop, &pline->lock);
+		
+		/*if the removed block is the oldest, update the new one	*/
+		if (item->block_off == pline->oldest_block_off){
+			pm_ppl_update_oldest(pop, ppl, pline);
+		}
 
 		HASH_DELETE(plog_hash_t, addr_hash, pline->addr_hash, key, item);
 
 		pmemobj_rwlock_unlock(pop, &pline->lock);
+
+		printf("pm_ppl_flush space %zu page %zu pageLSN %zu pline %zu oldest_block_off %zu\n",
+				space, page_no, pageLSN, pline->hashed_id, pline->oldest_block_off);
 	}	
 	
 	return;
@@ -4011,6 +4158,62 @@ pm_ppl_flush_page(
 	return;
 }
 
+/*
+ * Update the oldest_block_off in pline
+ * Called in pm_ppl_flush_page()
+ * The caller reponse for holding the pline->lock
+ * */
+void
+pm_ppl_update_oldest(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline
+		)
+{
+
+	uint32_t i,  n;
+
+	uint64_t min_off;
+	uint64_t cur_off;
+	uint64_t tem_off;
+	uint64_t oldest_block_off;
+	uint64_t oldest_lsn;
+	uint64_t threshold;
+
+	PMEM_PAGE_LOG_BLOCK*	plog_block;
+	PMEM_PAGE_LOG_BUF*		plogbuf;
+
+	oldest_block_off = UINT32_MAX;
+	min_off = ULONG_MAX;
+	oldest_lsn = 0;
+
+	for (i = 0; i < pline->max_blocks; i++){
+		plog_block = D_RW(D_RW(pline->arr)[i]);
+		assert(plog_block);
+		
+		tem_off = plog_block->start_diskaddr + plog_block->start_off;
+		if (!plog_block->is_free &&
+			   	min_off > tem_off){
+			min_off = tem_off;
+			oldest_block_off = i;	
+			oldest_lsn = plog_block->firstLSN;
+		}
+	}
+	pline->oldest_block_off = oldest_block_off;
+	
+	if (min_off == ULONG_MAX){
+		pline->is_req_checkpoint = false;
+		return;
+	}
+
+	//whether it still checkpoint or not
+	if (pline->is_req_checkpoint){
+		if (oldest_lsn > pline->ckpt_lsn){
+			pline->is_req_checkpoint = false;
+			//printf("UNSET is_req_checkpoint to false pline %zu \n", pline->hashed_id);
+		}
+	}
+}
 //////////// RECOVERY ////////////////
 //see pm_ppl_recovery() in storage/innobase/log/log0recv.cc
 

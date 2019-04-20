@@ -2075,13 +2075,15 @@ trx_undo_report_row_operation(
 		/* When we add a page to an undo log, this is analogous to
 		a pessimistic insert in a B-tree, and we must reserve the
 		counterpart of the tree latch, which is the rseg mutex. */
-
 		mutex_enter(&undo_ptr->rseg->mutex);
 		undo_block = trx_undo_add_page(trx, undo, undo_ptr, &mtr);
 		mutex_exit(&undo_ptr->rseg->mutex);
 
 		page_no = undo->last_page_no;
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		printf("++++ PMEM_INFO: UNDO page %zu is full, try to extend one page, new page %zu \n", mach_read_from_4(undo_page + FIL_PAGE_OFFSET), mach_read_from_4(undo_block->frame + FIL_PAGE_OFFSET));
+#endif
 		DBUG_EXECUTE_IF("ib_err_ins_undo_page_add_failure",
 				undo_block = NULL;);
 	} while (undo_block != NULL);

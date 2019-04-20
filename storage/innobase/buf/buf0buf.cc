@@ -5726,7 +5726,7 @@ buf_page_io_complete(
 #endif
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-			//printf("PMEM_ERROR in buf_page_io_complete, input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", bpage->id.space(), bpage->id.page_no(), read_space_id, read_page_no);
+			printf("PMEM_ERROR in buf_page_io_complete, input (space %zu, page_no %zu) differ read (space %zu, page_no %zu)\n", bpage->id.space(), bpage->id.page_no(), read_space_id, read_page_no);
 
 			//goto skip_recv_page;
 			goto skip_checksum;
@@ -5841,10 +5841,6 @@ skip_checksum:
 			recv_recover_page(TRUE, (buf_block_t*) bpage);
 		}
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-		//Add read page to hash table
-
-#endif
 		/* If space is being truncated then avoid ibuf operation.
 		During re-init we have already freed ibuf entries. */
 		if (uncompressed

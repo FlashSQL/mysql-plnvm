@@ -562,7 +562,9 @@ loop:
 
 	undo_page = trx_undo_page_get(page_id_t(rseg->space, hdr_addr.page),
 				      rseg->page_size, &mtr);
-
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+	//printf("===> PMEM_DEBUG: trx_purge_truncate_rseg_history() purge UNDO page %zu\n", mach_read_from_4(undo_page + FIL_PAGE_OFFSET));
+//#endif //UNIV_PMEMOBJ_PART_PL
 	log_hdr = undo_page + hdr_addr.boffset;
 
 	undo_trx_no = mach_read_from_8(log_hdr + TRX_UNDO_TRX_NO);

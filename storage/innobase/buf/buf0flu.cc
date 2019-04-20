@@ -438,9 +438,18 @@ buf_flush_insert_into_flush_list(
 
 	buf_flush_list_mutex_enter(buf_pool);
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	/*In PPL, the lsn ordering only guarantee inside a local partition log, not in global order.
+	 * Therefore, the lsn ordering in buf_pool->flush_list is not correct*/
+	
+	//we don't check the order here
+	buf_page_t* first_page = UT_LIST_GET_FIRST(buf_pool->flush_list);
+#else //original
 	ut_ad((UT_LIST_GET_FIRST(buf_pool->flush_list) == NULL)
 	      || (UT_LIST_GET_FIRST(buf_pool->flush_list)->oldest_modification
 		  <= lsn));
+#endif
+
 
 	/* If we are in the recovery then we need to update the flush
 	red-black tree as well. */
@@ -457,7 +466,11 @@ buf_flush_insert_into_flush_list(
 	block->page.oldest_modification = lsn;
 
 	UT_LIST_ADD_FIRST(buf_pool->flush_list, &block->page);
-
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	printf("buf_flush_insert_into_flush_list() space %zu page_no %zu oldest_lsn %zu\n", 
+//			block->page.id.space(), block->page.id.page_no(),
+//			block->page.oldest_modification);
+//#endif
 	incr_flush_list_size_in_bytes(block, buf_pool);
 
 #ifdef UNIV_DEBUG_VALGRIND
@@ -3661,6 +3674,25 @@ buf_flush_request_force(
 
 	os_event_set(buf_flush_event);
 }
+#if defined (UNIV_PMEMOBJ_PART_PL)
+/*
+ *Called by pm_ppl_checkpoint()
+ * */
+void
+pm_ppl_buf_flush_request_force(
+	uint64_t	lsn_limit)
+{
+	lsn_t lsn_target = lsn_limit;
+
+	mutex_enter(&page_cleaner->mutex);
+	if (lsn_target > buf_flush_sync_lsn) {
+		buf_flush_sync_lsn = lsn_target;
+	}
+	mutex_exit(&page_cleaner->mutex);
+	os_event_set(buf_flush_event);
+}
+#endif //UNIV_PMEMOBJ_PART_PL
+
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
 
 /** Functor to validate the flush list. */
@@ -4365,7 +4397,7 @@ retry:
 
 				/***this call REDOing for a line ***/
 				if (redoer->phase == PMEM_REDO_PHASE1){
-					printf("PMEM_REDO: start REDO_PHASE1 (scan and parse) line %zu ...\n", pline->hashed_id);
+					//printf("PMEM_REDO: start REDO_PHASE1 (scan and parse) line %zu ...\n", pline->hashed_id);
 
 					bool is_err = pm_ppl_redo_line(gb_pmw->pop, gb_pmw->ppl, pline);
 
@@ -4374,7 +4406,7 @@ retry:
 						assert(0);
 					}
 
-					printf("PMEM_REDO: end REDO_PHASE1 (scan and parse) line %zu\n", pline->hashed_id);
+					//printf("PMEM_REDO: end REDO_PHASE1 (scan and parse) line %zu\n", pline->hashed_id);
 				}
 				else {
 					printf("PMEM_REDO: start REDO_PHASE2 (applying) line %zu ...\n", pline->hashed_id);

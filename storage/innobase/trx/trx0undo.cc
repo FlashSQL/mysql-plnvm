@@ -587,10 +587,23 @@ trx_undo_header_create(
 
 	free = mach_read_from_2(page_hdr + TRX_UNDO_PAGE_FREE);
 
+//#if defined UNIV_PMEMOBJ_PART_PL
+//	uint32_t page_no = mach_read_from_4(undo_page + FIL_PAGE_OFFSET);
+//	printf ("=>PMEM_DEBUG trx_undo_header_create, free = %zu tid %zu page_id %zu\n", free, trx_id, page_no);
+//#endif
 	log_hdr = undo_page + free;
 
 	new_free = free + TRX_UNDO_LOG_OLD_HDR_SIZE;
+//test
+#if defined UNIV_PMEMOBJ_PART_PL
+	if (free + TRX_UNDO_LOG_XA_HDR_SIZE >= UNIV_PAGE_SIZE - 100){
+	printf ("free %zu + TRX_UNDO_LOG_XA_HDR_SIZE %zu = %zu  must smaller than UNIV_PAGE_SIZE %zu - 100 (TRX_UNDO_LOG_OLD_HDR_SIZE = %zu)\n", free, TRX_UNDO_LOG_XA_HDR_SIZE, free + TRX_UNDO_LOG_XA_HDR_SIZE, UNIV_PAGE_SIZE, TRX_UNDO_LOG_OLD_HDR_SIZE);
+	}
 
+	if (new_free + TRX_UNDO_LOG_XA_HDR_SIZE >= UNIV_PAGE_SIZE - 100){
+	printf ("new_free %zu + TRX_UNDO_LOG_XA_HDR_SIZE %zu = %zu  must smaller than UNIV_PAGE_SIZE %zu - 100\n", new_free, TRX_UNDO_LOG_XA_HDR_SIZE, new_free + TRX_UNDO_LOG_XA_HDR_SIZE, UNIV_PAGE_SIZE);
+	}
+#endif // UNIV_PMEMOBJ_PART_PL
 	ut_a(free + TRX_UNDO_LOG_XA_HDR_SIZE < UNIV_PAGE_SIZE - 100);
 
 	mach_write_to_2(page_hdr + TRX_UNDO_PAGE_START, new_free);
@@ -709,7 +722,9 @@ trx_undo_header_add_space_for_xid(
 
 	mlog_write_ulint(page_hdr + TRX_UNDO_PAGE_START, new_free,
 			 MLOG_2BYTES, mtr);
-
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	assert(new_free + TRX_UNDO_LOG_XA_HDR_SIZE < UNIV_PAGE_SIZE - 100);
+#endif //UNIV_PMEMOBJ_PART_PL
 	mlog_write_ulint(page_hdr + TRX_UNDO_PAGE_FREE, new_free,
 			 MLOG_2BYTES, mtr);
 
@@ -812,6 +827,9 @@ trx_undo_insert_header_reuse(
 	mach_write_to_2(page_hdr + TRX_UNDO_PAGE_START, new_free);
 
 	mach_write_to_2(page_hdr + TRX_UNDO_PAGE_FREE, new_free);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	assert(new_free + TRX_UNDO_LOG_XA_HDR_SIZE < UNIV_PAGE_SIZE - 100);
+#endif //UNIV_PMEMOBJ_PART_PL
 
 	mach_write_to_2(seg_hdr + TRX_UNDO_STATE, TRX_UNDO_ACTIVE);
 
@@ -900,6 +918,9 @@ trx_undo_discard_latest_update_undo(
 	}
 
 	mach_write_to_2(page_hdr + TRX_UNDO_PAGE_FREE, free);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	assert(free + TRX_UNDO_LOG_XA_HDR_SIZE < UNIV_PAGE_SIZE - 100);
+#endif //UNIV_PMEMOBJ_PART_PL
 
 	mach_write_to_2(seg_hdr + TRX_UNDO_STATE, TRX_UNDO_CACHED);
 	mach_write_to_2(seg_hdr + TRX_UNDO_LAST_LOG, prev_hdr_offset);
@@ -1172,6 +1193,9 @@ function_exit:
 		mlog_write_ulint(undo_page + TRX_UNDO_PAGE_HDR
 				 + TRX_UNDO_PAGE_FREE,
 				 trunc_here - undo_page, MLOG_2BYTES, &mtr);
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	assert((trunc_here - undo_page) + TRX_UNDO_LOG_XA_HDR_SIZE < (UNIV_PAGE_SIZE - 100));
+#endif //UNIV_PMEMOBJ_PART_PL
 	}
 
 	mtr_commit(&mtr);
@@ -1427,7 +1451,7 @@ add_to_list:
 		}
 	}
 	//tdnguyen test
-	//printf("==> add UNDO obj when server start RSEG (id %zu page_no %zu) UNDO segment(slot %zu page_no %zu header page_no %zu last page_no %zu trx_id %zu\n", rseg->id, rseg->page_no, id, page_no, undo->hdr_page_no, undo->last_page_no, trx_id);
+	printf("==> add UNDO obj when server start RSEG (id %zu page_no %zu) UNDO segment(slot %zu page_no %zu header page_no %zu last page_no %zu trx_id %zu\n", rseg->id, rseg->page_no, id, page_no, undo->hdr_page_no, undo->last_page_no, trx_id);
 	//end tdnguyen test
 	return(undo);
 }

@@ -494,23 +494,6 @@ trx_sys_init_at_db_start(void)
 						   + TRX_SYS_TRX_ID_STORE),
 				     TRX_SYS_TRX_ID_WRITE_MARGIN);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
-	//test the trx_sys is recovered or not
-	ulint key;
-	PMEM_FOLD(key, TRX_SYS_SPACE, TRX_SYS_PAGE_NO);
-	PMEM_PAGE_LOG_BLOCK* plog_block = pm_ppl_get_log_block_by_key(gb_pmw->pop, gb_pmw->ppl, key);
-	
-	if (!gb_pmw->ppl->is_new){
-		ulint ppl_min_trx_id;
-		ulint ppl_max_trx_id;
-
-	   	pm_ppl_get_min_max_tid(gb_pmw->pop, gb_pmw->ppl,
-				&ppl_min_trx_id, &ppl_max_trx_id);
-
-		printf("PMEM_WARN: our min_tid %zu max_tid %zu differs to InnoDB max_tid %zu \n", ppl_min_trx_id, ppl_max_trx_id, trx_sys->max_trx_id);
-	}
-#endif
-
 	mtr.commit();
 	ut_d(trx_sys->rw_max_trx_id = trx_sys->max_trx_id);
 

@@ -3750,6 +3750,9 @@ innobase_init(
 	if (!srv_ppl_log_buf_flush_pct) {
 		srv_ppl_log_buf_flush_pct = 0.9;
 	}
+	if (!srv_ppl_ckpt_threshold) {
+		srv_ppl_ckpt_threshold = 0.7;
+	}
 	if (!srv_ppl_log_flusher_wake_threshold) {
 		srv_ppl_log_flusher_wake_threshold = 5;
 	}
@@ -19682,10 +19685,16 @@ static MYSQL_SYSVAR_DOUBLE(ppl_log_buf_flush_pct, srv_ppl_log_buf_flush_pct,
   "Percentage of log size fill on log buffer to trigger the flush , default is 0.9",
   NULL, NULL, 0.9, 0.1, 1, 0);
 
+static MYSQL_SYSVAR_DOUBLE(ppl_ckpt_threshold, srv_ppl_ckpt_threshold,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Percentage of log file fill to trigger the checkpoint, default is 0.7",
+  NULL, NULL, 0.7, 0.1, 1, 0);
+
 static MYSQL_SYSVAR_ULONG(ppl_log_flusher_wake_threshold, srv_ppl_log_flusher_wake_threshold,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
   "Number of log buffer in the flusher to trigger AIO flush, default is 5",
   NULL, NULL, 5, 1, 32, 0);
+
 
 static MYSQL_SYSVAR_ULONG(ppl_n_log_flush_threads, srv_ppl_n_log_flush_threads,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
@@ -20548,6 +20557,7 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(ppl_tt_entries_per_line),
   MYSQL_SYSVAR(ppl_tt_pages_per_tx),
   MYSQL_SYSVAR(ppl_log_buf_flush_pct),
+  MYSQL_SYSVAR(ppl_ckpt_threshold),
   MYSQL_SYSVAR(ppl_log_flusher_wake_threshold),
   MYSQL_SYSVAR(ppl_n_log_flush_threads),
   MYSQL_SYSVAR(ppl_log_file_size),

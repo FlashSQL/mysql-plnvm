@@ -616,11 +616,10 @@ struct mtr_t {
 	}
 
 #if defined (UNIV_PMEMOBJ_PL)
-	void add_rec_to_ppl(
+	uint64_t add_rec_to_ppl(
 			uint64_t key,
 		   	byte* src,
-		   	uint32_t size,
-			uint64_t rec_lsn);
+		   	uint32_t size);
 
 	byte* get_buf(){
 		return (m_impl.buf);
@@ -686,6 +685,10 @@ struct mtr_t {
 
 	void add_LSN(uint64_t LSN){
 		m_impl.LSN_arr[m_impl.m_n_log_recs] = LSN;
+	}
+	void add_LSN_at(uint64_t LSN, uint32_t i){
+		assert(i >= 0 && i < m_impl.m_n_log_recs);
+		m_impl.LSN_arr[i] = LSN;
 	}
 	uint64_t get_LSN_at(uint32_t i){
 		return m_impl.LSN_arr[i];

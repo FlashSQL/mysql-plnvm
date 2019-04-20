@@ -203,9 +203,11 @@ mlog_write_initial_log_record_low(
 
 		//new in DAL (Direct Add Log), add the previous log rec to PPL
 		uint64_t prev_key = mtr->get_key_at(n_recs - 1);
-		uint64_t rec_lsn = mtr->get_LSN_at(n_recs - 1);
+		//uint64_t rec_lsn = mtr->get_LSN_at(n_recs - 1);
+		uint64_t rec_lsn;
 
-		mtr->add_rec_to_ppl(prev_key, begin_log_ptr + prev_off, rec_size, rec_lsn);
+		rec_lsn = mtr->add_rec_to_ppl(prev_key, begin_log_ptr + prev_off, rec_size);
+		mtr->add_LSN_at(rec_lsn, n_recs - 1);
 	}
 	else {
 		//this is the first log rec in the mtr, do nothing
@@ -227,9 +229,9 @@ mlog_write_initial_log_record_low(
 	log_ptr += 2;
 	
 	/*reserve 8-byte for LSN, we write it later when log recs are written to PPL partition log buffer */
-	lsn = ut_time_us(NULL);
-	mtr->add_LSN(lsn);
-	mach_write_to_8(log_ptr, lsn);
+	//lsn = ut_time_us(NULL);
+	//mtr->add_LSN(lsn);
+	//mach_write_to_8(log_ptr, lsn);
 	log_ptr += 8;
 
 	//add info 

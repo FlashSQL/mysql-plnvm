@@ -302,6 +302,7 @@ extern ulong	srv_ppl_tt_n_lines;
 extern ulong	srv_ppl_tt_entries_per_line;
 extern ulong	srv_ppl_tt_pages_per_tx;
 extern double	srv_ppl_log_buf_flush_pct;
+extern double	srv_ppl_ckpt_threshold;
 extern ulong	srv_ppl_log_flusher_wake_threshold;
 extern ulong	srv_ppl_n_log_flush_threads;
 extern ulong	srv_ppl_log_file_size;

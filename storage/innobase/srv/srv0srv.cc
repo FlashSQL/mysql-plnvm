@@ -77,6 +77,11 @@ Created 10/8/1995 Heikki Tuuri
 #define create_thd(x,y,z,PFS_KEY)	create_thd(x,y,z,PFS_NOT_INSTRUMENTED.m_value)
 #endif /* UNIV_PFS_THREAD */
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
+#endif //UNIV_PMEMOBJ_PART_PL
+
 /* The following is the maximum allowed duration of a lock wait. */
 ulint	srv_fatal_semaphore_wait_threshold = 600;
 
@@ -240,6 +245,7 @@ ulong	srv_ppl_tt_n_lines = 128;
 ulong	srv_ppl_tt_entries_per_line = 128;
 ulong	srv_ppl_tt_pages_per_tx = 64;
 double	srv_ppl_log_buf_flush_pct = 0.9;
+double	srv_ppl_ckpt_threshold = 0.7;
 ulong	srv_ppl_log_flusher_wake_threshold = 5;
 ulong	srv_ppl_n_log_flush_threads = 32;
 ulong	srv_ppl_log_file_size = 16384;
@@ -2192,6 +2198,15 @@ srv_master_do_active_tasks(void)
 	MONITOR_INC_TIME_IN_MICRO_SECS(
 		MONITOR_SRV_LOG_FLUSH_MICROSECOND, counter_time);
 //#endif //UNIV_PMEMOBJ_LOG
+
+#if defined (UNIV_PMEMOBJ_PART_PL)
+	//check for PPL checkpoint
+	//if (gb_pmw->ppl->min_oldest_lsn > gb_pmw->ppl->ckpt_lsn )
+	if (gb_pmw->ppl->max_oldest_lsn > gb_pmw->ppl->ckpt_lsn )
+	{
+		pm_ppl_checkpoint(gb_pmw->pop, gb_pmw->ppl);	
+	}
+#endif //UNIV_PMEMOBJ_PART_PL
 
 	/* Now see if various tasks that are performed at defined
 	intervals need to be performed. */
