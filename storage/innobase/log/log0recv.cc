@@ -72,8 +72,8 @@ bool	recv_replay_file_ops	= true;
 #include "my_pmemobj.h"
 extern PMEM_WRAPPER* gb_pmw;
 
-static bool IS_GLOBAL_HASHTABLE = true;
-//static bool IS_GLOBAL_HASHTABLE = false;
+//static bool IS_GLOBAL_HASHTABLE = true;
+static bool IS_GLOBAL_HASHTABLE = false;
 #endif
 
 
@@ -4192,68 +4192,37 @@ pm_ppl_recv_init(
 	uint32_t n, i;
     uint32_t size;
 	ulint avail_mem;
+	ulint hash_size;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
 	PMEM_RECV_LINE* recv_line;
 
 	n = ppl->n_buckets;
+	
+	if (IS_GLOBAL_HASHTABLE){
+		//A: allocate global recv_line
+		avail_mem = buf_pool_get_curr_size();
 
-	//A: allocate global recv_line
-	avail_mem = buf_pool_get_curr_size();
+		ppl->recv_line = (PMEM_RECV_LINE*) malloc(sizeof(PMEM_RECV_LINE));
+		recv_line = ppl->recv_line;
 
-	ppl->recv_line = (PMEM_RECV_LINE*) malloc(sizeof(PMEM_RECV_LINE));
-	recv_line = ppl->recv_line;
-
-	recv_line->heap = mem_heap_create_typed(256,
+		recv_line->heap = mem_heap_create_typed(256,
 				MEM_HEAP_FOR_RECV_SYS);
 
-	recv_line-> buf = NULL;
-	recv_line->len = 0;
-	recv_line->recovered_offset = 0;
-
-	/*Hash table*/
-	recv_line->hashed_id = n + 1;	
-	//TODO: how to decide the size of the hashtable
-	recv_line->addr_hash = hash_create(avail_mem / 512);
-	recv_line->n_addrs = 0;
-
-	recv_line->apply_log_recs = FALSE;
-	recv_line->apply_batch_on = FALSE;
-
-	recv_line->found_corrupt_log = false;
-	recv_line->found_corrupt_fs = false;
-	recv_line->mlog_checkpoint_lsn = 0;
-
-	recv_line->encryption_list = NULL;
-
-	//B: allocate for each line
-	for (i = 0; i < n; i++) {
-		pline = D_RW(D_RW(ppl->buckets)[i]);
-        
-        // the redo buffer has same length as log buffer 
-        //size = 2 * D_RW(pline->logbuf)->size;
-        size = D_RW(pline->logbuf)->size;
-
-        pline->recv_line = (PMEM_RECV_LINE*) malloc(sizeof(PMEM_RECV_LINE));
-		recv_line = pline->recv_line;
-		
-		//allocate heap
-		recv_line->heap = mem_heap_create_typed(256,
-					MEM_HEAP_FOR_RECV_SYS);
-
-		/*the buffer*/
-        recv_line-> buf = static_cast<byte*>(
-			ut_malloc_nokey(size));
-        recv_line->len = size;
+		recv_line-> buf = NULL;
+		recv_line->len = 0;
 		recv_line->recovered_offset = 0;
-		
+
 		/*Hash table*/
-		//recv_line->addr_hash = hash_create(avail_mem / 512);
-		recv_line->hashed_id = i;	
-		//number of cell in a hashtable
+		recv_line->hashed_id = n + 1;	
 		//TODO: how to decide the size of the hashtable
-		recv_line->addr_hash = hash_create(2048);
+		hash_size = avail_mem / 512;
+		recv_line->alloc_hash_size = hash_size;
+		//hash_size = avail_mem / 4;
+
+		recv_line->addr_hash = hash_create(hash_size);
+		printf("PMEM_INFO allocate %zu bytes for ppl->recv_line->addr_hash\n", hash_size);
 		recv_line->n_addrs = 0;
 
 		recv_line->apply_log_recs = FALSE;
@@ -4264,7 +4233,47 @@ pm_ppl_recv_init(
 		recv_line->mlog_checkpoint_lsn = 0;
 
 		recv_line->encryption_list = NULL;
-    }
+	} else {
+		//B: allocate for each line
+		for (i = 0; i < n; i++) {
+			pline = D_RW(D_RW(ppl->buckets)[i]);
+
+			// the redo buffer has same length as log buffer 
+			//size = 2 * D_RW(pline->logbuf)->size;
+			size = D_RW(pline->logbuf)->size;
+
+			pline->recv_line = (PMEM_RECV_LINE*) malloc(sizeof(PMEM_RECV_LINE));
+			recv_line = pline->recv_line;
+
+			//allocate heap
+			recv_line->heap = mem_heap_create_typed(256,
+					MEM_HEAP_FOR_RECV_SYS);
+
+			/*the buffer*/
+			recv_line-> buf = static_cast<byte*>(
+					ut_malloc_nokey(size));
+			recv_line->len = size;
+			recv_line->recovered_offset = 0;
+
+			/*Hash table*/
+			//recv_line->addr_hash = hash_create(avail_mem / 512);
+			recv_line->hashed_id = i;	
+			//number of cell in a hashtable
+			//TODO: how to decide the size of the hashtable
+			recv_line->alloc_hash_size = 2048;
+			recv_line->addr_hash = hash_create(2048);
+			recv_line->n_addrs = 0;
+
+			recv_line->apply_log_recs = FALSE;
+			recv_line->apply_batch_on = FALSE;
+
+			recv_line->found_corrupt_log = false;
+			recv_line->found_corrupt_fs = false;
+			recv_line->mlog_checkpoint_lsn = 0;
+
+			recv_line->encryption_list = NULL;
+		} //end for
+	}
 }
 
 /*
@@ -4282,47 +4291,47 @@ pm_ppl_recv_end(
 	PMEM_RECV_LINE* recv_line;
 
 	n = ppl->n_buckets;
+	if (IS_GLOBAL_HASHTABLE) {
+		//A: free global recv_line
+		recv_line = ppl->recv_line;
+		recv_line-> buf = NULL;
+		recv_line->len = 0;
+		recv_line->recovered_offset = 0;
+		recv_line->apply_log_recs = FALSE;
+		recv_line->apply_batch_on = FALSE;
 
-	//A: free global recv_line
-		
-	recv_line = ppl->recv_line;
-	recv_line-> buf = NULL;
-	recv_line->len = 0;
-	recv_line->recovered_offset = 0;
-	recv_line->apply_log_recs = FALSE;
-	recv_line->apply_batch_on = FALSE;
-
-	if (recv_line->addr_hash != NULL) {
-		hash_table_free(recv_line->addr_hash);
-	}
-
-	if (recv_line->heap != NULL) {
-		mem_heap_free(recv_line->heap);
-	}
-
-	//ut_free(recv_line->buf);
-	free(recv_line);
-	recv_line = NULL;
-
-	//B: free other recv_line
-	for (i = 0; i < n; i++) {
-		pline = D_RW(D_RW(ppl->buckets)[i]);
-		recv_line = pline->recv_line;
-
-		if (recv_line != NULL){
-			if (recv_line->addr_hash != NULL) {
-				hash_table_free(recv_line->addr_hash);
-			}
-
-			if (recv_line->heap != NULL) {
-				mem_heap_free(recv_line->heap);
-			}
-
-			ut_free(recv_line->buf);
-			free(recv_line);
-			recv_line = NULL;
+		if (recv_line->addr_hash != NULL) {
+			hash_table_free(recv_line->addr_hash);
 		}
-    }
+
+		if (recv_line->heap != NULL) {
+			mem_heap_free(recv_line->heap);
+		}
+
+		//ut_free(recv_line->buf);
+		free(recv_line);
+		recv_line = NULL;
+	} else {
+		//B: free other recv_line
+		for (i = 0; i < n; i++) {
+			pline = D_RW(D_RW(ppl->buckets)[i]);
+			recv_line = pline->recv_line;
+
+			if (recv_line != NULL){
+				if (recv_line->addr_hash != NULL) {
+					hash_table_free(recv_line->addr_hash);
+				}
+
+				if (recv_line->heap != NULL) {
+					mem_heap_free(recv_line->heap);
+				}
+
+				ut_free(recv_line->buf);
+				free(recv_line);
+				recv_line = NULL;
+			}
+		}
+	}
 
 	//C: reset data structures in PPL
 	pm_ppl_reset_all(pop, ppl);
@@ -4347,6 +4356,7 @@ pm_ppl_recovery(
 	lsn_t		max_recovered_lsn;
 	bool		rescan;
 	dberr_t		err;
+	ulint		avail_mem;
     
 	ulint n = ppl->n_buckets;
 	//ulint avail_mem = buf_pool_get_curr_size();
@@ -4372,6 +4382,27 @@ pm_ppl_recovery(
     //Simulate recv_group_scan_log_recs(), we do in parallelism
     pm_ppl_redo(pop, ppl);
 	
+	/* Check the mem heap after REDO phase 1	*/
+	if (IS_GLOBAL_HASHTABLE) {
+		ulint cur_heap_size = mem_heap_get_size(ppl->recv_line->heap);
+		printf("AFTER PARSE, cur_heap_size %zu vs alloc hash size %zu\n", cur_heap_size, ppl->recv_line->alloc_hash_size);
+	} else {
+		ulint n = ppl->n_buckets;
+		ulint i;
+		ulint		total_heap_used = 0;
+		
+		for (i = 0; i < n; i++){
+			pline = D_RW(D_RW(ppl->buckets)[i]);
+			recv_line = pline->recv_line;
+			ulint cur_heap_size = mem_heap_get_size(recv_line->heap);
+			total_heap_used += cur_heap_size;
+			ulint n_cells = hash_get_n_cells(recv_line->addr_hash);
+
+			printf("AFTER PARSE, pline %zu cur_heap_size %zu vs alloc hash size %zu n_addrs %zu vs n_cells %zu\n", pline->hashed_id, cur_heap_size, recv_line->alloc_hash_size, recv_line->n_addrs, n_cells);
+		}
+		printf("AFTER PARSE, total heap used %zu\n", total_heap_used);
+		
+	}
 	max_recovered_lsn = pm_ppl_recv_get_max_recovered_lsn(
 		pop, ppl);	
 	
@@ -4388,8 +4419,6 @@ pm_ppl_recovery(
     //this function call buf_dblwr_process() that correct tone page using DWB
 	err = pm_ppl_recv_init_crash_recovery_spaces(pop, ppl, max_recovered_lsn);
    
-   /*this function only used in global hashtable approach*/	
-	//pm_ppl_recv_apply_prior_pages(pop, ppl, NULL, false);
 
     if (err != DB_SUCCESS) {
         log_mutex_exit();
@@ -4403,6 +4432,9 @@ pm_ppl_recovery(
 	/* Synchronize the uncorrupted log groups to the most up-to-date log
 	group; we also copy checkpoint info to groups */
 	
+	/*simulate fil_names_clear(log_sys->last_checkpoint_lsn, true)*/
+	pm_ppl_fil_names_clear(max_recovered_lsn);
+
 	/*IMPORTANT 
 	 * Set apply_log_recs for each recv_line to TRUE, so that UNDO pages and other data pages can be applied (actual REDOing) when read on.
 */	
@@ -4415,8 +4447,12 @@ pm_ppl_recovery(
 
 	if (IS_GLOBAL_HASHTABLE){
 		ppl->recv_line->apply_log_recs = TRUE;	
+
+		/*this function only used in global hashtable approach*/	
+		pm_ppl_recv_apply_prior_pages(pop, ppl, NULL, false);
 	}
 
+	
 	srv_start_lsn = max_recovered_lsn;
 
 	mutex_enter(&recv_sys->mutex);
@@ -4429,6 +4465,9 @@ pm_ppl_recovery(
 
 	recv_lsn_checks_on = true;
     //pm_ppl_recv_end(pop, ppl);
+	
+	//printf("PMEM_RECV: RESET PPL after REDO phase 1\n");	
+	//pm_page_part_log_bucket_reset(pop, ppl);
 
 	return(DB_SUCCESS);
 
@@ -4666,18 +4705,29 @@ pm_ppl_redo_line(
     byte* end_ptr;
 
     uint64_t len;
-    uint64_t actual_len;
-	int64_t parsed_recs;
+    uint32_t actual_len;
+    uint32_t n_recs;
 
+	int64_t parsed_recs;
 	uint64_t need_recs;
+	uint64_t skip1_recs;
+	uint64_t skip2_recs;
+
+	uint64_t p1, p2, p3, n1, n2, n3;
+	uint64_t s1_1, s1_2, s1_3, s2_1, s2_2, s2_3;
 
 	int64_t total_parsed_recs;
 	uint64_t total_need_recs;
+	uint64_t total_skip1_recs;
+	uint64_t total_skip2_recs;
     dberr_t err;
 	
 	PMEM_RECV_LINE* recv_line = pline->recv_line;
     PMEM_PAGE_LOG_BUF* plogbuf;
-    PMEM_PAGE_LOG_BUF* pflush_logbuf;
+    PMEM_PAGE_LOG_BUF* pcur_logbuf;
+
+    TOID(PMEM_PAGE_LOG_BUF) next_logbuf;
+    PMEM_PAGE_LOG_BUF* pnext_logbuf;
 
 	ulint n = ppl->n_buckets;
     start_addr = pline->recv_diskaddr; //this value computed in ANALYSIS step
@@ -4686,6 +4736,9 @@ pm_ppl_redo_line(
 	
 	assert(recv_line != NULL);
 	//init
+	//recv_line->recovered_offset tell what is the current global offset of the log file is parsed up to
+	//recv_line->recovered_offset = 0;	
+	recv_line->recovered_addr = start_addr;	
 	recv_line->recovered_offset = 0;	
 	recv_line->n_addrs = 0;
 	
@@ -4704,9 +4757,11 @@ pm_ppl_redo_line(
 
 	total_parsed_recs = 0;
 	total_need_recs = 0;
+	total_skip1_recs = 0;
+	total_skip2_recs = 0;
     
     // pline->recv_diskaddr --> pline->write_diskaddr --> flush_logbuf->cur_off --> logbuf->cur_off
-loop:
+read_log_file:
     memset(recv_buf, 0, pline->recv_line->len);
 
     ///////////////////////////////////////////////////
@@ -4736,13 +4791,18 @@ loop:
 
         //read the actual buffer len (included the header)
         actual_len = mach_read_from_4(recv_buf);
+		n_recs = mach_read_from_4(recv_buf + 4);
 
         assert(actual_len > 0);
+        assert(n_recs > 0);
+
         ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
 
 
         //parse log recs in the recv_buf 
-        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &need_recs);
+        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &skip1_recs, &skip2_recs, &need_recs);
+
+		assert(parsed_recs == n_recs);
 
         if (parsed_recs < 0){
             printf("PMEM_ERROR case A error after pm_ppl_parse_recs() \n");
@@ -4751,33 +4811,50 @@ loop:
         }
 		total_parsed_recs += parsed_recs;
 		total_need_recs += need_recs;
+		total_skip1_recs += skip1_recs;
+		total_skip2_recs += skip2_recs;
+
 
         cur_addr += scan_len;
+		recv_line->recovered_addr = cur_addr;
         read_off += scan_len;
 
-        goto loop; 
+        goto read_log_file; 
     }
-    
-    //If you reach this point, all log recs on disk are parsed successful. Now parse log recs on NVDIMM 
+	p1 = total_parsed_recs;
+	n1 = total_need_recs;
+	s1_1 = total_skip1_recs;
+	s2_1 = total_skip2_recs;
+
+
+    //If you reach this point, all log recs on disk before write_diskaddr are parsed successful. Now parse log recs from write_diskaddr
     scan_len = 0;
+    pcur_logbuf = D_RW(pline->tail_logbuf);
 
+read_log_nvm:
     if (cur_addr < pline->diskaddr){
-        //case B: memcpy from flushing log buffer in NVDIMM to buf
-        pflush_logbuf = D_RW(pline->flush_logbuf);
-
-        src = ppl->p_align + pflush_logbuf->pmemaddr;
-        //scan_len = pflush_logbuf->cur_off;
-        scan_len = pflush_logbuf->size;
+        /*case B: the flushing from logbuf to log file has not finished when the system crash
+		 * memcpy from flushing log buffer in NVDIMM to buf
+		 */
+        src = ppl->p_align + pcur_logbuf->pmemaddr;
+        scan_len = pcur_logbuf->size;
 
         memcpy(recv_buf, src, scan_len);
 
         actual_len = mach_read_from_4(recv_buf);
+		n_recs = mach_read_from_4(recv_buf + 4);
+
         assert(actual_len > 0);
-        assert(actual_len == pflush_logbuf->cur_off);
+        assert(actual_len == pcur_logbuf->cur_off);
+		assert(n_recs > 0);
+		assert(n_recs == pcur_logbuf->n_recs);
 
         ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
 
-        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &need_recs);
+        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &skip1_recs, &skip2_recs, &need_recs);
+
+		assert(parsed_recs == n_recs);
+
         if (parsed_recs < 0){
             printf("PMEM_ERROR case B error after pm_ppl_parse_recs() \n");
             assert(0);
@@ -4787,11 +4864,41 @@ loop:
 
 		total_parsed_recs += parsed_recs;
 		total_need_recs += need_recs;
+		total_skip1_recs += skip1_recs;
+		total_skip2_recs += skip2_recs;
         cur_addr += scan_len;
-    }
+		recv_line->recovered_addr = cur_addr;
 
-    //now copy the last part of log recs in the logbuf 
+		pnext_logbuf = D_RW(pcur_logbuf->next);
+
+		if ( (pnext_logbuf->diskaddr - pcur_logbuf->diskaddr) > pcur_logbuf->size) {
+			printf("!!! WARN: there is a hole log in pline %zu next diskaddr %zu - cur_diskaddr %zu = %zu > logbuf_size %zu, re-read from log file\n",
+					recv_line->hashed_id,
+					pnext_logbuf->diskaddr,
+					pcur_logbuf->diskaddr,
+					pnext_logbuf->diskaddr - pcur_logbuf->diskaddr,
+					pcur_logbuf->size);
+			/*there is hole(s) between the tail and the head
+			 * we need to re-read from disk*/
+			TOID_ASSIGN(pline->tail_logbuf, (pcur_logbuf->next).oid);
+			pline->write_diskaddr = pnext_logbuf->diskaddr;
+			goto read_log_file;
+		} else {
+			pcur_logbuf = pnext_logbuf;
+			goto read_log_nvm;	
+		}
+    }
+	p2 = (total_parsed_recs - p1);
+	n2 = (total_need_recs - n1);
+	s1_2 = (total_skip1_recs - s1_1);
+	s2_2 = (total_skip2_recs - s2_1);
+	
+	/*If you reach here, all on-disk log recs and in-flushing log recs are parsed
+	 * now parse the last part of log recs in the logbuf*/
+
     plogbuf = D_RW(pline->logbuf);
+	assert(cur_addr == plogbuf->diskaddr);
+
     if (plogbuf->cur_off > 0){
         //memcpy from log buffer in NVDIMM to recv_buf
         src = ppl->p_align + plogbuf->pmemaddr;
@@ -4799,10 +4906,14 @@ loop:
 
         memcpy(recv_buf, src, scan_len);
         actual_len = scan_len;
+		n_recs = plogbuf->n_recs;
 
         ptr = recv_buf + PMEM_LOG_BUF_HEADER_SIZE;
 
-        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &need_recs);
+        parsed_recs = pm_ppl_parse_recs(pop, ppl, pline, ptr, actual_len - PMEM_LOG_BUF_HEADER_SIZE, &skip1_recs, &skip2_recs, &need_recs);
+
+		assert(parsed_recs == n_recs);
+
         if (parsed_recs < 0){
             printf("PMEM_ERROR case C error after pm_ppl_parse_recs() \n");
             assert(0);
@@ -4812,10 +4923,22 @@ loop:
 
 		total_parsed_recs += parsed_recs;
 		total_need_recs += need_recs;
+		total_skip1_recs += skip1_recs;
+		total_skip2_recs += skip2_recs;
         cur_addr += scan_len;
+		recv_line->recovered_addr = cur_addr;
     }
-	
-	//printf("PMEM_INFO: FINISH parse line %zu need/parsed %zu/%zu\n", pline->hashed_id, total_need_recs, total_parsed_recs);
+	p3 = (total_parsed_recs - p1 - p2);
+	n3 = (total_need_recs - n1 - n2);
+	s1_3 = total_skip1_recs - s1_1 - s1_2;
+	s2_3 = total_skip2_recs - s2_1 - s2_2;
+
+	printf("PMEM_INFO: FINISH parse line %zu need/parsed %zu/%zu n1/s1_1/s2_1/p1 %zu/%zu/%zu/%zu n2/s1_2/s2_2/p2 %zu/%zu/%zu/%zu n3/s1_3/s2_3/p3 %zu/%zu/%zu/%zu \n",
+		   	pline->hashed_id,
+		   	total_need_recs, total_parsed_recs,
+			n1, s1_1, s2_1, p1,
+			n2, s1_2, s2_2, p2,
+			n3, s1_3, s2_3, p3);
 
     return false; 
 }
@@ -4841,7 +4964,9 @@ pm_ppl_parse_recs(
 		PMEM_PAGE_LOG_HASHED_LINE*  pline,
 		byte*                       start_ptr,
 		uint64_t                    parse_len,
-		uint64_t					*n_need_recs
+		uint64_t*					n_skip1_recs,
+		uint64_t*					n_skip2_recs,
+		uint64_t*					n_need_recs
 		)
 {
     byte* ptr;
@@ -4865,10 +4990,14 @@ pm_ppl_parse_recs(
 	PMEM_RECV_LINE* recv_line = pline->recv_line;
 	store_t		store = STORE_YES;
     end_ptr = start_ptr + parse_len;
+	PMEM_PARSE_RESULT parse_res;
 
     cur_off = 0;
+	recv_line->recovered_offset = cur_off;
+
 	n_parsed_recs = 0;
 	*n_need_recs = 0;
+	*n_skip1_recs = *n_skip2_recs = 0;
 
 //parse each log recs, increase the recovered_off after each loop
 loop:
@@ -4888,8 +5017,25 @@ loop:
 			pop, ppl, recv_line,
 			&type, ptr, end_ptr, &space,
 			&page_no, true, &rec_lsn, &body,
-			&is_need);
+			&parse_res, &is_need);
 
+	switch (parse_res){
+		case PMEM_PARSE_BLOCK_NOT_EXISTED:
+			*n_skip1_recs = *n_skip1_recs + 1;
+			break;
+		case PMEM_PARSE_LSN_OLD:
+			*n_skip2_recs = *n_skip2_recs + 1;
+			break;
+		case PMEM_PARSE_NEED:
+		default:
+			assert(is_need);
+			break;
+	}
+
+	//test, the correctness of is_need, redundant REDO is better than wrong REDO
+	//is_need = true;
+	//end test
+	
 	recv_line->found_corrupt_log = recv_sys->found_corrupt_log;
 	recv_line->found_corrupt_fs = recv_sys->found_corrupt_fs;
 	
@@ -4914,19 +5060,21 @@ loop:
 	//update
 	n_parsed_recs++;
 	cur_off += len;
-	recv_line->recovered_offset += len;
+	recv_line->recovered_offset = cur_off;
 
 	//Note: if the rec_lsn < recv_line->recovered_lsn, this log rec has already applied in the database, we don't need it
-	if (rec_lsn < recv_line->recovered_lsn){
-		if (is_need){
-			printf("pline %zu cur_off %zu rec_lsn %zu < recv_line->recovered_lsn %zu, but is_need is true, logical error!!!\n", pline->hashed_id, cur_off, rec_lsn, recv_line->recovered_lsn);
-		}
-		//assert(!is_need);
-	}
-	else{
-		//recv_line->recovered_lsn = rec_lsn;
-	}
+	//if (rec_lsn < recv_line->recovered_lsn){
+	//	if (is_need){
+	//		printf("pline %zu cur_off %zu rec_lsn %zu < recv_line->recovered_lsn %zu, but is_need is true, logical error!!!\n", pline->hashed_id, cur_off, rec_lsn, recv_line->recovered_lsn);
+	//	}
+	//	//assert(!is_need);
+	//}
+	//else{
+	//	//recv_line->recovered_lsn = rec_lsn;
+	//}
 	
+	/*update recovered_lsn, this value is need in rebuilding tone page in DWB*/	
+	recv_line->recovered_lsn = rec_lsn;
 	//add the parsed log record to HASH TABLE in apply phase
 	switch (type) {
 		lsn_t	lsn;
@@ -4990,15 +5138,6 @@ loop:
 		/* fall through */
 	}
 
-	//check mem heap
-	
-	ulint cur_heap_size = mem_heap_get_size(ppl->recv_line->heap);
-	ulint avail_mem = buf_pool_get_curr_size();
-
-	if (cur_heap_size > avail_mem){
-		printf("cur heap size %zu is reached avail mem %zu\n", cur_heap_size, avail_mem);
-		assert(0);
-	}
 	goto loop;
 }
 
@@ -5017,6 +5156,7 @@ loop:
 @param[in]	apply		whether to apply MLOG_FILE_* records
 @param [out] rec_lsn	lsn of the log record
 @param[out]	body		start of log record body
+@param[out] parse_res	parsed response (1: need, 2: plogblock is not existed, 3: 
 @param[out]	is_need		true if we need to insert this log rec in hashtable.
  * */
 uint64_t
@@ -5032,6 +5172,7 @@ pm_ppl_recv_parse_log_rec(
 	bool		apply,
 	uint64_t*	rec_lsn,
 	byte**		body,
+	PMEM_PARSE_RESULT*	parse_res,
 	bool*		is_need) {
 	
 	PMEM_PAGE_LOG_BLOCK* plog_block;
@@ -5105,14 +5246,39 @@ pm_ppl_recv_parse_log_rec(
 	if (plog_block == NULL){
 		//the page (space, page_no) has been flushed to disk before the crash
 		//do not need recover this page
+		*parse_res = PMEM_PARSE_BLOCK_NOT_EXISTED;
 		return rec_len;
 	}
 
 	assert(plog_block->key == key);	
+	
+	if (plog_block->state != PMEM_IN_USED_BLOCK){
+		printf("~~ WARN pm_ppl_recv_parse_log_rec() plog_block (%zu, %zu) has state %zu\n", *space, *page_no, plog_block->state);
+		assert(0);
+	}
 
+
+	//test, skip this
 	if ((*rec_lsn) < plog_block->firstLSN){
 		//this log rec is old, skip it
+		*parse_res = PMEM_PARSE_LSN_OLD;
 		return rec_len;
+	}
+
+	/*we strictly check the first log rec here
+	 * the plog_block->first_rec_found is set false at init and only set true here, when the first log rec is found
+	 * */
+	if (!plog_block->first_rec_found) {
+		assert(plog_block->first_rec_size == rec_len);
+		assert(plog_block->first_rec_type == *type);
+		
+		/*There is a case one page is flush then read again many times, the info in the plog_block is the last read*/
+		//if plog_block->firstLSN < *rec_lsn, we miss some log recs of this plog_block
+		assert(plog_block->firstLSN == *rec_lsn);
+		assert(plog_block->start_diskaddr == recv_line->recovered_addr);
+		assert(plog_block->start_off == (recv_line->recovered_offset + PMEM_LOG_BUF_HEADER_SIZE));
+		//all checks are passed
+		plog_block->first_rec_found = true;	
 	}
 
 	//(4) Parse the body as original InnoDB
@@ -5143,6 +5309,7 @@ pm_ppl_recv_parse_log_rec(
 	}
 
 	*is_need = true;
+	*parse_res = PMEM_PARSE_NEED;
 
 	return(new_ptr - ptr);
 	//return(rec_len);
@@ -5210,12 +5377,10 @@ pm_ppl_recv_add_to_hash_table(
 	len = rec_end - body;
 	
 	//(1) allocate recv obj to capture the log record
-	//recv = static_cast<recv_t*>(
-	//	mem_heap_alloc(recv_line->heap, sizeof(recv_t)));
-	//recv = static_cast<recv_t*>(
-	//	mem_heap_alloc(ppl->recv_line->heap, sizeof(recv_t)));
 	recv = static_cast<recv_t*>(
-		malloc(sizeof(recv_t)));
+		mem_heap_alloc(recv_line->heap, sizeof(recv_t)));
+	//recv = static_cast<recv_t*>(
+	//	malloc(sizeof(recv_t)));
 
 	recv->type = type;
 	recv->len = rec_end - body;
@@ -5235,12 +5400,10 @@ pm_ppl_recv_add_to_hash_table(
 
 	if (recv_addr == NULL) {
 
-		//recv_addr = static_cast<recv_addr_t*>(
-		//	mem_heap_alloc(recv_line->heap, sizeof(recv_addr_t)));
-		//recv_addr = static_cast<recv_addr_t*>(
-		//	mem_heap_alloc(ppl->recv_line->heap, sizeof(recv_addr_t)));
 		recv_addr = static_cast<recv_addr_t*>(
-			malloc(sizeof(recv_addr_t)));
+			mem_heap_alloc(recv_line->heap, sizeof(recv_addr_t)));
+		//recv_addr = static_cast<recv_addr_t*>(
+		//	malloc(sizeof(recv_addr_t)));
 
 		recv_addr->space = space;
 		recv_addr->page_no = page_no;
@@ -5276,14 +5439,11 @@ pm_ppl_recv_add_to_hash_table(
 			len = RECV_DATA_BLOCK_SIZE;
 		}
 
-		//recv_data = static_cast<recv_data_t*>(
-		//	mem_heap_alloc(recv_line->heap,
-		//		       sizeof(recv_data_t) + len));
-		//recv_data = static_cast<recv_data_t*>(
-		//	mem_heap_alloc(ppl->recv_line->heap,
-		//		       sizeof(recv_data_t) + len));
 		recv_data = static_cast<recv_data_t*>(
-			malloc(sizeof(recv_data_t) + len));
+			mem_heap_alloc(recv_line->heap,
+				       sizeof(recv_data_t) + len));
+		//recv_data = static_cast<recv_data_t*>(
+		//	malloc(sizeof(recv_data_t) + len));
 
 		*prev_field = recv_data;
 
@@ -5347,25 +5507,29 @@ pm_ppl_recv_get_max_recovered_lsn(
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE*		pline;
 	PMEM_RECV_LINE*					recv_line;
-
+	
 	ulint max_lsn = 0;
-
+	
 	n = ppl->n_buckets;
 
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
 		recv_line = pline->recv_line;
-		
-        if (max_lsn < recv_line->recovered_lsn){
-            max_lsn = recv_line->recovered_lsn;
-        }
-    }
+
+		if (max_lsn < recv_line->recovered_lsn){
+			max_lsn = recv_line->recovered_lsn;
+		}
+	}
 
 	return max_lsn;
 }
 
 /*
  * simulate recv_init_crash_recovery_spaces()
+ * @param pop[in]
+ * @param ppl[in]
+ * @param max_recovered_lsn: max last lsn in recv_line, copute from REDO phase 1
+ *
  * */
 dberr_t
 pm_ppl_recv_init_crash_recovery_spaces(
@@ -5577,6 +5741,9 @@ pm_ppl_recv_recover_page_func(
 	mtr_t		mtr;
 	
 	bool is_gb_ht = (pline == NULL);
+	
+	//for debug
+	uint32_t page_no = block->page.id.page_no();
 
 	if(is_gb_ht){	
 		pmemobj_rwlock_wrlock(pop, &ppl->lock);	
@@ -5652,10 +5819,11 @@ pm_ppl_recv_recover_page_func(
 	page = block->frame;
 	page_zip = buf_block_get_page_zip(block);
 
-	//get pmem_log_block
+	/* the role of plogblock here is for testing only
+	 * get pmem_log_block*/
 	PMEM_FOLD(key, recv_addr->space, recv_addr->page_no);
 	plog_block = pm_ppl_get_log_block_by_key(pop, ppl, key);
-	assert(plog_block != NULL);
+	//assert(plog_block != NULL);
 	
 
 	if (just_read_in) {
@@ -5684,7 +5852,7 @@ pm_ppl_recv_recover_page_func(
 		page_lsn = page_newest_lsn;
 	}
 
-	assert(page_lsn <= plog_block->firstLSN);
+	//assert(page_lsn <= plog_block->firstLSN);
 
 	modification_to_page = FALSE;
 	start_lsn = end_lsn = 0;

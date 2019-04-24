@@ -43,6 +43,11 @@ extern PMEM_WRAPPER* gb_pmw;
 extern pfs_os_file_t gb_dbw_file;
 #endif /* UNIV_PMEMOBJ_DBW */
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+#include "my_pmemobj.h"
+extern PMEM_WRAPPER* gb_pmw;
+#endif /*UNIV_PMEMOBJ_PART_PL*/
+
 #ifndef UNIV_HOTBACKUP
 
 /** The doublewrite buffer */
@@ -952,7 +957,21 @@ buf_dblwr_check_block(
 	if (block->skip_flush_check) {
 		return;
 	}
-
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//	//debug
+//	ulint type = fil_page_get_type(block->frame);
+//	PMEM_PAGE_LOG_BLOCK* plogblock;
+//	buf_page_t* bpage;
+//
+//	if (type == 0){
+//		plogblock = 
+//			pm_ppl_get_log_block_by_key(gb_pmw->pop, gb_pmw->ppl, block->page.id.fold());
+//
+//		bpage = (buf_page_t*) &(block->page);
+//
+//		assert(0);
+//	}
+//#endif //UNIV_PMEMOBJ_PART_PL
 	switch (fil_page_get_type(block->frame)) {
 	case FIL_PAGE_INDEX:
 	case FIL_PAGE_RTREE:

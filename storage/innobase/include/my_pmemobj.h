@@ -555,8 +555,8 @@ struct __pmem_page_log_hashed_line {
 	PMEMrwlock		lock;
 	
 	int hashed_id;
-	TOID(PMEM_PAGE_LOG_BUF)	logbuf;	//pointer to current log buffer
-	TOID(PMEM_PAGE_LOG_BUF)	flush_logbuf;	//pointer to flushing log buffer
+	TOID(PMEM_PAGE_LOG_BUF)	logbuf;	//pointer to current log buffer (head)
+	TOID(PMEM_PAGE_LOG_BUF)	tail_logbuf;	//pointer to the oldest log buffer (tail)
 
 	uint64_t		diskaddr; //log file offset, update when flush log, reset when purging file
 	uint64_t		write_diskaddr; //diskaddr that log recs are durable write write_diskaddr < diskaddr
@@ -614,10 +614,14 @@ struct __pmem_page_log_buf {
 	PMEM_LOG_BUF_STATE		state;
 	uint64_t				size;
 	uint64_t				cur_off; //the current offset (0 - log buf size), reset when switching log_buf 
+	uint64_t				n_recs;
 
 	int						check; //for AIO
 	
 	uint64_t				diskaddr; //write address assigned when the buffer is full
+
+	TOID(PMEM_PAGE_LOG_BUF) prev;
+	TOID(PMEM_PAGE_LOG_BUF) next;
 
 	//link with the list free pool
 	POBJ_LIST_ENTRY(PMEM_PAGE_LOG_BUF) list_entries;
@@ -625,10 +629,14 @@ struct __pmem_page_log_buf {
 
 /*
  * One log block per-page
- * Follow the implementation of PMEM_BUF_BLOCK
+ * Metadata of a page during forward processing
+ * Persistent after the system crash
  * */
 struct __pmem_page_log_block {
 	PMEMrwlock		lock;
+
+	PMEM_BLOCK_STATE state;
+
 	bool			is_free; //flag
 	uint64_t		bid; //block id
 	uint64_t		key; //fold id
@@ -637,10 +645,16 @@ struct __pmem_page_log_block {
 
 	/*LSN */
 	uint64_t		pageLSN; // pageLSN of the NVM-page
-	uint64_t		firstLSN; // LSN of the first log record
 	uint64_t		lastLSN; // LSN of the last log record
+
+	uint64_t		firstLSN; // LSN of the first log record
 	uint32_t		start_off;// offset of the first log rec of this page on log buffer/ disk
 	uint32_t		start_diskaddr;// diskaddr when the first log rec is written 
+
+	//this value is used for testing recovery
+	bool			first_rec_found;
+	uint32_t		first_rec_size;
+	mlog_id_t		first_rec_type;
 };
 
 /*
@@ -662,6 +676,7 @@ struct __pmem_recv_line {
 	ulint		scanned_checkpoint_no;
 
 	ulint		recovered_offset;
+	ulint		recovered_addr;
 	lsn_t		recovered_lsn;
 
 	bool		found_corrupt_log;
@@ -672,7 +687,7 @@ struct __pmem_recv_line {
 	lsn_t		mlog_checkpoint_lsn;
 
 	mem_heap_t*	heap;	/*!< memory heap of log records and file addresses */
-
+	ulint		alloc_hash_size; //allocated heap size
 	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
 	ulint		n_addrs;/*!< number of not processed hashed file addresses in the hash table */
 	recv_dblwr_t	dblwr;
@@ -1072,12 +1087,6 @@ pm_ppl_hash_get(
 		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		uint64_t			key	);
 
-
-void pm_ppl_hash_add_at_page_read(
-		PMEMobjpool*		pop,
-		PMEM_PAGE_PART_LOG*	ppl,
-		buf_page_t* bpage);
-
 plog_hash_t*
 pm_ppl_hash_add(
 		PMEMobjpool*		pop,
@@ -1247,10 +1256,17 @@ pm_ppl_commit(
 		uint64_t				tid,
 		uint64_t				eid);
 
+void
+pm_ppl_set_flush_state(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		buf_page_t*			bpage);
+
 void 
 pm_ppl_flush_page(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*	ppl,
+		buf_page_t*			bpage,
 		uint64_t			space,
 		uint64_t			page_no,
 		uint64_t			key,
@@ -1317,6 +1333,8 @@ pm_ppl_parse_recs(
 		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		byte* recv_buf,
 		uint64_t len,
+		uint64_t* n_skip1_recs,
+		uint64_t* n_skip2_recs,
 		uint64_t* n_need_recs
 		);
 
@@ -1333,6 +1351,7 @@ pm_ppl_recv_parse_log_rec(
 	bool		apply,
 	uint64_t*   rec_lsn,
 	byte**		body,
+	PMEM_PARSE_RESULT*	parse_res,
 	bool*		is_need);
 
 
