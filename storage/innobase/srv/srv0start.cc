@@ -1496,6 +1496,27 @@ innobase_start_or_create_for_mysql(void)
 	size_t		dirnamelen;
 	unsigned	i = 0;
 
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+		ulint start_recv_time;
+		ulint end_recv_time;
+
+		ulint start_redo1_time;
+		ulint end_redo1_time;
+
+		ulint start_create_undo_time; //start reconstruct UNDO page
+		ulint end_create_undo_time; //start reconstruct UNDO page
+
+		ulint start_redo2_time;
+		ulint end_redo2_time;
+
+		ulint start_rollback_time;
+		ulint end_rollback_time;
+		
+		ulint t1, t2, t3;
+		ulint other_time;
+		ulint total_recv_time;		
+#endif /* UNIV_TRACE_RECOVERY_TIME*/
+
 	/* Reset the start state. */
 	srv_start_state = SRV_START_STATE_NONE;
 
@@ -2397,6 +2418,12 @@ files_checked:
 		//gb_pmw->pbuf->is_recovery = true;
 		gb_pmw->pbuf->is_recovery = false;
 #endif
+
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+		start_recv_time = ut_time_us(NULL);
+		start_redo1_time = ut_time_us(NULL);
+#endif /* UNIV_TRACE_RECOVERY_TIME*/
+
 #if defined (UNIV_PMEMOBJ_PART_PL)
 		if (gb_pmw->ppl->is_new){
 			err = recv_recovery_from_checkpoint_start(flushed_lsn);
@@ -2407,6 +2434,10 @@ files_checked:
 #else
 		err = recv_recovery_from_checkpoint_start(flushed_lsn);
 #endif // UNIV_PMEMOBJ_PART_PL
+
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+		end_redo1_time = ut_time_us(NULL);
+#endif /* UNIV_TRACE_RECOVERY_TIME*/
 
 		recv_sys->dblwr.pages.clear();
 
@@ -2430,7 +2461,16 @@ files_checked:
 			return(srv_init_abort(DB_ERROR));
 		}
 
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+		start_create_undo_time = ut_time_us(NULL);
+#endif /* UNIV_TRACE_RECOVERY_TIME*/
+
 		purge_queue = trx_sys_init_at_db_start();
+
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+		end_create_undo_time = ut_time_us(NULL);
+		start_redo2_time = ut_time_us(NULL);
+#endif /* UNIV_TRACE_RECOVERY_TIME*/
 
 		if (srv_force_recovery < SRV_FORCE_NO_LOG_REDO) {
 			/* Apply the hashed log records to the
@@ -2444,6 +2484,10 @@ files_checked:
 				trx_sys_print_mysql_binlog_offset();
 			}
 		}
+
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+		end_redo2_time = ut_time_us(NULL);
+#endif /* UNIV_TRACE_RECOVERY_TIME*/
 
 		if (recv_sys->found_corrupt_log) {
 			ib::warn()
@@ -2597,7 +2641,13 @@ files_checked:
 				logfile0);
 		}
 
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+		start_rollback_time = ut_time_us(NULL);
+		//since rollback is handled by background thread we don't measure the time right after the function call
+#endif /* UNIV_TRACE_RECOVERY_TIME*/
+
 		recv_recovery_rollback_active();
+
 
 		/* It is possible that file_format tag has never
 		been set. In this case we initialize it to minimum
@@ -2870,6 +2920,29 @@ files_checked:
 	os_thread_create(buf_resize_thread, NULL, NULL);
 
 	srv_was_started = TRUE;
+
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+	end_recv_time = ut_time_us(NULL);
+
+	//Now we sumup the recovery overhead
+	t1 = (ulint) (end_redo1_time - start_redo1_time) * 1.0 / 1000;
+	t2 = (ulint) (end_create_undo_time - start_create_undo_time) * 1.0 / 1000;
+	t3 = (ulint) (end_redo2_time - start_redo2_time) * 1.0 / 1000;
+
+	total_recv_time = (ulint) (end_recv_time - start_recv_time) * 1.0 / 1000;
+
+	other_time = total_recv_time - t1 - t2 - t3;
+		
+	printf("============= RECOVERY OVERHEAD ==========\n");		
+	printf("Redo phase1 time (ms):\t\t %zu\n", t1); 
+	printf("Create RSEG time (ms):\t\t %zu\n", t2);
+	printf("Redo phase2 time (ms):\t\t %zu\n", t3); 
+
+	printf("Others time (ms):\t\t %zu\n", other_time);
+	printf("Total time (ms):\t\t %zu\n", total_recv_time);
+
+	printf("==========================================\n");		
+#endif /* UNIV_TRACE_RECOVERY_TIME*/
 	return(DB_SUCCESS);
 }
 

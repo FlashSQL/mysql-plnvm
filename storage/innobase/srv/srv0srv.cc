@@ -248,6 +248,7 @@ double	srv_ppl_log_buf_flush_pct = 0.9;
 double	srv_ppl_ckpt_threshold = 0.7;
 ulong	srv_ppl_log_flusher_wake_threshold = 5;
 ulong	srv_ppl_n_log_flush_threads = 32;
+ulong	srv_ppl_n_redoer_threads = 32;
 ulong	srv_ppl_log_file_size = 16384;
 ulong	srv_ppl_log_files_per_bucket = 1;
 

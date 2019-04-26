@@ -1326,7 +1326,7 @@ skip_enclose:
 	// end new DAL
 	
 	//(3) Check, remove this section in run mode
-	mtr->pmem_check_mtrlog(mtr);
+	//mtr->pmem_check_mtrlog(mtr);
 		
 	//(4) Add log recs to PPL log
 	

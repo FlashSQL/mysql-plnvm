@@ -1260,6 +1260,7 @@ pm_wrapper_page_log_alloc_or_open(
 	pmw->ppl->flusher = pm_log_flusher_init(PMEM_N_LOG_FLUSH_THREADS, FLUSHER_LOG_BUF);
 
 	pmw->ppl->free_log_pool_event = os_event_create("pm_free_log_pool_event");
+	pmw->ppl->redoing_done_event = os_event_create("pm_is_redoing_done_event");
 	
 	pm_page_part_log_hash_create(pmw->pop, pmw->ppl);
 
@@ -1279,6 +1280,7 @@ pm_wrapper_page_log_close(
 
 	pm_log_flusher_close(ppl->flusher);
 	os_event_destroy(ppl->free_log_pool_event);
+	os_event_destroy(ppl->redoing_done_event);
 
 	pm_page_part_log_hash_free(pmw->pop, pmw->ppl);
 
@@ -2514,7 +2516,10 @@ get_free_buf:
 		TOID_ASSIGN(D_RW(pline->logbuf)->next, free_buf.oid);
 		TOID_ASSIGN(pline->logbuf, free_buf.oid);
 		
-	//	TOID_ASSIGN(pline->flush_logbuf, pline->logbuf.oid);
+		//test
+		if ( D_RW(plogbuf->prev) != NULL){
+			printf("PMEM_WARN: there is another in-flushing logbuf id %zu before this full logbuf %zu pline %zu\n", D_RW(plogbuf->prev)->id, plogbuf->id, plogbuf->hashed_id);
+		}
 		//move the diskaddr on the line ahead, the written size should be aligned with 512B for DIRECT_IO works
 		pline->diskaddr += plogbuf->size;
 
@@ -3730,12 +3735,13 @@ pm_handle_finished_log_buf(
 		TOID_ASSIGN(next->prev, OID_NULL);
 
 		//update the persistent addr
-		pline->write_diskaddr = plogbuf->diskaddr;
+		pline->write_diskaddr = plogbuf->diskaddr + plogbuf->size;
 
 		pmemobj_rwlock_unlock(pop, &pline->lock);
 		
 	} else {
 		// the rare case
+		printf("===> PMEM_INFO rare case of finishing AIO logbuf_id %zu prev_id %zu next_id %zu. This may cause log holes when recover\n", plogbuf->id, prev->id, next->id);
 		TOID_ASSIGN(prev->next, (plogbuf->next).oid);
 		TOID_ASSIGN(next->prev, (plogbuf->prev).oid);
 		//we don't update persistent addr

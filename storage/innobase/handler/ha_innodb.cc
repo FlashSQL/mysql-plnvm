@@ -3759,6 +3759,9 @@ innobase_init(
 	if (!srv_ppl_n_log_flush_threads) {
 		srv_ppl_n_log_flush_threads = 32;
 	}
+	if (!srv_ppl_n_redoer_threads) {
+		srv_ppl_n_redoer_threads = 32;
+	}
 	if (!srv_ppl_log_file_size) {
 		srv_ppl_log_file_size = 16*1024;
 	}
@@ -19695,11 +19698,15 @@ static MYSQL_SYSVAR_ULONG(ppl_log_flusher_wake_threshold, srv_ppl_log_flusher_wa
   "Number of log buffer in the flusher to trigger AIO flush, default is 5",
   NULL, NULL, 5, 1, 32, 0);
 
-
 static MYSQL_SYSVAR_ULONG(ppl_n_log_flush_threads, srv_ppl_n_log_flush_threads,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
   "Number of IO threads to handle log flush, default is 32",
-  NULL, NULL, 32, 1, 64, 0);
+  NULL, NULL, 32, 1, 256, 0);
+
+static MYSQL_SYSVAR_ULONG(ppl_n_redoer_threads, srv_ppl_n_redoer_threads,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Number of redoer threads to handle REDO , default is 32",
+  NULL, NULL, 32, 1, 256, 0);
 
 static MYSQL_SYSVAR_ULONG(ppl_log_file_size, srv_ppl_log_file_size,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
@@ -20560,6 +20567,7 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(ppl_ckpt_threshold),
   MYSQL_SYSVAR(ppl_log_flusher_wake_threshold),
   MYSQL_SYSVAR(ppl_n_log_flush_threads),
+  MYSQL_SYSVAR(ppl_n_redoer_threads),
   MYSQL_SYSVAR(ppl_log_file_size),
   MYSQL_SYSVAR(ppl_log_files_per_bucket),
 #endif //UNIV_PMEMOBJ_PART_PL

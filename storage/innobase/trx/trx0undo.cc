@@ -1450,9 +1450,9 @@ add_to_list:
 			MONITOR_INC(MONITOR_NUM_UNDO_SLOT_CACHED);
 		}
 	}
-	//tdnguyen test
+#if defined (UNIV_PMEMOBJ_PART_PL_DEBUG)
 	printf("==> add UNDO obj when server start RSEG (id %zu page_no %zu) UNDO segment(slot %zu page_no %zu header page_no %zu last page_no %zu trx_id %zu\n", rseg->id, rseg->page_no, id, page_no, undo->hdr_page_no, undo->last_page_no, trx_id);
-	//end tdnguyen test
+#endif
 	return(undo);
 }
 

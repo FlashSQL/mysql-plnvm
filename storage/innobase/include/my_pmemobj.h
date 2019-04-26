@@ -514,11 +514,13 @@ struct __pmem_page_part_log {
 	TOID(PMEM_PAGE_LOG_FREE_POOL)	free_pool;
 	
 	/*RECOVERY*/
-	PMEM_RECV_LINE* recv_line;
+	PMEM_RECV_LINE* recv_line; /*the global recv_line*/
 
 	/*Redoer*/	
 	PMEM_LOG_REDOER*	redoer;
-	bool				is_redoing_done;
+	uint16_t			n_redoing_lines; /*# lines are redoing*/
+	bool				is_redoing_done; /*true iff n_redoing_lines == 0*/
+	os_event_t redoing_done_event; //event for redoing
 
 	/*DRAM Log File*/	
 	uint64_t			log_file_size;
@@ -662,6 +664,8 @@ struct __pmem_page_log_block {
  * folow the design of recv_sys_t in InnoDB
  */
 struct __pmem_recv_line {
+	PMEMrwlock		lock;
+
 	uint32_t	hashed_id;
 	
 	bool		skip_zero_page;
@@ -1313,7 +1317,8 @@ pm_ppl_recovery(
 void 
 pm_ppl_analysis(
 		PMEMobjpool*		pop,
-		PMEM_PAGE_PART_LOG*	ppl);
+		PMEM_PAGE_PART_LOG*	ppl,
+		ulint*				global_max_lsn);
 
 void 
 pm_ppl_redo(

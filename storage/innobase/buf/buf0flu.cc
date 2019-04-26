@@ -4202,7 +4202,8 @@ retry:
 
 /*
  * Init the REDOER
- * size: The input size, should equal to the number of hashed line
+ * @param[in] size: The number of items in the array,
+ * should equal to the number of hashed line
  * */
 PMEM_LOG_REDOER*
 pm_log_redoer_init(
@@ -4382,19 +4383,20 @@ retry:
 						printf("PMEM_REDO: error redoing line %zu \n", pline->hashed_id);
 						assert(0);
 					}
-
 					//printf("PMEM_REDO: end REDO_PHASE1 (scan and parse) line %zu\n", pline->hashed_id);
 				}
 				else {
+#if defined (UNIV_PMEMOBJ_PART_PL_DEBUG)
 					printf("PMEM_REDO: start REDO_PHASE2 (applying) line %zu ...\n", pline->hashed_id);
+#endif
 					pm_ppl_recv_apply_hashed_line(
 							gb_pmw->pop, gb_pmw->ppl,
 							pline, pline->recv_line->is_ibuf_avail);
 
+#if defined (UNIV_PMEMOBJ_PART_PL_DEBUG)
 					printf("PMEM_REDO: end REDO_PHASE2 (applying) line %zu\n", pline->hashed_id);
+#endif
 				}
-				//test
-				//os_thread_sleep(10000);
 
 				mutex_enter(&redoer->mutex);
 				redoer->hashed_line_arr[i] = NULL;
