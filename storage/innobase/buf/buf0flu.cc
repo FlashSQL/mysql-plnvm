@@ -65,6 +65,8 @@ static const int buf_flush_page_cleaner_priority = -20;
 extern ulint gb_flush_time;
 #endif
 #if defined(UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_PART_PL)
+#include <sys/syscall.h>
+#include <sys/types.h> //for gettid()
 #include "my_pmemobj.h"
 #include <libpmemobj.h>
 extern PMEM_WRAPPER* gb_pmw;
@@ -4337,6 +4339,13 @@ DECLARE_THREAD(pm_log_redoer_worker)(
 			os_thread_create */
 {
 	ulint i;
+	pid_t thread_id;
+	ulint idx;
+	ulint lines_per_thread;
+	//int dist_mode = 2;
+	int dist_mode = 1;
+
+	ulint start_time, end_time, e_time;
 
 	PMEM_LOG_REDOER* redoer = gb_pmw->ppl->redoer;
 
@@ -4346,9 +4355,18 @@ DECLARE_THREAD(pm_log_redoer_worker)(
 	my_thread_init();
 
 	mutex_enter(&redoer->mutex);
+	idx = redoer->n_workers;
 	redoer->n_workers++;
 	os_event_reset(redoer->is_log_all_closed);
 	mutex_exit(&redoer->mutex);
+	
+	//thread_id = os_thread_pf(os_thread_get_curr_id());
+	lines_per_thread = redoer->size / (srv_ppl_n_redoer_threads - 1);
+
+	//thread_id = syscall(SYS_gettid);
+	//idx = thread_id % srv_ppl_n_redoer_threads;
+
+	printf("Redoers thread %zu idx %zu created\n",thread_id, idx);
 
 	while (true) {
 		//worker thread wait until there is is_requested signal 
@@ -4361,23 +4379,44 @@ retry:
 			//do nothing
 			break;
 		}
-
-		for (i = 0; i < redoer->size; i++) {
-			mutex_enter(&redoer->mutex);
+		/*Method 1: sequential distribute*/
+		//for (i = 0; i < redoer->size; i++) 
+		/*Method 2: segment distribute*/
+		for (i = idx * lines_per_thread;
+			   	i < (idx + 1) * lines_per_thread &&
+			   	i < redoer->size
+				; i++) 
+		/*Method 3: evently distribute*/
+		//for (i = idx ;
+		//	   	i < redoer->size
+		//		; i+= srv_ppl_n_redoer_threads) 
+		{
+			if (dist_mode ==1)
+				mutex_enter(&redoer->mutex);
 
 			pline = redoer->hashed_line_arr[i];
 
 			if (pline != NULL && !pline->is_redoing)
 			{
 				pline->is_redoing = true;
+				recv_line = pline->recv_line;
 				//do not hold the mutex during REDOing
-				mutex_exit(&redoer->mutex);
+				if (dist_mode ==1)
+					mutex_exit(&redoer->mutex);
 
 				/***this call REDOing for a line ***/
 				if (redoer->phase == PMEM_REDO_PHASE1){
 					//printf("PMEM_REDO: start REDO_PHASE1 (scan and parse) line %zu ...\n", pline->hashed_id);
 
+
+					//start_time = ut_time_us(NULL);
 					bool is_err = pm_ppl_redo_line(gb_pmw->pop, gb_pmw->ppl, pline);
+					//end_time = ut_time_us(NULL);
+
+					//recv_line->redo1_thread_id = idx; 	
+					//recv_line->redo1_start_time = start_time;
+					//recv_line->redo1_end_time = end_time;
+					//recv_line->redo1_elapse_time = (end_time - start_time);
 
 					if (is_err){
 						printf("PMEM_REDO: error redoing line %zu \n", pline->hashed_id);
@@ -4389,27 +4428,37 @@ retry:
 #if defined (UNIV_PMEMOBJ_PART_PL_DEBUG)
 					printf("PMEM_REDO: start REDO_PHASE2 (applying) line %zu ...\n", pline->hashed_id);
 #endif
+					//start_time = ut_time_us(NULL);
 					pm_ppl_recv_apply_hashed_line(
 							gb_pmw->pop, gb_pmw->ppl,
 							pline, pline->recv_line->is_ibuf_avail);
+					//end_time = ut_time_us(NULL);
 
+					//recv_line->redo2_thread_id = idx; 	
+					//recv_line->redo2_start_time = start_time;
+					//recv_line->redo2_end_time = end_time;
+					//recv_line->redo2_elapse_time = (end_time - start_time);
 #if defined (UNIV_PMEMOBJ_PART_PL_DEBUG)
 					printf("PMEM_REDO: end REDO_PHASE2 (applying) line %zu\n", pline->hashed_id);
 #endif
 				}
 
-				mutex_enter(&redoer->mutex);
+				if (dist_mode ==1)
+					mutex_enter(&redoer->mutex);
+
 				redoer->hashed_line_arr[i] = NULL;
 				//redoer->n_requested--;
 				redoer->n_remains--;
 
 				if (redoer->n_remains == 0){
 					//this is the last REDO
-					mutex_exit(&redoer->mutex);
+					if (dist_mode ==1)
+						mutex_exit(&redoer->mutex);
 					break;
 				}
 			}
-			mutex_exit(&redoer->mutex);
+			if (dist_mode ==1)
+				mutex_exit(&redoer->mutex);
 		} //end for
 
 		// after this for loop, all lines are either done REDO or REDOing by other threads, this thread has nothing to do
@@ -4419,7 +4468,8 @@ retry:
 	mutex_enter(&redoer->mutex);
 	redoer->n_workers--;
 	if (redoer->n_workers == 0) {
-		printf("The last log redoer is closing\n");
+		printf("The last log redoer is closing. Redo phase %zu redoer->n_remains %zu ppl->n_redoing_lines %zu\n",
+				redoer->phase, redoer->n_remains, gb_pmw->ppl->n_redoing_lines);
 		//trigger the coordinator (the pm_ppl_redo) to wakeup
 		os_event_set(redoer->is_log_all_finished);
 	}

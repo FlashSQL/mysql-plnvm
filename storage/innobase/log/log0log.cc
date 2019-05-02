@@ -2113,9 +2113,9 @@ pm_ppl_checkpoint(
 	//}
 
 	/* (5) update the global ckpt_lsn*/
-	pmemobj_rwlock_wrlock(pop, &ppl->lock);
+	pmemobj_rwlock_wrlock(pop, &ppl->ckpt_lock);
 	ppl->ckpt_lsn = new_oldest;
-	pmemobj_rwlock_unlock(pop, &ppl->lock);
+	pmemobj_rwlock_unlock(pop, &ppl->ckpt_lock);
 }
 #endif //UNIV_PMEMOBJ_PART_PL
 

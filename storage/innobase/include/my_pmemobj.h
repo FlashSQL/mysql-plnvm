@@ -479,7 +479,8 @@ struct __pmem_dpt {
  * */
 struct __pmem_page_part_log {
 	//we only use this lock to protect below values
-	PMEMrwlock		lock;
+	PMEMrwlock		ckpt_lock;
+	PMEMrwlock		recv_lock;
 	uint64_t	max_oldest_lsn;
 	uint64_t	min_oldest_lsn;
 	uint64_t	ckpt_lsn;
@@ -577,6 +578,8 @@ struct __pmem_page_log_hashed_line {
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
 	uint64_t n_blocks; //the current non-free blocks
 	uint64_t max_blocks; //the total log block in bucket
+	long long* bit_arr; //bit array to manage free slots
+	uint16_t n_bit_blocks; //number of block in bit_arr
 
 	/*Hash table*/
 	hash_table_t* addr_hash; //hash the log block in this line
@@ -641,6 +644,7 @@ struct __pmem_page_log_block {
 
 	bool			is_free; //flag
 	uint64_t		bid; //block id
+	uint32_t		id; //id on the line
 	uint64_t		key; //fold id
 
 	int32_t			count; //number of active tx
@@ -693,9 +697,24 @@ struct __pmem_recv_line {
 	mem_heap_t*	heap;	/*!< memory heap of log records and file addresses */
 	ulint		alloc_hash_size; //allocated heap size
 	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
-	ulint		n_addrs;/*!< number of not processed hashed file addresses in the hash table */
+	ulint			n_addrs;/*!< number of not processed pages in the hash table */
+	ulint			n_addrs_done;/*!< number of not processed pages in the hash table */
+	ulint			n_read_reqs; /*number of read request in phase 2 REDO */
+	ulint			n_read_done; /*number of read request in phase 2 REDO */
+
 	recv_dblwr_t	dblwr;
 	encryption_list_t* encryption_list;
+
+	/*statistic info*/
+	ulint		redo1_thread_id;
+	ulint		redo1_start_time;
+	ulint		redo1_end_time;
+	ulint		redo1_elapse_time;
+
+	ulint		redo2_thread_id;
+	ulint		redo2_start_time;
+	ulint		redo2_end_time;
+	ulint		redo2_elapse_time;
 };
 
 ////////////////     FLUSHER         /////////////////
@@ -1096,6 +1115,15 @@ pm_ppl_hash_add(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*		ppl,
 		PMEM_PAGE_LOG_HASHED_LINE* pline,
+		PMEM_PAGE_LOG_BLOCK*	plog_block,
+		uint32_t				idx
+		);
+
+plog_hash_t*
+pm_ppl_hash_check_and_add(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		uint64_t			key
 		);
 
@@ -1347,7 +1375,7 @@ uint64_t
 pm_ppl_recv_parse_log_rec(
 	PMEMobjpool*		pop,
 	PMEM_PAGE_PART_LOG*	ppl,
-	PMEM_RECV_LINE* recv_line,
+	PMEM_PAGE_LOG_HASHED_LINE* pline,
 	mlog_id_t*	type,
 	byte*		ptr,
 	byte*		end_ptr,
@@ -1493,6 +1521,32 @@ void
 pm_ppl_remove_fil_spaces();
 
 ////////////// UTILITY////////////
+
+//////////// BIT ARRAY /////////
+void
+pm_bit_set(
+		long long*	arr,
+		size_t		block_size,
+		uint64_t	bit_i);
+
+void
+pm_bit_clear(
+		long long*	arr,
+		size_t		block_size,
+		uint64_t	bit_i);
+
+int32_t 
+pm_search_first_free_slot(
+		long long*	bit_arr,
+		uint16_t	n_bit_blocks,
+		uint16_t	block_size);
+
+#define PM_BIT_SET(A, bs, i) ( A[i / bs] |= 1 << (i % bs) )
+
+#define PM_BIT_SET(A, bs, i) ( A[i / bs] &= ~(1 << (i % bs)) )
+
+/////////// END BIT ARRAY //////
+
 int64_t
 __update_tt_entry_on_write_log(
 		PMEMobjpool*		pop,

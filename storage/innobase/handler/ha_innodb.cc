@@ -19691,7 +19691,7 @@ static MYSQL_SYSVAR_DOUBLE(ppl_log_buf_flush_pct, srv_ppl_log_buf_flush_pct,
 static MYSQL_SYSVAR_DOUBLE(ppl_ckpt_threshold, srv_ppl_ckpt_threshold,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
   "Percentage of log file fill to trigger the checkpoint, default is 0.7",
-  NULL, NULL, 0.7, 0.1, 1, 0);
+  NULL, NULL, 0.7, 0.05, 1000, 0);
 
 static MYSQL_SYSVAR_ULONG(ppl_log_flusher_wake_threshold, srv_ppl_log_flusher_wake_threshold,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
