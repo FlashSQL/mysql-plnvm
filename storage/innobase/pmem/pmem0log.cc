@@ -178,12 +178,11 @@ pm_wrapper_page_log_alloc_or_open(
 	/* Part 2: DRAM structures*/	
 
 	// In any case (new alloc or reused) we need to allocate below objects
+	
+	/*init the per-line std::map */
+	pm_ppl_init_in_mem(pmw->pop, pmw->ppl);
 
-	// defined in my_pmemobj.h, implement in buf0flu.cc
-	pmw->ppl->ckpt_lsn = 0;	
-	pmw->ppl->max_oldest_lsn = 0;
-	pmw->ppl->min_oldest_lsn = ULONG_MAX;
-
+	/* defined in my_pmemobj.h, implement in buf0flu.cc */
 	pmw->ppl->flusher = pm_log_flusher_init(PMEM_N_LOG_FLUSH_THREADS, FLUSHER_LOG_BUF);
 
 	pmw->ppl->free_log_pool_event = os_event_create("pm_free_log_pool_event");
@@ -857,6 +856,33 @@ void __realloc_TT_entry(
 	}
 }
 
+/*
+ * Init in-mem data structures and variables 
+ * Used for either new PPL or reused
+ * Called from pm_wrapper_page_log_alloc_or_open()
+ * */
+void 
+pm_ppl_init_in_mem(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl)
+{
+	uint64_t n, i;
+	PMEM_PAGE_LOG_HASHED_LINE* pline;
+
+	ppl->ckpt_lsn = 0;	
+	ppl->max_oldest_lsn = 0;
+	ppl->min_oldest_lsn = ULONG_MAX;
+
+	n = ppl->n_buckets;	
+	/*per-line in-mem data structures*/
+	for (i = 0; i < n; i++){
+		pline = D_RW(D_RW(ppl->buckets)[i]);
+
+		/*the map*/
+		pline->offset_map = new std::map<uint64_t, uint32_t>();
+	}
+}
+
 void 
 pm_page_part_log_bucket_init(
 		PMEMobjpool*			pop,
@@ -1177,24 +1203,27 @@ pm_ppl_hash_add(
 }
 
 /*
- * Add key to hashtable
+ * Add key to hashtable if it is not in
  * The caller reponse for holding the pline->lock
+ * @param[in] pop
+ * @param[in] ppl
+ * @param[in] pline
+ * @param[in] key
+ * @return pointer to the item in hashtable
  * */
 plog_hash_t*
 pm_ppl_hash_check_and_add(
-		PMEMobjpool*		pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		PMEM_PAGE_LOG_HASHED_LINE* pline,
-		uint64_t			key	)
+		PMEMobjpool*				pop,
+		PMEM_PAGE_PART_LOG*			ppl,
+		PMEM_PAGE_LOG_HASHED_LINE*	pline,
+		uint64_t					key	)
 {
-	
 	uint64_t i, k;
 	int64_t n_try;
 	int64_t i_bit;
 
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 	plog_hash_t* item;
-
 
 	item = pm_ppl_hash_get(pop, ppl, pline, key);
 
@@ -1541,12 +1570,12 @@ pm_ppl_write_rec(
 			byte*				log_src,
 			uint32_t			rec_size)
 {
-	uint32_t n, n2;
-	PMEM_PAGE_LOG_HASHED_LINE* pline;
-	PMEM_PAGE_LOG_FREE_POOL* pfreepool;
-	PMEM_PAGE_LOG_BUF* plogbuf;
-	PMEM_PAGE_LOG_BLOCK*	plog_block;
-	plog_hash_t* item;
+	uint32_t					n, n2;
+	PMEM_PAGE_LOG_HASHED_LINE*	pline;
+	PMEM_PAGE_LOG_FREE_POOL*	pfreepool;
+	PMEM_PAGE_LOG_BUF*			plogbuf;
+	PMEM_PAGE_LOG_BLOCK*		plog_block;
+	plog_hash_t*				item;
 
 	ulint hashed;
 	ulint hashed2;
@@ -1575,11 +1604,6 @@ pm_ppl_write_rec(
 	//n2 = n - 1;
 
 	PMEM_LOG_HASH_KEY(hashed, key, n);
-	//if (space == 0){
-	//	hashed = n - 1;
-	//} else {
-	//	PMEM_LOG_HASH_KEY(hashed, key, n2);
-	//}
 
 	assert(hashed < n);
 
@@ -1664,6 +1688,10 @@ get_free_buf:
 			if (pline->oldest_block_off == UINT32_MAX) {
 				pline->oldest_block_off = item->block_off;
 			}
+			//test
+			/*insert the pair (offset, bid) into the set*/
+			write_off = plog_block->start_diskaddr + plog_block->start_off;
+			pline->offset_map->insert( std::make_pair(write_off, item->block_off));
 
 		}
 		plog_block->lastLSN = rec_lsn;
@@ -1723,6 +1751,10 @@ get_free_buf:
 			if (pline->oldest_block_off == UINT32_MAX) {
 				pline->oldest_block_off = item->block_off;
 			}
+			//test
+			/*insert the pair (offset, bid) into the set*/
+			write_off = plog_block->start_diskaddr + plog_block->start_off;
+			pline->offset_map->insert( std::make_pair(write_off, item->block_off));
 		}
 
 		plog_block->lastLSN = rec_lsn;
@@ -1742,7 +1774,7 @@ get_free_buf:
 		/*IMPORTANT: always update offset after updating plog_block*/
 		plogbuf->cur_off += rec_size;
 
-		// Call checkpoint (in necessary)
+		/* compute ckpt_lsn for this line (in necessary) */
 		if (!pline->is_req_checkpoint){
 			pm_ppl_check_for_ckpt(pop, ppl, pline, plogbuf, rec_lsn);
 		}
@@ -1793,11 +1825,12 @@ pm_ppl_check_for_ckpt(
 	cur_off = pline->diskaddr + plogbuf->cur_off;
 	age = cur_off - oldest_off;
 	
-	//we only set ckpt_lsn if it has not set yet
+	/* we only set ckpt_lsn if it has not set yet */
 	if ( age > PMEM_CKPT_MAX_OFFSET) {
 
 		pline->is_req_checkpoint = true;	
-		//now compute the checkpoint lsn for this pline 
+
+		/*now compute the checkpoint lsn for this pline */
 		oldest_lsn = plog_block_oldest->firstLSN;
 		uint64_t delta = (uint64_t) ((cur_lsn - oldest_lsn) * 1.0 *  PMEM_CKPT_THRESHOLD); 
 
@@ -3277,6 +3310,9 @@ pm_ppl_flush_page(
 
 	int64_t free_idx;
 	int64_t n_try;
+	
+	uint64_t write_off;
+	uint64_t min_off;
 
 	plog_hash_t* item;
 
@@ -3323,7 +3359,10 @@ pm_ppl_flush_page(
 		pmemobj_rwlock_wrlock(pop, &pline->lock);
 
 		pmemobj_rwlock_wrlock(pop, &plog_block->lock);
-		
+
+		/*save the write_off before reseting*/	
+		write_off = plog_block->start_diskaddr + plog_block->start_off;
+
 		if (USE_BIT_ARRAY) {
 			pm_bit_clear(pline->bit_arr, sizeof(long long), plog_block->id);
 		}
@@ -3331,10 +3370,47 @@ pm_ppl_flush_page(
 
 		pmemobj_rwlock_unlock(pop, &plog_block->lock);
 
-		
+		/*remove item from map*/	
+
+		std::map<uint64_t, uint32_t>::iterator it;
+		it = pline->offset_map->find(write_off);
+
+		if (it != pline->offset_map->end()){
+			pline->offset_map->erase(it);
+		}
+		else {
+			/*write_off is not found, logical error*/
+			assert(0);
+		}
+
 		/*if the removed block is the oldest, update the new one	*/
 		if (item->block_off == pline->oldest_block_off){
-			pm_ppl_update_oldest(pop, ppl, pline);
+			/*Method 1: scan in the array (slow)*/
+			//pm_ppl_update_oldest(pop, ppl, pline);
+
+			/*Method 2: use std::map */
+			min_off = ULONG_MAX;
+			if (pline->offset_map->size() > 0){
+				/* get the next min offset*/
+				it = pline->offset_map->begin();
+
+				min_off = it->second;
+				PMEM_PAGE_LOG_BLOCK* pmin_log_block;
+				pmin_log_block = D_RW(D_RW(pline->arr)[min_off]);
+				/*the second smallest must larger than the smallest*/
+				assert(pmin_log_block->start_diskaddr + pmin_log_block->start_off > write_off);
+
+				if (pline->is_req_checkpoint){
+					if (pmin_log_block->firstLSN > pline->ckpt_lsn){
+						pline->is_req_checkpoint = false;
+					}
+				}
+			} else {
+				pline->is_req_checkpoint = false;
+			}
+
+			pline->oldest_block_off = min_off;	
+
 		}
 
 		HASH_DELETE(plog_hash_t, addr_hash, pline->addr_hash, key, item);
@@ -3345,62 +3421,6 @@ pm_ppl_flush_page(
 		//		space, page_no, pageLSN, pline->hashed_id, pline->oldest_block_off);
 	}	
 	
-	return;
-////////////////////////////////////////////////////
-	//find the log block by hashing key O(k)
-	//n_try = k;
-	n_try = pline->max_blocks;
-
-	//PMEM_LOG_HASH_KEY(i, key, k);
-	PMEM_LOG_HASH_KEY(i, key, pline->max_blocks);
-	
-	//test	
-	//plog_block = D_RW(D_RW(pline->arr)[i]);
-	//__reset_page_log_block(plog_block);
-	//return;
-	//end test
-
-	while (n_try > 0){
-		//for (i = 0; i < k; i++){}
-		pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
-		plog_block = D_RW(D_RW(pline->arr)[i]);
-
-		if (!plog_block->is_free &&
-				plog_block->key == key){
-			// Case A: found
-			//(1) no need to check and reclaim the corresponding entries in TT
-
-			//update the pageLSN on flush page
-			plog_block->pageLSN = pageLSN;
-
-			//we no longer assert here, new log recs are written on page during its flushing time
-			//assert(plog_block->lastLSN <= pageLSN);
-	
-			/*Note 1: In InnoDB, changes of UNDO page has already captured in REDO log, we don't need to check the count variable to equal to reclaim. However, in other storage engine, count variable may needed
-			 * Note 2: Checkpoint in PPL is naturally done by this reclaim. By reclaiming a block of flush page, the low_watermark is increased.
-			 * */
-			// (2) Check to reclaim this log block
-			//printf("pm_ppl_flush_page (%zu, %zu) key %zu\n bid %zu count %zu", space, page_no, key, plog_block->bid, plog_block->count);
-			//if (plog_block->count <= 0){
-				if (plog_block->lastLSN <= pageLSN){
-					__reset_page_log_block(plog_block);
-				}
-			//}
-			pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
-			return;
-
-		}//end found the right log block
-
-		pmemobj_rwlock_unlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
-		n_try--;
-		i = (i + 1) % k;
-		//next log block
-	}//end find the log blcok by hashing key
-
-	//if you reach here, then this flushed page doesn't have any transaction modified 
-	//it may be the DBMS's metadata page
-	
-	//Now we skip this case
 	return;
 }
 

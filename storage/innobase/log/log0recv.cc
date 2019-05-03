@@ -981,7 +981,11 @@ recv_sys_init(
 	/* Set appropriate value of recv_n_pool_free_frames. */
 	if (buf_pool_get_curr_size() >= (10 * 1024 * 1024)) {
 		/* Buffer pool of size greater than 10 MB. */
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		recv_n_pool_free_frames = 1024;
+#else //original
 		recv_n_pool_free_frames = 512;
+#endif //UNIV_PMEMOBJ_PART_PL
 	}
 
 	recv_sys->buf = static_cast<byte*>(

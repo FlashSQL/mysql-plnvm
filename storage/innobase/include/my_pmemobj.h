@@ -599,6 +599,8 @@ struct __pmem_page_log_hashed_line {
 
 	/*Hash table*/
 	hash_table_t* addr_hash; //hash the log block in this line
+	
+	std::map<uint64_t, uint32_t>* offset_map;
 
 	//Alternative to recv_sys_t in InnoDB, allocate in DRAM when recovery
 	PMEM_RECV_LINE* recv_line;
@@ -613,6 +615,7 @@ struct __pmem_page_log_hashed_line {
 	uint64_t n_log_flush; //total 
 #endif
 };
+
 
 struct __pmem_page_log_free_pool {
 	PMEMrwlock			lock;
@@ -1111,6 +1114,10 @@ pm_page_part_log_bucket_init(
 		uint64_t			&log_buf_id,
 		uint64_t			&log_buf_offset
 		); 
+void 
+pm_ppl_init_in_mem(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl);
 void
 pm_page_part_log_hash_create(
 		PMEMobjpool*		pop,
