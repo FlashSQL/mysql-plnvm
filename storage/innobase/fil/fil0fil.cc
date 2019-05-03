@@ -1428,6 +1428,9 @@ fil_space_create(
 	}
 
 	mutex_exit(&fil_system->mutex);
+//#if defined (UNIV_PMEMOBJ_PART_PL)
+//		pm_ppl_add_space(gb_pmw->pop, gb_pmw->ppl, space->name, space->id);
+//#endif
 //tdnguyen test
 	printf("=====>>|| fil_space_create() space id %zu name %s\n", id, name);
 //end tdnguyen test
@@ -8260,6 +8263,36 @@ fil_names_clear(
 }
 #if defined (UNIV_PMEMOBJ_PART_PL)
 void
+pm_ppl_load_spaces(
+	PMEMobjpool*        pop,	
+	PMEM_PAGE_PART_LOG*         ppl
+		) 
+{
+	fil_space_t* space;
+	uint16_t i;
+	
+	PMEM_SPACE* pm_space;
+
+	mutex_enter(&fil_system->mutex);
+
+	for (i = 0; i < ppl->n_spaces; i++){
+		pm_space = D_RW(D_RW(ppl->space_arr)[i]);
+		if (pm_space != NULL){
+			space = fil_space_get_by_id(pm_space->space_no);
+			if (space == NULL){
+				mutex_exit(&fil_system->mutex);
+				/*space is not in the system, load it*/
+				fil_ibd_load(pm_space->space_no, pm_space->name, space);
+				printf("PMEM load space name %s id %zu \n", pm_space->name, pm_space->space_no);
+				mutex_enter(&fil_system->mutex);
+			}
+		}
+	}
+
+	mutex_exit(&fil_system->mutex);
+}
+
+void
 pm_ppl_fil_names_clear(
 	lsn_t	lsn	)
 {
@@ -8283,7 +8316,6 @@ pm_ppl_fil_names_clear(
 			UT_LIST_REMOVE(fil_system->named_spaces, space);
 		}
 		/* max_lsn is the last LSN where fil_names_dirty_and_write() was called. If we kept track of "min_lsn" (the first LSN where max_lsn turned nonzero), we could avoid the fil_names_write() call if min_lsn > lsn. */
-
 		fil_names_write(space, &mtr);
 
 		/*In PPL, we do not need mtr_checkpoint_size*/

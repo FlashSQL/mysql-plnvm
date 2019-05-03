@@ -4191,7 +4191,10 @@ pm_ppl_recv_init(
 			recv_line->alloc_hash_size = 2048;
 			recv_line->addr_hash = hash_create(2048);
 			recv_line->n_addrs = 0;
+			recv_line->n_read_reqs = 0;
 			recv_line->n_read_done = 0;
+			recv_line->n_cache_done = 0;
+			recv_line->n_skip_done = 0;
 
 			recv_line->apply_log_recs = FALSE;
 			recv_line->apply_batch_on = FALSE;
@@ -4534,6 +4537,9 @@ pm_ppl_analysis(
 		printf ("ANALYSIS: pline %zu need to REDO %zu bytes\n", pline->hashed_id, delta);
 #endif
     } //end for each line
+
+	//dict_check_tablespaces_and_store_max_id(true);	
+	//pm_ppl_load_spaces(pop, ppl);
 
 	printf ("ANALYSIS: min_delta %zu bytes max_delta %zu bytes total MB need to parse %zu\n", min_delta, max_delta, (total_delta * 1.0 / (1024*1024)));
 }
@@ -5769,7 +5775,15 @@ pm_ppl_recv_recover_page_func(
 #endif /* !UNIV_HOTBACKUP */
 
 	/*the state should be RECV_NOT_PRECESSED or RECV_BEING_READ_*/
-	//printf("START recover_page_func() recv_addr (%zu, %zu) ... \n", block->page.id.space(), block->page.id.page_no());
+	//if (recv_line->hashed_id == 0)	
+	//printf("START recover_page_func() recv_addr (%zu, %zu) recv_line %zu n_addrs %zu n_read_reqs %zu n_read_done %zu n_cache %zu n_skip %zu\n",
+	//		block->page.id.space(), block->page.id.page_no(), recv_line->hashed_id,
+	//	   	recv_line->n_addrs,
+	//	   	recv_line->n_read_reqs,
+	//	   	recv_line->n_read_done,
+	//	   	recv_line->n_cache_done,
+	//	   	recv_line->n_skip_done
+	//		);
 
 	recv_addr->state = RECV_BEING_PROCESSED;
 	pmemobj_rwlock_unlock(pop, &recv_line->lock);	
@@ -5954,12 +5968,22 @@ pm_ppl_recv_recover_page_func(
 	ut_a(recv_line->n_addrs);
 	recv_line->n_addrs--;
 
-	if (recv_line->hashed_id == 0)	
-	printf("END recover_page_func() recv_addr (%zu, %zu) recv_line %zu n_addrs %zu n_read_done %zu\n", block->page.id.space(), block->page.id.page_no(), recv_line->hashed_id, recv_line->n_addrs, recv_line->n_read_done);
+	//printf("END recover_page_func() recv_addr (%zu, %zu) recv_line %zu n_addrs %zu n_read_reqs %zu n_read_done %zu n_cache %zu n_skip %zu\n",
+	//		block->page.id.space(), block->page.id.page_no(), recv_line->hashed_id,
+	//	   	recv_line->n_addrs,
+	//	   	recv_line->n_read_reqs,
+	//	   	recv_line->n_read_done,
+	//	   	recv_line->n_cache_done,
+	//	   	recv_line->n_skip_done
+	//		);
 
 	//printf("recover_page_func() recv_line %zu n_addrs %zu\n", recv_line->hashed_id, recv_line->n_addrs);
 	/*the last IO thread handle post-processing*/
-	if (recv_line->n_addrs == 0){
+	//if (recv_line->n_addrs == 0 ||
+	//	recv_line->n_read_done == recv_line->n_read_reqs)
+
+	if (recv_line->n_addrs == 0)
+	{
 		recv_line->apply_log_recs = FALSE;
 		recv_line->apply_batch_on = FALSE;
 		//simulate recv_sys_empty_hash()
@@ -5981,10 +6005,16 @@ pm_ppl_recv_recover_page_func(
 
 /*
  * Simulate recv_read_in_area()
- * read a sequential of k pages from the page_id 
+ * read pages near the input page
+ * the read pages are 
+ * (1) in the hashtable of recv_line
+ * (2) has the same space_no with input page_id
+ * (3) near the input page (page_no +/- RECV_READ_AHEAD_AREA)
  * */
 ulint
 pm_ppl_recv_read_in_area(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
 	PMEM_RECV_LINE* recv_line,
 	const page_id_t&	page_id)
 {
@@ -6012,7 +6042,7 @@ pm_ppl_recv_read_in_area(
 		if (recv_addr && !buf_page_peek(cur_page_id)) {
 			if (recv_addr->state == RECV_NOT_PROCESSED) {
 				recv_addr->state = RECV_BEING_READ;
-
+				
 				page_nos[n] = page_no;
 
 				n++;
@@ -6020,7 +6050,7 @@ pm_ppl_recv_read_in_area(
 		}
 	}
 
-	buf_read_recv_pages(FALSE, page_id.space(), page_nos, n);
+	pm_ppl_buf_read_recv_pages(pop, ppl, recv_line, FALSE, page_id.space(), page_nos, n);
 
 	return(n);
 }
@@ -6467,12 +6497,17 @@ pm_ppl_recv_apply_hashed_line(
 	
 	recv_line->skip_zero_page = true;
 	
+	/*Note that building UNDO pages could cause n_read_done increase, we reset it here to match with n_read_reqs*/
+	recv_line->n_read_reqs = 0;
+	recv_line->n_read_done = 0;
+
+
 	cnt = 0;
 	cnt2 = 10;
 
 	n = recv_line->n_addrs;
 		
-	printf("Start apply log recs for recv_line %zu n_addrs %zu ... \n", recv_line->hashed_id, recv_line->n_addrs);
+	//printf("Start apply log recs for recv_line %zu n_addrs %zu ... \n", recv_line->hashed_id, recv_line->n_addrs);
 	n_cells = hash_get_n_cells(recv_line->addr_hash);
 	
 	//for each recv_addr in the hashtable
@@ -6490,6 +6525,7 @@ pm_ppl_recv_apply_hashed_line(
 				ut_a(recv_line->n_addrs);
 				recv_addr->state = RECV_DISCARDED;
 				recv_line->n_addrs--;
+				recv_line->n_skip_done++;
 				pmemobj_rwlock_unlock(pop, &recv_line->lock);	
 				cnt++;
 				continue;
@@ -6499,6 +6535,7 @@ pm_ppl_recv_apply_hashed_line(
 				pmemobj_rwlock_wrlock(pop, &recv_line->lock);	
 				ut_a(recv_line->n_addrs);
 				recv_line->n_addrs--;
+				recv_line->n_skip_done++;
 				pmemobj_rwlock_unlock(pop, &recv_line->lock);	
 				cnt++;
 				continue;
@@ -6526,12 +6563,17 @@ pm_ppl_recv_apply_hashed_line(
 
 					pm_ppl_recv_recover_page_func(pop, ppl, pline, FALSE, block);
 
+					pmemobj_rwlock_wrlock(pop, &recv_line->lock);	
+					recv_line->n_cache_done++;
+					pmemobj_rwlock_unlock(pop, &recv_line->lock);	
+
+
 					mtr_commit(&mtr);
 				} else {
 					/* page is not cached, fetch it from disk and apply is done in IO thread -> pm_ppl_recv_recover_page_func */
 
 					/*read-ahead approach*/
-					pm_ppl_recv_read_in_area (recv_line, page_id);
+					pm_ppl_recv_read_in_area (pop, ppl, recv_line, page_id);
 					/*single read approach*/
 
 				//	recv_line->n_read_reqs++;
@@ -6562,22 +6604,22 @@ pm_ppl_recv_apply_hashed_line(
 		}
 
 	}//end outer for 
-	printf("End apply log recs for pline %zu \n", pline->hashed_id);
+	//printf("End apply log recs for pline %zu \n", pline->hashed_id);
 	/* SMALL OPTIMIZATION
 	 * This REDOER thread has not wait for recv_line->n_addrs == 0 to do post-processing anymore. 
 	 * The last IO thread response for post-processing
 	 * return now so that this thread could handle next line*/
 
 	/* Wait until all the pages have been processed */
-	while (recv_line->n_addrs != 0) {
-#if defined(UNIV_PMEMOBJ_PART_PL_DEBUG)
-		printf("recv_line %zu has n_addrs is %zu, wait until all the pages are done\n", recv_line->hashed_id, recv_line->n_addrs);
-#endif
-		/*why we wait here? 
-		 * we don't need to wait, the last IO thread that cause recv_line->n_addrs == 0 handle post-processing
-		 * */
-		os_thread_sleep(500000);
-	}
+//	while (recv_line->n_addrs != 0) {
+//#if defined(UNIV_PMEMOBJ_PART_PL_DEBUG)
+//		printf("recv_line %zu has n_addrs is %zu, wait until all the pages are done\n", recv_line->hashed_id, recv_line->n_addrs);
+//#endif
+//		/*why we wait here? 
+//		 * we don't need to wait, the last IO thread that cause recv_line->n_addrs == 0 handle post-processing
+//		 * */
+//		os_thread_sleep(500000);
+//	}
 
 //	if (!allow_ibuf) {
 //		//TODO: we don't implement this now

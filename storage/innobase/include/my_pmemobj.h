@@ -214,6 +214,10 @@ typedef struct __pmem_log_group PMEM_LOG_GROUP;
 
 struct __pmem_recv_line;
 typedef struct __pmem_recv_line PMEM_RECV_LINE;
+
+struct __pmem_space_t;
+typedef struct __pmem_space_t PMEM_SPACE;
+
 // End Per-Page Logging
 
 //////////////////////////////////////////////////
@@ -280,6 +284,10 @@ POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_TT_HASHED_LINE));
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TT_HASHED_LINE);
 POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_TT_ENTRY));
 POBJ_LAYOUT_TOID(my_pmemobj, PMEM_TT_ENTRY);
+
+POBJ_LAYOUT_TOID(my_pmemobj, PMEM_SPACE);
+POBJ_LAYOUT_TOID(my_pmemobj, TOID(PMEM_SPACE));
+
 // End Per-page logging
 //
 #endif // UNIV_PMEMOBJ_PL
@@ -486,6 +494,9 @@ struct __pmem_page_part_log {
 	uint64_t	ckpt_lsn;
 	/// end lock
 	
+	/*Space array, used to reconstruct space when recovery*/	
+	TOID_ARRAY(TOID(PMEM_SPACE)) space_arr;
+	uint16_t		n_spaces;
 	/*log buffer area*/
 
 	uint64_t			size; //the total size 
@@ -543,6 +554,11 @@ struct __pmem_page_part_log {
 	/*Debug*/
 	FILE*				deb_file;
 
+};
+
+struct __pmem_space_t {
+	char name[256];
+	uint32_t space_no;
 };
 
 struct plog_hash_t {
@@ -698,7 +714,8 @@ struct __pmem_recv_line {
 	ulint		alloc_hash_size; //allocated heap size
 	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
 	ulint			n_addrs;/*!< number of not processed pages in the hash table */
-	ulint			n_addrs_done;/*!< number of not processed pages in the hash table */
+	ulint			n_skip_done;/*!< number of not processed pages in the hash table */
+	ulint			n_cache_done;/*!< number of not processed pages in the hash table */
 	ulint			n_read_reqs; /*number of read request in phase 2 REDO */
 	ulint			n_read_done; /*number of read request in phase 2 REDO */
 
@@ -1317,6 +1334,20 @@ pm_ppl_checkpoint(
 			PMEMobjpool*				pop,
 			PMEM_PAGE_PART_LOG*			ppl
 			);
+
+void
+pm_ppl_load_spaces(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl);
+
+void
+pm_ppl_add_space(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		char* name,
+		uint32_t space_id
+		);
+
 void
 pm_ppl_fil_names_clear(
 		lsn_t lsn
@@ -1455,8 +1486,20 @@ pm_ppl_recv_recover_page_func(
 
 ulint
 pm_ppl_recv_read_in_area(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
 	PMEM_RECV_LINE* recv_line,
 	const page_id_t&	page_id);
+
+void
+pm_ppl_buf_read_recv_pages(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*	ppl,
+		PMEM_RECV_LINE* recv_line,
+		bool sync,
+		ulint space_id,
+		const ulint* page_nos,
+		ulint n_stored);
 
 void
 pm_ppl_recv_apply_hashed_log_recs(

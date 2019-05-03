@@ -2465,6 +2465,9 @@ files_checked:
 		start_create_undo_time = ut_time_us(NULL);
 #endif /* UNIV_TRACE_RECOVERY_TIME*/
 
+#if defined (UNIV_PMEMOBJ_PART_PL)
+		dict_check_tablespaces_and_store_max_id(true);	
+#endif
 		purge_queue = trx_sys_init_at_db_start();
 
 #if defined (UNIV_TRACE_RECOVERY_TIME)

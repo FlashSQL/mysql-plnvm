@@ -53,6 +53,9 @@ static uint64_t PMEM_LOG_REDOER_WAKE_THRESHOLD=30;
 static uint64_t PMEM_N_LOG_FLUSH_THREADS=32;
 static uint64_t PMEM_N_LOG_CATCH_THREADS=32;
 
+/*n spaces*/
+static uint64_t PMEM_N_SPACES=256;
+
 /*Log files*/
 //static uint64_t PMEM_LOG_FILE_SIZE=4*1024; //in 4-KB pages (16MB)
 static uint64_t PMEM_LOG_FILE_SIZE=16*1024; //in 4-KB pages (64MB)
@@ -379,6 +382,22 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 	ppl->log_file_size = PMEM_LOG_FILE_SIZE;
 
 	ppl->is_new = true;
+
+	/*space array*/
+	//POBJ_ALLOC(pop,
+	//		&ppl->space_arr,
+	//		TOID(PMEM_SPACE),
+	//		sizeof(TOID(PMEM_SPACE)) * PMEM_N_SPACES,
+	//		NULL,
+	//		NULL);
+	//ppl->n_spaces = 0;
+	//for (i = 0; i < PMEM_N_SPACES; i++) {
+	//	POBJ_ZNEW(pop,
+	//			&D_RW(ppl->space_arr)[i],
+	//			PMEM_SPACE);
+	//	PMEM_SPACE* space = D_RW(D_RW(ppl->space_arr)[i]);
+	//	space->space_no = UINT32_MAX;
+	//}
 
 	ppl->data = pm_pop_alloc_bytes(pop, align_size);
 	
@@ -1050,7 +1069,48 @@ pm_search_first_free_slot(
 }
 
 ///////////////////////////////////////////////
+//////////// InnoDB SPACE HANDLE //////////////////
 
+void
+pm_ppl_add_space(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl,
+		char* name,
+		uint32_t space_no
+		)
+{
+	uint16_t i;
+	PMEM_SPACE* pm_space;
+	
+	pmemobj_rwlock_wrlock(pop, &ppl->ckpt_lock);
+
+	for (i = 0; i < ppl->n_spaces; i++){
+		pm_space = D_RW(D_RW(ppl->space_arr)[i]);
+
+		if (pm_space->space_no == space_no ||
+				strstr(pm_space->name, name)){
+			/*exist space*/
+			pmemobj_rwlock_unlock(pop, &ppl->ckpt_lock);
+			return;
+		}
+	}
+	/*Add new*/
+	if (ppl->n_spaces == PMEM_N_SPACES){
+		pmemobj_rwlock_unlock(pop, &ppl->ckpt_lock);
+		printf("PMEM_ERROR: we reach the maximum number of spaces %zu!!! \n", PMEM_N_SPACES);
+		assert(0);
+	}
+
+	pm_space = D_RW(D_RW(ppl->space_arr)[i]);
+
+	pm_space->space_no = space_no;
+	strcpy(pm_space->name, name);
+
+	ppl->n_spaces++;
+	
+	printf("===> pm_ppl_add_space() name %s id %zu\n", name, space_no);
+	pmemobj_rwlock_unlock(pop, &ppl->ckpt_lock);
+}
 /////////////// HASH TABLE ///////////////////
 /* Init hash table for each line in PPL
  *Must called after pm_page_part_log_bucket_init
