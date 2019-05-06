@@ -4473,7 +4473,7 @@ pm_ppl_analysis(
 					//plog_block->state = PMEM_FREE_BLOCK;
 					continue;
 				}
-				//add block->key the per-line hashtable
+				/*add block->key into the per-line hashtable */
 				pm_ppl_hash_add(pop, ppl, pline, plog_block, j);
 
 				if(low_watermark > 

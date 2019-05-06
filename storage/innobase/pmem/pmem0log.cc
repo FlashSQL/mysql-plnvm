@@ -235,7 +235,9 @@ pm_ppl_reset_all(
 
 	//(1) Reset the log blocks
 	pm_page_part_log_bucket_reset(pop, ppl);
-	__reset_tt(pop, ppl);
+
+	/*we don't use TT in this implementation*/
+	//__reset_tt(pop, ppl);
 }
 
 /**/
@@ -444,7 +446,9 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 
 	ppl->pmem_alloc_size += ppl->pmem_page_log_free_pool_size;
 	
-	//(4) transaction table
+	/* (4) transaction table */
+	/* We don't use TT in this implementation*/
+	/*
 	__init_tt(
 			pop,
 		   	ppl,
@@ -453,7 +457,7 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 			PMEM_TT_MAX_DIRTY_PAGES_PER_TX);
 
 	ppl->pmem_alloc_size += ppl->pmem_tt_size;
-
+	*/
 	pmemobj_persist(pop, ppl, sizeof(*ppl));
 	return ppl;
 }
@@ -1835,6 +1839,7 @@ get_free_buf:
 		plogbuf->cur_off += rec_size;
 
 		if (!pline->is_req_checkpoint){
+			/*comment this line to disable checkpoint (for debugging)*/
 			pm_ppl_check_for_ckpt(pop, ppl, pline, plogbuf, rec_lsn);
 		}
 		/*early realease the general lock*/
@@ -3943,8 +3948,8 @@ pm_ppl_flush_page(
 		//plog_block->firstLSN may a little greater than bpage->oldest_modification, we don't assert here
 		//assert(plog_block->firstLSN == bpage->oldest_modification);
 
+		//pmemobj_rwlock_wrlock(pop, &pline->lock);
 		pmemobj_rwlock_wrlock(pop, &pline->meta_lock);
-
 		pmemobj_rwlock_wrlock(pop, &plog_block->lock);
 
 		/*save the write_off before reseting*/	
@@ -3999,10 +4004,10 @@ pm_ppl_flush_page(
 			pline->oldest_block_off = min_off;	
 
 		}
-
+		//pmemobj_rwlock_wrlock(pop, &pline->meta_lock);
 		HASH_DELETE(plog_hash_t, addr_hash, pline->addr_hash, key, item);
-
 		pmemobj_rwlock_unlock(pop, &pline->meta_lock);
+		//pmemobj_rwlock_unlock(pop, &pline->lock);
 
 		//printf("pm_ppl_flush space %zu page %zu pageLSN %zu pline %zu oldest_block_off %zu\n",
 		//		space, page_no, pageLSN, pline->hashed_id, pline->oldest_block_off);

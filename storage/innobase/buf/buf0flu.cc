@@ -4383,12 +4383,13 @@ DECLARE_THREAD(pm_log_redoer_worker)(
 	mutex_exit(&redoer->mutex);
 	
 	//thread_id = os_thread_pf(os_thread_get_curr_id());
-	lines_per_thread = redoer->size / (srv_ppl_n_redoer_threads - 1);
+	//lines_per_thread = redoer->size / (srv_ppl_n_redoer_threads - 1);
+	lines_per_thread = (redoer->size - 1) / srv_ppl_n_redoer_threads + 1;
 
 	//thread_id = syscall(SYS_gettid);
 	//idx = thread_id % srv_ppl_n_redoer_threads;
 
-	printf("Redoers thread %zu idx %zu created\n",thread_id, idx);
+	printf("Redoers thread %zu lines_per_thread %zu created \n",idx, lines_per_thread);
 
 	while (true) {
 		//worker thread wait until there is is_requested signal 
