@@ -571,11 +571,16 @@ struct plog_hash_t {
  * A hashed line has array of log blocks share the same hashed value and log buffer
  * */
 struct __pmem_page_log_hashed_line {
+	/*general lock protect data in PART 1 and PART 3*/
 	PMEMrwlock		lock;
 	
+	/*PART 1, writing log rec to logbuf*/
 	int hashed_id;
 	TOID(PMEM_PAGE_LOG_BUF)	logbuf;	//pointer to current log buffer (head)
 	TOID(PMEM_PAGE_LOG_BUF)	tail_logbuf;	//pointer to the oldest log buffer (tail)
+
+	os_event_t		log_flush_event;
+	bool			is_flushing;
 
 	uint64_t		diskaddr; //log file offset, update when flush log, reset when purging file
 	uint64_t		write_diskaddr; //diskaddr that log recs are durable write write_diskaddr < diskaddr
@@ -589,7 +594,9 @@ struct __pmem_page_log_hashed_line {
 	uint64_t		recv_diskaddr; //the diskaddr begin the recover, min of log blocks diskaddr
 	uint64_t		recv_off; //the offset begin the recover
 	uint64_t		recv_lsn; //min lsn of block's beginLSN in this line
-	/*end test */
+	
+	/*PART 2, metadata: log_block array, hashtable, std::map*/
+	PMEMrwlock		meta_lock;
 
 	TOID_ARRAY(TOID(PMEM_PAGE_LOG_BLOCK)) arr;
 	uint64_t n_blocks; //the current non-free blocks
@@ -602,6 +609,7 @@ struct __pmem_page_log_hashed_line {
 	
 	std::map<uint64_t, uint32_t>* offset_map;
 
+	/*PART 3: recovery*/
 	//Alternative to recv_sys_t in InnoDB, allocate in DRAM when recovery
 	PMEM_RECV_LINE* recv_line;
 	bool			is_redoing;
@@ -1118,6 +1126,11 @@ void
 pm_ppl_init_in_mem(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*		ppl);
+
+void 
+pm_ppl_free_in_mem(
+		PMEMobjpool*		pop,
+		PMEM_PAGE_PART_LOG*		ppl);
 void
 pm_page_part_log_hash_create(
 		PMEMobjpool*		pop,
@@ -1542,6 +1555,14 @@ pm_ppl_recv_apply_hashed_line(
 	ibool	allow_ibuf);
 
 void
+pm_ppl_buf_flush_recv_note_modification(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	buf_block_t*    block,
+	lsn_t       start_lsn,
+	lsn_t       end_lsn);
+
+void
 pm_ppl_check_input_rec(
 		byte*		    ptr,
 		byte*           end_ptr,
@@ -1575,18 +1596,21 @@ pm_ppl_remove_fil_spaces();
 //////////// BIT ARRAY /////////
 void
 pm_bit_set(
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		long long*	arr,
 		size_t		block_size,
 		uint64_t	bit_i);
 
 void
 pm_bit_clear(
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		long long*	arr,
 		size_t		block_size,
 		uint64_t	bit_i);
 
 int32_t 
 pm_search_first_free_slot(
+		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		long long*	bit_arr,
 		uint16_t	n_bit_blocks,
 		uint16_t	block_size);

@@ -3654,6 +3654,28 @@ buf_flush_request_force(
 	os_event_set(buf_flush_event);
 }
 #if defined (UNIV_PMEMOBJ_PART_PL)
+void
+pm_ppl_buf_flush_recv_note_modification(
+	PMEMobjpool*		pop,
+	PMEM_PAGE_PART_LOG*	ppl,
+	buf_block_t*    block,
+	lsn_t       start_lsn,
+	lsn_t       end_lsn) 
+{
+	buf_page_mutex_enter(block);
+
+	block->page.newest_modification = end_lsn;
+	if (!block->page.oldest_modification) {
+		buf_pool_t*	buf_pool = buf_pool_from_block(block);
+
+		buf_flush_insert_sorted_into_flush_list(
+			buf_pool, block, start_lsn);
+	} else {
+		ut_ad(block->page.oldest_modification <= start_lsn);
+	}
+
+	buf_page_mutex_exit(block);
+}
 /*
  *Called by pm_ppl_checkpoint()
  * */

@@ -82,7 +82,11 @@ this must be less than UNIV_PAGE_SIZE as it is stored in the buffer pool */
 #define RECV_DATA_BLOCK_SIZE	(MEM_MAX_ALLOC_IN_BUF - sizeof(recv_data_t))
 
 /** Read-ahead area in applying log records to file pages */
+#if defined (UNIV_PMEMOBJ_PART_PL)
+#define RECV_READ_AHEAD_AREA	16
+#else //original
 #define RECV_READ_AHEAD_AREA	32
+#endif //UNIV_PMEMOBJ_PART_PL
 
 /** The recovery system */
 recv_sys_t*	recv_sys = NULL;
@@ -5950,10 +5954,13 @@ pm_ppl_recv_recover_page_func(
 	if (modification_to_page) {
 		ut_a(block);
 
-		log_flush_order_mutex_enter();
-		//buf_flush_recv_note_modification(block, start_lsn, end_lsn);
-		buf_flush_recv_note_modification(block, start_lsn, start_lsn);
-		log_flush_order_mutex_exit();
+		//log_flush_order_mutex_enter();
+		//buf_flush_recv_note_modification(block, start_lsn, start_lsn);
+		//log_flush_order_mutex_exit();
+
+		/*the flush_order_mutex may has high contention, try to simulate buf_flush_recv_note_modification()*/
+		pm_ppl_buf_flush_recv_note_modification(
+				pop, ppl, block, start_lsn, start_lsn);
 	}
 
 	/* Make sure that committing mtr does not change the modification lsn values of page */
@@ -6309,9 +6316,7 @@ pm_ppl_recv_apply_hashed_log_recs(
 		recv_line->is_ibuf_avail = allow_ibuf;
         //Asign pline to a redoer thread
         redoer->hashed_line_arr[i] = pline;
-
     }
-	
 
     /*trigger REDOer threads phase 2. 
 	 * Call pm_ppl_recv_apply_hashed_line() */
@@ -6575,16 +6580,7 @@ pm_ppl_recv_apply_hashed_line(
 					mtr_commit(&mtr);
 				} else {
 					/* page is not cached, fetch it from disk and apply is done in IO thread -> pm_ppl_recv_recover_page_func */
-
-					/*read-ahead approach*/
 					pm_ppl_recv_read_in_area (pop, ppl, recv_line, page_id);
-					/*single read approach*/
-
-				//	recv_line->n_read_reqs++;
-
-				//	bool read_ok = buf_read_page(page_id, page_size);
-
-				//	assert(read_ok);
 				}
 			}
 			cnt++;
