@@ -5954,13 +5954,13 @@ pm_ppl_recv_recover_page_func(
 	if (modification_to_page) {
 		ut_a(block);
 
-		//log_flush_order_mutex_enter();
-		//buf_flush_recv_note_modification(block, start_lsn, start_lsn);
-		//log_flush_order_mutex_exit();
+		log_flush_order_mutex_enter();
+		buf_flush_recv_note_modification(block, start_lsn, start_lsn);
+		log_flush_order_mutex_exit();
 
 		/*the flush_order_mutex may has high contention, try to simulate buf_flush_recv_note_modification()*/
-		pm_ppl_buf_flush_recv_note_modification(
-				pop, ppl, block, start_lsn, start_lsn);
+		//pm_ppl_buf_flush_recv_note_modification(
+		//		pop, ppl, block, start_lsn, start_lsn);
 	}
 
 	/* Make sure that committing mtr does not change the modification lsn values of page */
