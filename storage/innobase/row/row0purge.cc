@@ -147,7 +147,7 @@ row_purge_remove_clust_if_poss_low(
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	if (node->trx != NULL){
 		mtr.pmemlog_set_trx_id(node->trx_id);
 
@@ -953,7 +953,7 @@ err_exit:
 				       node->heap);
 
 	trx = thr_get_trx(thr);
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	node->trx = trx;
 #endif
 

@@ -1683,7 +1683,7 @@ fsp_fill_free_list(
 				mtr_start(&ibuf_mtr);
 				ibuf_mtr.set_named_space(space);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 				//type 59 MLOG_INIT_FILE_PAGE2
 				trx_t* trx = mtr->pmemlog_get_parent_trx();
 				if (trx != NULL){

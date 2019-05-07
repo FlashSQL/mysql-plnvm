@@ -2149,7 +2149,7 @@ row_upd_sec_index_entry(
 
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	mtr.pmemlog_set_parent_trx(trx);
 	if (trx != NULL){
 		mtr.pmemlog_set_trx_id(trx->id);
@@ -2821,7 +2821,7 @@ row_upd_clust_step(
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	if (trx != NULL) {
 		mtr.pmemlog_set_parent_trx(trx);
 		mtr.pmemlog_set_trx_id(trx->id);
@@ -2887,7 +2887,7 @@ row_upd_clust_step(
 
 		mtr_commit(&mtr);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	if (trx != NULL) {
 		mtr.pmemlog_set_parent_trx(trx);
 		mtr.pmemlog_set_trx_id(trx->id);
@@ -2950,7 +2950,7 @@ row_upd_clust_step(
 		row_upd_eval_new_vals(node->update);
 	}
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	if (trx != NULL && mtr.pmemlog_get_parent_trx() == NULL) {
 		mtr.pmemlog_set_parent_trx(trx);
 		mtr.pmemlog_set_trx_id(trx->id);

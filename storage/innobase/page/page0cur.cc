@@ -1075,9 +1075,6 @@ page_cur_insert_rec_write_log(
 		mach_write_to_2(log_ptr, page_offset(cursor_rec));
 		log_ptr += 2;
 	} else {
-//#if defined (UNIV_PMEMOBJ_PART_PL)
-		//printf("==> TODO: check MTR_LOG_SHORT_INSERT in page_cur_insert_rec_write_log() \n");
-//#endif
 		log_ptr = mlog_open(mtr, 5 + 1 + 5 + 5 + MLOG_BUF_MARGIN);
 		if (!log_ptr) {
 			/* Logging in mtr is switched off during crash
@@ -1262,10 +1259,6 @@ page_cur_parse_insert_rec(
 		return(const_cast<byte*>(ptr + (end_seg_len >> 1)));
 	}
 
-//#if defined(UNIV_PMEMOBJ_PART_PL)
-//	//test skip the below code
-//	return(const_cast<byte*>(ptr + (end_seg_len >> 1)));
-//#endif
 
 	ut_ad(!!page_is_comp(page) == dict_table_is_comp(index->table));
 	ut_ad(!buf_block_get_page_zip(block) || page_is_comp(page));
@@ -2498,20 +2491,6 @@ page_copy_rec_list_end_to_created_page(
 	}
 #endif
 
-
-//#if defined (UNIV_PMEMOBJ_PART_PL)
-//	//debug
-//	else {
-//		printf("PMEM_ERROR log_ptr in page_copy_rec_list_end_to_created_page()  is NULL \n");
-//		assert(0);
-//	}
-//
-//	if (log_data_len == 0){
-//		printf("PMEM_ERROR log_data_len in page_copy_rec_list_end_to_created_page()  is ZERO \n");
-//		assert(0);
-//	}
-//#endif
-
 	if (page_is_comp(new_page)) {
 		rec_set_next_offs_new(insert_rec, PAGE_NEW_SUPREMUM);
 	} else {
@@ -2599,10 +2578,6 @@ page_cur_parse_delete_rec(
 	ptr += 2;
 
 	ut_a(offset <= UNIV_PAGE_SIZE);
-//#if defined (UNIV_PMEMOBJ_PART_PL)
-//	//test, skip parse
-//	return (ptr);
-//#endif
 	if (block) {
 		page_t*		page		= buf_block_get_frame(block);
 		mem_heap_t*	heap		= NULL;

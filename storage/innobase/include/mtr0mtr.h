@@ -177,22 +177,31 @@ struct mtr_t {
 	/** State variables of the mtr */
 	struct Impl {
 #if defined (UNIV_PMEMOBJ_PL)
+
+#if defined(UNIV_PMEMOBJ_USE_TT)
 		/* pointer to the parent transaction*/
 		trx_t* m_parent_trx;
 		uint64_t m_trx_id;// id of m_parent_trx, in some case we cannot achieve trx_t but trx_id
+#endif //UNIV_PMEMOBJ_USE_TT
+
 		/* array of space id and page id, length is m_n_log_recs*/
-		uint64_t* key_arr;
-		uint64_t* LSN_arr;
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
 		uint64_t* page_arr;
 		uint64_t* space_arr;
 		uint64_t* size_arr;
 		uint16_t* type_arr;
-
+#endif
+		uint64_t* LSN_arr;
+		uint64_t* key_arr;
 		uint16_t* off_arr; //offset of the previous log rec
 		uint16_t* len_off_arr; //offset from the size_arr[i] to the "len" location in mlog_write_initial_log_record_low
 
-		bool	is_undo_page = false; //redo log for UNDO page
-#endif
+		bool	is_undo_page; //redo log for UNDO page
+		//we use a normal dynamic buffer
+		byte*		buf;
+		uint32_t    cur_off; //curent offset in the log buf
+		uint32_t	max_buf_size; //max size (extendable)
+#endif //UNIV_PMEMOBJ_PL
 
 		/** memo stack for locks etc. */
 		mtr_buf_t	m_memo;
@@ -200,12 +209,6 @@ struct mtr_t {
 		/** mini-transaction log */
 		mtr_buf_t	m_log;
 
-#if defined (UNIV_PMEMOBJ_PL)
-		//we use a normal dynamic buffer
-		byte*		buf;
-		uint32_t    cur_off; //curent offset in the log buf
-		uint32_t	max_buf_size; //max size (extendable)
-#endif
 		/** true if mtr has made at least one buffer pool page dirty */
 		bool		m_made_dirty;
 
@@ -271,8 +274,7 @@ struct mtr_t {
 	@param read_only	true if read only mini-transaction */
 	void start(bool sync = true, bool read_only = false);
 
-#if defined (UNIV_PMEMOBJ_PL)
-	void pmem_check_mtrlog(mtr_t* mtr);
+#if defined (UNIV_PMEMOBJ_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 
 	trx_t* pmemlog_get_parent_trx()
 	{
@@ -663,6 +665,13 @@ struct mtr_t {
 	void set_cur_off(uint32_t val) {
 		m_impl.cur_off = val;
 	}
+	void add_off(uint16_t off){
+		m_impl.off_arr[m_impl.m_n_log_recs] = off;
+	}
+	uint16_t get_off_at(uint32_t i){
+		assert(i < m_impl.m_n_log_recs);
+		return(m_impl.off_arr[i]);
+	}
 
 	uint32_t get_max_buf_size() {
 		return (m_impl.max_buf_size);
@@ -670,8 +679,6 @@ struct mtr_t {
 	void set_max_buf_size(uint32_t val) {
 		m_impl.max_buf_size = val;
 	}
-	
-
 	ib_uint32_t get_n_recs(){
 		return (m_impl.m_n_log_recs);
 	}
@@ -679,7 +686,7 @@ struct mtr_t {
 		m_impl.key_arr[m_impl.m_n_log_recs] = key;
 	}
 	uint64_t get_key_at(uint32_t i){
-		assert(i >= 0 && i < m_impl.m_n_log_recs);
+		assert(i < m_impl.m_n_log_recs);
 		return (m_impl.key_arr[i]);
 	}
 
@@ -687,19 +694,21 @@ struct mtr_t {
 		m_impl.LSN_arr[m_impl.m_n_log_recs] = LSN;
 	}
 	void add_LSN_at(uint64_t LSN, uint32_t i){
-		assert(i >= 0 && i < m_impl.m_n_log_recs);
+		assert(i < m_impl.m_n_log_recs);
 		m_impl.LSN_arr[i] = LSN;
 	}
 	uint64_t get_LSN_at(uint32_t i){
 		return m_impl.LSN_arr[i];
 	}
-
-	void add_space(uint64_t space_no){
-		m_impl.space_arr[m_impl.m_n_log_recs] = space_no;
+	void add_len_off(uint16_t len_off){
+		m_impl.len_off_arr[m_impl.m_n_log_recs] = len_off;
 	}
-	void add_page(uint64_t page_no){
-		m_impl.page_arr[m_impl.m_n_log_recs] = page_no;
+	uint16_t get_len_off_at(uint32_t i){
+		assert(i < m_impl.m_n_log_recs);
+		return(m_impl.len_off_arr[i]);
 	}
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
+	void pmem_check_mtrlog(mtr_t* mtr);
 
 	void add_size_at(uint64_t size, uint32_t i){
 		m_impl.size_arr[i] = size;
@@ -708,32 +717,22 @@ struct mtr_t {
 		assert(i >= 0 && i < m_impl.m_n_log_recs);
 		return (m_impl.size_arr[i]);
 	}
-
+	void add_space(uint64_t space_no){
+		m_impl.space_arr[m_impl.m_n_log_recs] = space_no;
+	}
+	void add_page(uint64_t page_no){
+		m_impl.page_arr[m_impl.m_n_log_recs] = page_no;
+	}
 	void add_type(uint16_t type){
 		m_impl.type_arr[m_impl.m_n_log_recs] = type;
 	}
-
-	void add_off(uint16_t off){
-		m_impl.off_arr[m_impl.m_n_log_recs] = off;
-	}
-	uint16_t get_off_at(uint32_t i){
-		assert(i >= 0 && i < m_impl.m_n_log_recs);
-		return(m_impl.off_arr[i]);
-	}
-
-	void add_len_off(uint16_t len_off){
-		m_impl.len_off_arr[m_impl.m_n_log_recs] = len_off;
-	}
-	uint16_t get_len_off_at(uint32_t i){
-		assert(i >= 0 && i < m_impl.m_n_log_recs);
-		return(m_impl.len_off_arr[i]);
-	}
-	
+#endif // define (UNIV_PMEMOBJ_VALID_MTR)
 	bool is_new_block(){
 		 return (get_log()->get_back()->used() == 0);
 	}
 
-#endif
+#endif // UNIV_PMEMOBJ_PL
+
 	/** Get the buffered redo log of this mini-transaction.
 	@return	redo log */
 	const mtr_buf_t* get_log() const

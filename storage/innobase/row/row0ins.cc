@@ -2477,7 +2477,7 @@ row_ins_clust_index_entry_low(
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	trx_t* trx = thr_get_trx(thr);
 	mtr.pmemlog_set_parent_trx(trx);
 	if (trx != NULL){
@@ -2913,7 +2913,7 @@ row_ins_sec_index_entry_low(
 	mtr_start(&mtr);
 	mtr.set_named_space(index->space);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	trx_t* trx = thr_get_trx(thr);
 	mtr.pmemlog_set_parent_trx(trx);
 	if (trx != NULL){

@@ -1289,7 +1289,7 @@ pm_ppl_get_log_block_by_key(
 		uint64_t			key);
 
 /// write log_buf --> full --> assign flusher worker --> handle finish
-static inline void
+void
 __pm_write_log_buf(
 			PMEMobjpool*				pop,
 			PMEM_PAGE_PART_LOG*			ppl,
@@ -1302,7 +1302,7 @@ __pm_write_log_buf(
 			PMEM_PAGE_LOG_BLOCK*		plog_block,
 			bool						is_first_write);
 
-static inline void
+void
 __pm_write_log_rec_low(
 			PMEMobjpool*			pop,
 			byte*					log_des,
@@ -1562,14 +1562,6 @@ pm_ppl_buf_flush_recv_note_modification(
 	lsn_t       start_lsn,
 	lsn_t       end_lsn);
 
-void
-pm_ppl_check_input_rec(
-		byte*		    ptr,
-		byte*           end_ptr,
-		mlog_id_t*      type,
-	    ulint*          space,
-		ulint*          page_no
-		);
 
 //// RESET after recovery
 void 
@@ -1617,7 +1609,7 @@ pm_search_first_free_slot(
 
 #define PM_BIT_SET(A, bs, i) ( A[i / bs] |= 1 << (i % bs) )
 
-#define PM_BIT_SET(A, bs, i) ( A[i / bs] &= ~(1 << (i % bs)) )
+#define PM_BIT_CLEAR(A, bs, i) ( A[i / bs] &= ~(1 << (i % bs)) )
 
 /////////// END BIT ARRAY //////
 
@@ -1694,7 +1686,7 @@ pm_create_or_open_part_log_files(
 		size_t  dirnamelen,
 		char*&  logfile0);
 
-int
+void
 pm_close_and_free_log_files(
 		PMEM_PAGE_PART_LOG*	ppl);
 

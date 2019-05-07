@@ -170,10 +170,10 @@ mlog_write_initial_log_record_low(
 	uint16_t	off0;	
 	uint16_t	off1;	
 	uint64_t	key;	
-	uint64_t	lsn;
+	//uint64_t	lsn;
 
 	ib_uint32_t n_recs;
-	uint32_t rec_size;
+	uint32_t	rec_size;
 	
 	n_recs = mtr->get_n_recs();
 
@@ -194,16 +194,17 @@ mlog_write_initial_log_record_low(
 
 		rec_size = off0 - prev_off ;
 		if (rec_size > UINT16_MAX){
-			printf("PMEM_ERROR: rec_size %zu is larger than UINT16MAX %zu\n", rec_size, UINT16_MAX);
+			printf("PMEM_ERROR: rec_size %u is larger than UINT16MAX %u\n", rec_size, UINT16_MAX);
 			assert(0);
 		}
 
 		mach_write_to_2(begin_log_ptr + prev_len_off, rec_size);
-		mtr->add_size_at(rec_size, n_recs - 1);
 
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
+		mtr->add_size_at(rec_size, n_recs - 1);
+#endif
 		//new in DAL (Direct Add Log), add the previous log rec to PPL
 		uint64_t prev_key = mtr->get_key_at(n_recs - 1);
-		//uint64_t rec_lsn = mtr->get_LSN_at(n_recs - 1);
 		uint64_t rec_lsn;
 
 		rec_lsn = mtr->add_rec_to_ppl(prev_key, begin_log_ptr + prev_off, rec_size);
@@ -234,14 +235,20 @@ mlog_write_initial_log_record_low(
 	//mach_write_to_8(log_ptr, lsn);
 	log_ptr += 8;
 
-	//add info 
-
 	//We compute the key as InnoDB 
 	key = (space_id << 20) + space_id + page_no;
 	mtr->add_key(key);
+
+	//add info 
+	
+	/*below code is used for validation (debug only)*/
+	
+
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
 	mtr->add_type(type);
 	mtr->add_space(space_id);
 	mtr->add_page(page_no);
+#endif
 	
 
 	mtr->added_rec();

@@ -551,7 +551,7 @@ mtr_write_log(
 	log->for_each_block(write_log);
 	log_close();
 }
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 uint64_t 
 mtr_t::pmemlog_get_trx_id() {
 	trx_t* trx;
@@ -595,16 +595,21 @@ mtr_t::start(bool sync, bool read_only)
 	m_impl.m_sys_space = NULL;
 	m_impl.m_flush_observer = NULL;
 #if defined (UNIV_PMEMOBJ_PL)
+
+#if defined(UNIV_PMEMOBJ_USE_TT)
 	m_impl.m_parent_trx = NULL;
 	m_impl.m_trx_id = 0;
+#endif //UNIV_PMEMOBJ_USE_TT
 	m_impl.key_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 	m_impl.LSN_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
+	m_impl.off_arr = (uint16_t*) calloc(512, sizeof(uint16_t));
+	m_impl.len_off_arr = (uint16_t*) calloc(512, sizeof(uint16_t));
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
 	m_impl.space_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 	m_impl.page_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 	m_impl.size_arr = (uint64_t*) calloc(512, sizeof(uint64_t));
 	m_impl.type_arr = (uint16_t*) calloc(512, sizeof(uint16_t));
-	m_impl.off_arr = (uint16_t*) calloc(512, sizeof(uint16_t));
-	m_impl.len_off_arr = (uint16_t*) calloc(512, sizeof(uint16_t));
+#endif //UNIV_PMEMOBJ_VALID_MTR
 	
 	//ulint max_init_size = 16384;	
 	//ulint max_init_size = 8192;	//debug OK
@@ -641,18 +646,23 @@ mtr_t::Command::release_resources()
 
 	m_impl->m_memo.erase();
 #if defined (UNIV_PMEMOBJ_PL)
+
+#if defined(UNIV_PMEMOBJ_USE_TT)
 	m_impl->m_parent_trx = NULL;
 	m_impl->m_trx_id = 0;
+#endif //UNIV_PMEMOBJ_USE_TT
 
 	free(m_impl->key_arr);
 	free(m_impl->LSN_arr);
+	free(m_impl->off_arr);
+	free(m_impl->len_off_arr);
+	free(m_impl->buf);
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
 	free(m_impl->space_arr);
 	free(m_impl->page_arr);
 	free(m_impl->size_arr);
 	free(m_impl->type_arr);
-	free(m_impl->off_arr);
-	free(m_impl->len_off_arr);
-	free(m_impl->buf);
+#endif //UNIV_PMEMOBJ_VALID_MTR
 #endif //UNIV_PMEMOBJ_PL
 
 	m_impl->m_state = MTR_STATE_COMMITTED;
@@ -1077,6 +1087,7 @@ the resources. */
 #if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
 #if defined (UNIV_PMEMOBJ_PART_PL)
 
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
 void
 mtr_t::pmem_check_mtrlog(mtr_t* mtr)
 {
@@ -1180,6 +1191,7 @@ mtr_t::pmem_check_mtrlog(mtr_t* mtr)
 	}//end while
 	
 }
+#endif //UNIV_PMEMOBJ_VALID_MTR
 /*
  * Directly add log rec to PPL
  * @param[in]: key - the fold value of space and page_no
@@ -1201,36 +1213,25 @@ mtr_t::Command::execute()
 	ulint start_time = ut_time_us(NULL);
 #endif
 
-	ulint			i;
 	ulint			len;
 	fil_space_t*	space;
 
-	mlog_id_t type;
-	mlog_id_t check_type;
-
 	byte* begin_ptr;
-	byte* ptr;
-	byte* temp_ptr;
-	byte* end_ptr;
 
 	uint16_t	n_recs;
 	uint16_t	prev_off;
 	uint16_t	prev_len_off;
 	uint16_t	rec_size;
-
 	uint64_t prev_key;
-
 	bool was_clean;
 
-	trx_t*			trx;
 	mtr_t*			mtr;
 
-	lsn_t		ret_start_lsn;
-	lsn_t		ret_end_lsn;
-
-	
 	mtr = m_impl->m_mtr;
+#if defined(UNIV_PMEMOBJ_USE_TT)
+	trx_t*			trx;
 	trx = m_impl->m_parent_trx;
+#endif
 	len	= mtr->get_cur_off();
 	n_recs	= m_impl->m_n_log_recs;
 	begin_ptr = mtr->get_buf();
@@ -1290,7 +1291,7 @@ mtr_t::Command::execute()
 	//we don't appned MLOG_MULTI_REC_END in PPL	
 	
 
-skip_enclose:
+//skip_enclose:
 	//in enclose, some new log recs may appended, update the n_recs
 	n_recs	= m_impl->m_n_log_recs;
 	len	= mtr->get_cur_off();
@@ -1306,8 +1307,10 @@ skip_enclose:
 	prev_len_off = mtr->get_len_off_at(n_recs - 1); 
 
 	mach_write_to_2(begin_ptr + prev_len_off, rec_size);
+
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
 	mtr->add_size_at(rec_size, n_recs - 1);
-	
+#endif	
 	//new in DAL
 	//m_end_lsn = mtr->get_LSN_at(n_recs - 1);
 
@@ -1324,66 +1327,10 @@ skip_enclose:
 		}
 	}
 	// end new DAL
-	
+#if defined (UNIV_PMEMOBJ_VALID_MTR)	
 	//(3) Check, remove this section in run mode
-	//mtr->pmem_check_mtrlog(mtr);
-		
-	//(4) Add log recs to PPL log
-	
-	//old method
-//	m_end_lsn = m_start_lsn = ut_time_us(NULL);
-//	if (len > 0 && 0)
-//	//if (len > 0)
-//	{
-//		if (trx != NULL){
-//			//printf("=====\n[IO] START call pm_ppl_write tid %zu\n", trx->id);
-//			trx->pm_log_block_id = pm_ppl_write(
-//					gb_pmw->pop,
-//					gb_pmw->ppl,
-//					trx->id,
-//					begin_ptr,
-//					len,
-//					n_recs,
-//					m_impl->key_arr,
-//					m_impl->size_arr,
-//					&ret_start_lsn,
-//					&ret_end_lsn,
-//					trx->pm_log_block_id);
-//			//printf("[IO] END call pm_ppl_write tid %zu\n", trx->id);
-//		}
-//		else{
-//			//printf("====\n[IO] START call pm_ppl_write tid NULL n_recs %zu\n", n_recs);
-//			//assert(type > 0 && type <= 8);
-//			//all type <= 8 is treat as trx_id 0
-//			uint64_t dummy_eid;
-//			dummy_eid = pm_ppl_create_entry_id(PMEM_EID_UNDEFINED, 0, 0);
-//
-//			pm_ppl_write(
-//					gb_pmw->pop,
-//					gb_pmw->ppl,
-//					0,
-//					begin_ptr,
-//					len,
-//					n_recs,
-//					m_impl->key_arr,
-//					m_impl->size_arr,
-//					&ret_start_lsn,
-//					&ret_end_lsn,
-//					dummy_eid);
-//			//printf("[IO] END call pm_ppl_write tid NULL n_recs %zu\n", n_recs);
-//		}
-//
-//		//Update m_start_lsn and m_end_lsn. They are required for update pageLSN in release_block()
-//		m_start_lsn = ret_start_lsn;
-//		m_end_lsn = ret_end_lsn;
-//		ut_ad(m_start_lsn <= m_end_lsn);
-//		
-//		//update space->max_lsn
-//		if (was_clean){
-//			space->max_lsn = m_end_lsn;
-//		}
-//	
-//	}//end if(len > 0)
+	mtr->pmem_check_mtrlog(mtr);
+#endif		
 skip_prepare:
 	//(4) add the block to the flush list 
 	if (m_impl->m_made_dirty) {

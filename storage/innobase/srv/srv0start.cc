@@ -1515,6 +1515,13 @@ innobase_start_or_create_for_mysql(void)
 		ulint t1, t2, t3;
 		ulint other_time;
 		ulint total_recv_time;		
+
+		start_recv_time = end_recv_time = 
+			start_redo1_time = end_redo1_time =
+			start_create_undo_time = end_create_undo_time =
+			start_redo2_time = end_redo2_time =
+			start_rollback_time = end_rollback_time =
+			t1 = t2 = t3 = 0;
 #endif /* UNIV_TRACE_RECOVERY_TIME*/
 
 	/* Reset the start state. */
@@ -1981,24 +1988,7 @@ innobase_start_or_create_for_mysql(void)
 #endif /* UNIV_PMEMOBJ_BUF */
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-	//uint64_t n_buckets = 32;	
-	//uint64_t n_blocks_per_bucket = 8192;
-	//uint64_t block_size = 1024;
-	//uint64_t log_buf_size = 64 * 4 * 1024; // n 4-KB
-	//uint64_t n_free_bufs = n_buckets / 4;
-	//uint64_t n_log_bufs = n_buckets + n_free_bufs;
-	//uint64_t n_flush_threads = 32;
-	//uint64_t n_log_files_per_bucket = 1;
-
-#if defined (UNIV_PMEMOBJ_TX_LOG)
-	pm_wrapper_tx_log_alloc_or_open(gb_pmw,
-								 n_buckets,
-								 n_blocks_per_bucket,
-								 block_size);
-#else //per-page logging
 	pm_wrapper_page_log_alloc_or_open(gb_pmw);
-
-#endif //UNIV_PMEMOBJ_TX_LOG
 #endif // UNIV_PMEMOBJ_PL
 
 	recv_sys_create();
@@ -2052,7 +2042,7 @@ innobase_start_or_create_for_mysql(void)
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	//os_thread_create(pm_flusher_coordinator, NULL, NULL);
 
-	printf("PMEM_INFO: ========>   create %d flusher worker threads for PART-LOG\n", srv_ppl_n_log_flush_threads);
+	printf("PMEM_INFO: ========>   create %zu flusher worker threads for PART-LOG\n", srv_ppl_n_log_flush_threads);
 	for (i = 0; i < srv_ppl_n_log_flush_threads; ++i) {
 		os_thread_create(pm_log_flusher_worker, NULL, NULL);
 	}
@@ -3310,7 +3300,6 @@ pm_create_or_open_part_log_files(
 	uint64_t n_log_files = ppl->n_log_files_per_bucket * ppl->n_buckets;
 
 	uint64_t n_log_files_found = n_log_files;
-	bool success;
 
 	
 	ppl->node_arr = static_cast<fil_node_t**> (calloc(ppl->n_buckets, sizeof(fil_node_t*)));
@@ -3330,7 +3319,7 @@ pm_create_or_open_part_log_files(
 
 		for (i = 0; i < n_log_files; i++) {
 			sprintf(logfilename + dirnamelen,
-					"pl_logfile%u", i);
+					"pl_logfile%zu", i);
 			//sprintf(logfilename + dirnamelen,
 			//		"pl_logfile%u", i ? i : INIT_LOG_FILE0);
 
@@ -3352,7 +3341,7 @@ pm_create_or_open_part_log_files(
 		for (i = 0; i < n_log_files; i++) {
 			os_offset_t	size;
 			sprintf(logfilename + dirnamelen,
-				"pl_logfile%u", i);
+				"pl_logfile%zu", i);
 			err = open_log_file(&ppl->log_files[i], logfilename, &size);
 			//err = open_log_file(&files[i], logfilename, &size);
 			if (err != DB_SUCCESS) {
@@ -3397,7 +3386,7 @@ pm_create_or_open_part_log_files(
 	// (3) Create the fil_nodes	
 	
 	for (i = 0; i < n_log_files_found; i++) {
-		sprintf(logfilename + dirnamelen, "pl_logfile%u", i);
+		sprintf(logfilename + dirnamelen, "pl_logfile%zu", i);
 		fil_node_t* node;
 		node = pm_log_fil_node_create(
 				logfilename,
@@ -3489,12 +3478,12 @@ pm_create_log_file(
 /*
  * Close log files and release resource when the server close
  * */
-int
+void
 pm_close_and_free_log_files(
 		PMEM_PAGE_PART_LOG*	ppl) 
 {
 	bool ret;
-	uint64_t i, n, k;
+	uint64_t i, n;
 	fil_node_t* node;
 
 	n = ppl->n_buckets;

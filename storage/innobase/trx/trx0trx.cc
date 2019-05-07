@@ -129,7 +129,7 @@ trx_init(
 	status is required for asynchronous handling. */
 
 	trx->id = 0;
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	trx->pm_log_block_id = 0;
 	//trx->pm_log_block_id = -1;
 #endif
@@ -2207,7 +2207,7 @@ trx_commit(
 		mtr = NULL;
 	}
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	uint64_t tid = 0;
 	uint64_t pm_log_block_id = 0;
 	//trx_commit_low() will clear trx, we save necessary info here
@@ -2223,7 +2223,7 @@ trx_commit(
 
 	trx_commit_low(trx, mtr);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 		//if (trx->pm_log_block_id != -1)
 		if (pm_log_block_id != 0)
 		{

@@ -5556,6 +5556,8 @@ pm_ppl_recv_init_crash_recovery_spaces(
 
 	ib::info() << "Database was not shutdown normally!";
 	ib::info() << "Starting crash recovery.";
+	
+	n = ppl->n_buckets;
 
 	for (recv_spaces_t::iterator i = recv_spaces.begin();
 	     i != recv_spaces.end(); i++) {
@@ -6359,7 +6361,6 @@ pm_ppl_recv_check_hashed_line(
 	mtr_t	mtr;
 
 	PMEM_PAGE_LOG_BLOCK* plog_block;
-	ulint key;
 
 	ulint pass_cnt;
 	ulint zero_cnt;
@@ -6403,7 +6404,6 @@ pm_ppl_recv_check_hashed_line(
 			ut_ad(found);
 			//(2) Check page in recv_addr is valid
 			buf_block_t*	block;
-			dberr_t			err;
 			byte*			page;
 			bool read_ok;
 
@@ -6486,7 +6486,6 @@ pm_ppl_recv_apply_hashed_line(
 	ulint	i;
 	ulint	cnt, cnt2;
 	ulint	n, n_cells;
-	ibool	has_printed	= FALSE;
 	mtr_t	mtr;
 
 	
@@ -6634,21 +6633,6 @@ pm_ppl_recv_apply_hashed_line(
 }
 
 
-/*
- *Test the header of a log record (from ptr to end_ptr)
- * */
-void
-pm_ppl_check_input_rec(
-		byte*		    ptr,
-		byte*           end_ptr,
-		mlog_id_t*      type,
-	    ulint*          space,
-		ulint*          page_no
-		)
-{
-   byte* new_ptr = mlog_parse_initial_log_record(ptr, end_ptr, type, space, page_no);
-
-}
 #endif //UNIV_PMEMOBJ_PART_PL
 
 /** Start recovering from a redo log checkpoint.

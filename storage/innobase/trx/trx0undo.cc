@@ -1827,7 +1827,7 @@ trx_undo_assign_undo(
 
 	mtr_start(&mtr);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL) && defined(UNIV_PMEMOBJ_USE_TT)
 	//Note that update RSEG page, update UNDO page, and update user data page  use different mtr
 	//we must update the transaction for mtr
 	if (trx != NULL){

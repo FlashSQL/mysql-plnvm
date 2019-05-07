@@ -27,7 +27,7 @@
 #if defined (UNIV_PMEMOBJ_PL)
 
 #if defined (UNIV_PMEMOBJ_PL)
-static FILE* debug_ptxl_file = fopen("pll_debug.txt","a");
+//static FILE* debug_ptxl_file = fopen("pll_debug.txt","a");
 static FILE* lock_overhead_file = fopen("ppl_lock_overhead.txt","a");
 /*Part Log*/
 static uint64_t PMEM_N_LOG_BUCKETS;
@@ -47,11 +47,9 @@ static uint64_t PMEM_TT_MAX_DIRTY_PAGES_PER_TX;
 
 /*Flush Log*/
 static double PMEM_LOG_BUF_FLUSH_PCT;
-static uint64_t PMEM_LOG_CATCHER_WAKE_THRESHOLD=1;
 static uint64_t PMEM_LOG_FLUSHER_WAKE_THRESHOLD=5;
 static uint64_t PMEM_LOG_REDOER_WAKE_THRESHOLD=30;
 static uint64_t PMEM_N_LOG_FLUSH_THREADS=32;
-static uint64_t PMEM_N_LOG_CATCH_THREADS=32;
 
 /*n spaces*/
 static uint64_t PMEM_N_SPACES=256;
@@ -1624,7 +1622,7 @@ pm_ppl_write_rec(
 			byte*				log_src,
 			uint32_t			rec_size)
 {
-	uint32_t					n, n2;
+	uint32_t					n;
 	PMEM_PAGE_LOG_HASHED_LINE*	pline;
 	PMEM_PAGE_LOG_FREE_POOL*	pfreepool;
 
@@ -1635,7 +1633,6 @@ pm_ppl_write_rec(
 	plog_hash_t*				item;
 
 	ulint hashed;
-	ulint hashed2;
 	byte* log_des;
 	byte* temp;
 	
@@ -1659,7 +1656,6 @@ pm_ppl_write_rec(
 	
 	/*The last bucket is reserved for space 0*/	
 	n = ppl->n_buckets;
-	//n2 = n - 1;
 
 	PMEM_LOG_HASH_KEY(hashed, key, n);
 
@@ -1898,7 +1894,7 @@ pm_ppl_write_rec_v2(
 			byte*				log_src,
 			uint32_t			rec_size)
 {
-	uint32_t					n, n2;
+	uint32_t					n;
 	PMEM_PAGE_LOG_HASHED_LINE*	pline;
 	PMEM_PAGE_LOG_FREE_POOL*	pfreepool;
 	PMEM_PAGE_LOG_BUF*			plogbuf;
@@ -1906,7 +1902,6 @@ pm_ppl_write_rec_v2(
 	plog_hash_t*				item;
 
 	ulint hashed;
-	ulint hashed2;
 	byte* log_des;
 	byte* temp;
 	
@@ -1930,7 +1925,6 @@ pm_ppl_write_rec_v2(
 	
 	/*The last bucket is reserved for space 0*/	
 	n = ppl->n_buckets;
-	//n2 = n - 1;
 
 	PMEM_LOG_HASH_KEY(hashed, key, n);
 
@@ -2150,7 +2144,7 @@ pm_ppl_write_rec_old(
 			byte*				log_src,
 			uint32_t			rec_size)
 {
-	uint32_t					n, n2;
+	uint32_t					n;
 	PMEM_PAGE_LOG_HASHED_LINE*	pline;
 	PMEM_PAGE_LOG_FREE_POOL*	pfreepool;
 	PMEM_PAGE_LOG_BUF*			plogbuf;
@@ -2158,7 +2152,6 @@ pm_ppl_write_rec_old(
 	plog_hash_t*				item;
 
 	ulint hashed;
-	ulint hashed2;
 	byte* log_des;
 	byte* temp;
 	
@@ -2181,7 +2174,6 @@ pm_ppl_write_rec_old(
 	
 	/*The last bucket is reserved for space 0*/	
 	n = ppl->n_buckets;
-	//n2 = n - 1;
 
 	PMEM_LOG_HASH_KEY(hashed, key, n);
 
@@ -2770,7 +2762,7 @@ void __handle_pm_ppl_write_by_entry(
 	uint64_t cur_off;
 	uint64_t eid;
 	
-	uint64_t LSN;	// log record LSN
+	uint64_t LSN = 0;	// log record LSN
 	byte* end_ptr;
 
 	uint64_t block_len;
@@ -3119,7 +3111,7 @@ retry:
  @param[in] plog_block: pointer to the log block
  @param[in] is_first_write: true if it is the first write on the log_block
  * */
-static inline void
+void
 __pm_write_log_buf(
 			PMEMobjpool*				pop,
 			PMEM_PAGE_PART_LOG*			ppl,
@@ -3598,7 +3590,7 @@ assign_worker:
  * @param[in]: rec_size data size
  *
  * */
-static inline void
+void
 __pm_write_log_rec_low(
 			PMEMobjpool*			pop,
 			byte*					log_des,
@@ -3898,10 +3890,7 @@ pm_ppl_flush_page(
 {
 
 	ulint hashed;
-	uint32_t n, n2, k, i, j;
-
-	int64_t free_idx;
-	int64_t n_try;
+	uint32_t n;
 	
 	uint64_t write_off;
 	uint64_t min_off;
@@ -3911,31 +3900,21 @@ pm_ppl_flush_page(
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
 
-	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 
 	PMEM_TT* ptt = D_RW(ppl->tt);
 
 	n = ppl->n_buckets;
-	//n2 = n - 1;
-	k = ppl->n_blocks_per_bucket;
 	
 	//(1) Start from the per-page log block
 	
 	PMEM_LOG_HASH_KEY(hashed, key, n);
-	///*The last bucket is reserved for space 0*/	
-	//if (space == 0) {
-	//	hashed = n - 1;
-	//} else {
-	//	PMEM_LOG_HASH_KEY(hashed, key, n2);
-	//}
 
 	assert (hashed < n);
 
 	TOID_ASSIGN(line, (D_RW(ppl->buckets)[hashed]).oid);
 	pline = D_RW(line);
 	assert(pline);
-	//assert(pline->n_blocks == k);
 
 	//new implement using hashtable
 	item = pm_ppl_hash_get(pop, ppl, pline, key);
@@ -4008,9 +3987,6 @@ pm_ppl_flush_page(
 		HASH_DELETE(plog_hash_t, addr_hash, pline->addr_hash, key, item);
 		pmemobj_rwlock_unlock(pop, &pline->meta_lock);
 		//pmemobj_rwlock_unlock(pop, &pline->lock);
-
-		//printf("pm_ppl_flush space %zu page %zu pageLSN %zu pline %zu oldest_block_off %zu\n",
-		//		space, page_no, pageLSN, pline->hashed_id, pline->oldest_block_off);
 	}	
 	
 	return;
@@ -4172,7 +4148,7 @@ void
 __print_lock_overhead(FILE* f,
 		PMEM_PAGE_PART_LOG* ppl){
 	
-	uint32_t n, k, i, j;
+	uint32_t n, i;
 	uint64_t max_log_write_lock_wait_time = 0;
 	uint64_t max_log_flush_lock_wait_time = 0;
 
@@ -4183,10 +4159,8 @@ __print_lock_overhead(FILE* f,
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
 
 	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
-	PMEM_PAGE_LOG_BLOCK*	plog_block;
 
 	n = ppl->n_buckets;
-	k = ppl->n_blocks_per_bucket;
 
 	for (i = 0; i < n; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);

@@ -275,7 +275,7 @@ row_undo_mod_clust(
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	trx_t* trx = thr_get_trx(thr);
 	if (trx != NULL){
 		mtr.pmemlog_set_parent_trx(trx);
@@ -429,7 +429,7 @@ row_undo_mod_del_mark_or_remove_sec_low(
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	trx_t* trx = thr_get_trx(thr);
 
 	if (trx != NULL){
@@ -643,7 +643,7 @@ try_again:
 	mtr.set_named_space(index->space);
 	dict_disable_redo_if_temporary(index->table, &mtr);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	if (trx != NULL){
 		mtr.pmemlog_set_parent_trx(trx);
 		mtr.pmemlog_set_trx_id(trx->id);

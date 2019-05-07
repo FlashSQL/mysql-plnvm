@@ -1926,7 +1926,7 @@ trx_undo_report_row_operation(
 	dict_disable_redo_if_temporary(index->table, &mtr);
 	mutex_enter(&trx->undo_mutex);
 
-#if defined (UNIV_PMEMOBJ_PART_PL)
+#if defined (UNIV_PMEMOBJ_PART_PL)  && defined(UNIV_PMEMOBJ_USE_TT)
 	//because update UNDO page use different mtr with insert/update operation
 	//we must update the transaction for mtr
 	if (trx != NULL){
