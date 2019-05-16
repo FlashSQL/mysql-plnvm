@@ -1147,14 +1147,31 @@ pm_ppl_hash_get(
 		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		uint64_t			key	);
 
-plog_hash_t*
+/*
+ * Add a plogblock's key on the pline hashtable
+ * @param[in] pop
+ * @param[in] ppl
+ * @param[in] pline pointer to the line that has hashtable to add on
+ * @param[in] plog_block pointer to the logblock
+ * @param[in] idx index of the block on the line
+ * @return: the hash item added
+ * */
+static inline void
 pm_ppl_hash_add(
-		PMEMobjpool*		pop,
-		PMEM_PAGE_PART_LOG*		ppl,
 		PMEM_PAGE_LOG_HASHED_LINE* pline,
 		PMEM_PAGE_LOG_BLOCK*	plog_block,
 		uint32_t				idx
-		);
+		)
+{
+
+	plog_hash_t* item;
+
+	item = (plog_hash_t*) malloc(sizeof(plog_hash_t));
+	item->key = plog_block->key;
+	item->block_off = idx;
+	HASH_INSERT(plog_hash_t, addr_hash, pline->addr_hash, plog_block->key, item);
+	
+}
 
 plog_hash_t*
 pm_ppl_hash_check_and_add(
@@ -1301,6 +1318,35 @@ __pm_write_log_buf(
 			uint64_t*					rec_lsn,
 			PMEM_PAGE_LOG_BLOCK*		plog_block,
 			bool						is_first_write);
+
+static inline void
+pm_write_log_rec_low(
+			PMEMobjpool*			pop,
+			byte*					log_des,
+			byte*					log_src,
+			uint64_t				size)
+{
+	pmemobj_memcpy_persist(
+			pop, 
+			log_des,
+			log_src,
+			size);
+	//if (size <= CACHELINE_SIZE){
+	//	//We need persistent copy, Do not need a transaction for atomicity
+	//		pmemobj_memcpy_persist(
+	//			pop, 
+	//			log_des,
+	//			log_src,
+	//			size);
+
+	//}
+	//else{
+	//	TX_BEGIN(pop) {
+	//		TX_MEMCPY(log_des, log_src, size);
+	//	}TX_ONABORT {
+	//	}TX_END
+	//}
+}
 
 void
 __pm_write_log_rec_low(

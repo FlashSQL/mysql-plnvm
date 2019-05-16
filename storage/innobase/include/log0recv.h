@@ -289,6 +289,10 @@ typedef std::vector<recv_encryption_t, ut_allocator<recv_encryption_t> >
 
 /** Recovery system data structure */
 struct recv_sys_t{
+#if defined (UNIV_TRACE_RECOVERY_TIME)
+	ulint		redo1_time;
+#endif //UNIV_TRACE_RECOVERY_TIME
+
 #ifndef UNIV_HOTBACKUP
 	ib_mutex_t		mutex;	/*!< mutex protecting the fields apply_log_recs,
 				n_addrs, and the state field in each recv_addr

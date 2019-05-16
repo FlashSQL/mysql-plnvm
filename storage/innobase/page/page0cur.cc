@@ -1138,12 +1138,21 @@ need_extra_info:
 		mlog_close(mtr, log_ptr + rec_size);
 	} else {
 #if defined (UNIV_PMEMOBJ_PART_PL)
+		/*In PPL, we implemnt our own dyn_buf in mtr.
+		 * We don't rely on the log_end here*/
+		mlog_close(mtr, log_ptr);
+		ut_a(rec_size < UNIV_PAGE_SIZE);
+		log_ptr = mlog_open(mtr, rec_size);
+		memcpy(log_ptr, ins_ptr, rec_size);
+		mlog_close(mtr, log_ptr + rec_size);
 		//this case may cause bug, check	
-		assert(0);//debug
-#endif
+		//printf("~~~ WARN: check line 1145 page0cur.cc\n");
+		//assert(0);//debug
+#else //original
 		mlog_close(mtr, log_ptr);
 		ut_a(rec_size < UNIV_PAGE_SIZE);
 		mlog_catenate_string(mtr, ins_ptr, rec_size);
+#endif
 	}
 
 }

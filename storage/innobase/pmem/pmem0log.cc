@@ -197,9 +197,6 @@ void
 pm_wrapper_page_log_close(
 		PMEM_WRAPPER*	pmw	)
 {
-	ulint i;
-	fil_node_t* node;
-	
 	PMEM_PAGE_PART_LOG* ppl = pmw->ppl;
 	
 	//Free resource allocated in DRAM
@@ -351,8 +348,6 @@ PMEM_PAGE_PART_LOG* alloc_pmem_page_part_log(
 
 	char* p;
 	size_t align_size;
-	uint64_t n;
-	uint64_t i;
 
 	uint64_t log_buf_id;
 	uint64_t log_buf_offset;
@@ -472,7 +467,7 @@ __init_tt(
 		uint64_t				k,
 		uint64_t				pages_per_tx) {
 
-	uint64_t i, j, i_temp;	
+	uint64_t i;	
 	PMEM_TT* ptt;
 	PMEM_TT_HASHED_LINE *pline;
 
@@ -636,7 +631,7 @@ void __reset_TT_entry(
 	uint64_t i;
 	PMEM_PAGE_REF* pref;
 
-	PMEM_TT* ptt = D_RW(ppl->tt);
+	//PMEM_TT* ptt = D_RW(ppl->tt);
 
 	pe->tid = 0;
 	pe->n_mbuf_reqs = 0;
@@ -680,13 +675,12 @@ void __realloc_page_log_block_line(
 {
 
 	uint64_t i;
-	uint64_t i_temp;
 	
 	int ret;
 
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 	
-	printf("PMEM_INFO __realloc_page_log_block_line() line  %zu from %zu blocks to %zu blocks\n ", pline->hashed_id, pline->max_blocks, new_size);
+	printf("PMEM_INFO __realloc_page_log_block_line() line  %d from %zu blocks to %zu blocks\n ", pline->hashed_id, pline->max_blocks, new_size);
 
 	ret = POBJ_REALLOC(pop,
 			&pline->arr,
@@ -927,14 +921,9 @@ pm_page_part_log_bucket_init(
 {
 
 	uint64_t i, j, n, k;
-	uint64_t cur_bucket;
-	size_t offset;
 
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
-
-	offset = 0;
-	cur_bucket = 0;
 	
 	//we need extra one bucket for all pages of space 0
 	//n = n_buckets;
@@ -1177,7 +1166,7 @@ pm_ppl_add_space(
 
 	ppl->n_spaces++;
 	
-	printf("===> pm_ppl_add_space() name %s id %zu\n", name, space_no);
+	printf("===> pm_ppl_add_space() name %s id %u\n", name, space_no);
 	pmemobj_rwlock_unlock(pop, &ppl->ckpt_lock);
 }
 /////////////// HASH TABLE ///////////////////
@@ -1189,7 +1178,7 @@ pm_page_part_log_hash_create(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*		ppl)
 {
-	uint64_t i, j, n, k;
+	uint64_t i, n, k;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
 
 	n = ppl->n_buckets;
@@ -1206,44 +1195,15 @@ pm_page_part_log_hash_free(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*		ppl)
 {
-	uint64_t i, j, n, k;
+	uint64_t i;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
 
-	n = ppl->n_buckets;
-
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < ppl->n_buckets; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
 		hash_table_free(pline->addr_hash);
 	}
 }
 
-/*
- * Add a plogblock's key on the pline hashtable
- * @param[in] pop
- * @param[in] ppl
- * @param[in] pline pointer to the line that has hashtable to add on
- * @param[in] plog_block pointer to the logblock
- * @param[in] idx index of the block on the line
- * @return: the hash item added
- * */
-plog_hash_t*
-pm_ppl_hash_add(
-		PMEMobjpool*		pop,
-		PMEM_PAGE_PART_LOG*		ppl,
-		PMEM_PAGE_LOG_HASHED_LINE* pline,
-		PMEM_PAGE_LOG_BLOCK*	plog_block,
-		uint32_t idx
-		)
-{
-
-	plog_hash_t* item;
-
-	item = (plog_hash_t*) malloc(sizeof(plog_hash_t));
-	item->key = plog_block->key;
-	item->block_off = idx;
-	HASH_INSERT(plog_hash_t, addr_hash, pline->addr_hash, plog_block->key, item);
-	
-}
 
 /*
  * Add key to hashtable if it is not in
@@ -1261,7 +1221,7 @@ pm_ppl_hash_check_and_add(
 		PMEM_PAGE_LOG_HASHED_LINE*	pline,
 		uint64_t					key	)
 {
-	uint64_t i, k;
+	uint64_t i;
 	int64_t n_try;
 	int64_t i_bit;
 
@@ -1272,6 +1232,8 @@ pm_ppl_hash_check_and_add(
 	i_bit = -2; //init value 
 
 	if (item == NULL){
+		/*key is not in hashtable.
+		 * select a free plogbuf in page-partition for this key*/
 		item = (plog_hash_t*) malloc(sizeof(plog_hash_t));
 		item->key = key;
 retry:
@@ -1296,7 +1258,8 @@ retry:
 				}
 			}
 
-			if (i >= 0 && i < pline->max_blocks){
+			if (plog_block->is_free || 
+					(i_bit >= 0 && i < pline->max_blocks)){
 				//pmemobj_rwlock_wrlock(pop, &D_RW(D_RW(pline->arr)[i])->lock);
 				//pmemobj_rwlock_wrlock(pop, &pline->meta_lock);
 				plog_block = D_RW(D_RW(pline->arr)[i]);
@@ -1384,8 +1347,6 @@ pm_ppl_hash_remove(
 		uint64_t			key
 		) 
 {
-
-	PMEM_PAGE_LOG_BLOCK*	plog_block;
 	plog_hash_t* item;
 
 	item = pm_ppl_hash_get(pop, ppl, pline, key);
@@ -1393,8 +1354,6 @@ pm_ppl_hash_remove(
 	if (item != NULL){
 		HASH_DELETE(plog_hash_t, addr_hash, pline->addr_hash, key, item);
 	}
-
-	return;
 }
 ///////////////END HASH TABLE ///////////////////
 
@@ -1644,6 +1603,12 @@ pm_ppl_write_rec(
 	uint64_t write_off;
 	uint64_t old_off;
 	
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	uint64_t start_time, end_time;
+	uint64_t t1, t2;
+#endif	
+
+
 	assert(rec_size > 0);
 
 	temp = mlog_parse_initial_log_record(
@@ -1666,8 +1631,17 @@ retry:
 	TOID_ASSIGN(logbuf, (pline->logbuf).oid);
 	plogbuf = D_RW(pline->logbuf);
 	
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	start_time = ut_time_us(NULL);
+#endif	
 	/*WARNING this lock may become bottle neck*/
 	pmemobj_rwlock_wrlock(pop, &pline->lock);
+
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	end_time = ut_time_us(NULL);
+	pline->log_write_lock_wait_time += (end_time - start_time);
+	pline->n_log_write++;
+#endif
 
 	//if (plogbuf->state == PMEM_LOG_BUF_IN_FLUSH)
 	//if (pline->is_flushing)
@@ -1691,8 +1665,12 @@ retry:
 
 get_free_buf:
 		// (1.1) Get a free log buf
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	t1 = ut_time_us(NULL);
+#endif	
 		pfreepool = D_RW(ppl->free_pool);
 		pmemobj_rwlock_wrlock(pop, &pfreepool->lock);
+
 
 		TOID(PMEM_PAGE_LOG_BUF) free_buf = POBJ_LIST_FIRST (&pfreepool->head);
 		if (pfreepool->cur_free_bufs == 0 || 
@@ -1725,6 +1703,11 @@ get_free_buf:
 		TOID_ASSIGN(plogbuf->next, free_buf.oid);
 		TOID_ASSIGN(pline->logbuf, free_buf.oid);
 		
+#if defined(UNIV_PMEMOBJ_PPL_STAT)
+	t2 = ut_time_us(NULL);
+	pline->log_flush_lock_wait_time += (t2 - t1);
+	pline->n_log_flush++;
+#endif	
 		//move the diskaddr on the line ahead, the written size should be aligned with 512B for DIRECT_IO works
 		pline->diskaddr += plogbuf->size;
 
@@ -1737,7 +1720,7 @@ get_free_buf:
 		rec_lsn = ut_time_us(NULL);	
 		mach_write_to_8(temp, rec_lsn);
 
-		__pm_write_log_rec_low(pop,
+		pm_write_log_rec_low(pop,
 				log_des,
 				log_src,
 				rec_size);
@@ -1815,15 +1798,13 @@ get_free_buf:
 	}//end handle full logbuf
 	else {
 		/*regular case, remember that this thread is holding the general lock now*/
+
 		log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
 		/*assign LSN right before write rec*/
 		rec_lsn = ut_time_us(NULL);	
 		mach_write_to_8(temp, rec_lsn);
 
-		__pm_write_log_rec_low(pop,
-				log_des,
-				log_src,
-				rec_size);
+		pm_write_log_rec_low(pop, log_des, log_src, rec_size);
 
 		plogbuf->n_recs++;
 		if (plogbuf->cur_off == PMEM_LOG_BUF_HEADER_SIZE)		  {
@@ -1842,6 +1823,7 @@ get_free_buf:
 		pmemobj_rwlock_unlock(pop, &pline->lock);
 
 		/*(2) Get the plogblock*/	
+		//test unblock
 		pmemobj_rwlock_wrlock(pop, &pline->meta_lock);
 		item = pm_ppl_hash_check_and_add(pop, ppl, pline, key); 
 		pmemobj_rwlock_unlock(pop, &pline->meta_lock);
@@ -1911,7 +1893,7 @@ pm_ppl_write_rec_v2(
 	
 	uint64_t rec_lsn;
 	uint64_t write_off;
-	uint64_t old_off;
+	//uint64_t old_off;
 	
 	assert(rec_size > 0);
 
@@ -2036,7 +2018,7 @@ get_free_buf:
 		
 		log_des = ppl->p_align + D_RW(free_buf)->pmemaddr + D_RW(free_buf)->cur_off;
 
-		__pm_write_log_rec_low(pop,
+		pm_write_log_rec_low(pop,
 				log_des,
 				log_src,
 				rec_size);
@@ -2110,7 +2092,7 @@ get_free_buf:
 		plog_block->lastLSN = rec_lsn;
 
 		log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
-		__pm_write_log_rec_low(pop,
+		pm_write_log_rec_low(pop,
 				log_des,
 				log_src,
 				rec_size);
@@ -2122,7 +2104,7 @@ get_free_buf:
 		}
 
 		/*IMPORTANT: always update offset after updating plog_block*/
-		old_off = plogbuf->cur_off;
+		//old_off = plogbuf->cur_off;
 		plogbuf->cur_off += rec_size;
 
 		/* compute ckpt_lsn for this line (in necessary) */
@@ -2279,7 +2261,7 @@ get_free_buf:
 		
 		log_des = ppl->p_align + D_RW(free_buf)->pmemaddr + D_RW(free_buf)->cur_off;
 
-		__pm_write_log_rec_low(pop,
+		pm_write_log_rec_low(pop,
 				log_des,
 				log_src,
 				rec_size);
@@ -2339,7 +2321,7 @@ get_free_buf:
 		plog_block->lastLSN = rec_lsn;
 
 		log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
-		__pm_write_log_rec_low(pop,
+		pm_write_log_rec_low(pop,
 				log_des,
 				log_src,
 				rec_size);
@@ -2378,8 +2360,6 @@ pm_ppl_check_for_ckpt(
 			uint64_t					cur_lsn
 			)
 {
-	uint64_t new_oldest_lsn;
-	uint64_t new_oldest;
 	uint64_t oldest_off;
 	uint64_t cur_off;
 	uint64_t oldest_lsn;
@@ -2409,9 +2389,20 @@ pm_ppl_check_for_ckpt(
 
 		/*now compute the checkpoint lsn for this pline */
 		oldest_lsn = plog_block_oldest->firstLSN;
-		uint64_t delta = (uint64_t) ((cur_lsn - oldest_lsn) * 1.0 *  PMEM_CKPT_THRESHOLD); 
 
+		//uint64_t delta = (uint64_t) ((cur_lsn - oldest_lsn) * 1.0 *  PMEM_CKPT_THRESHOLD); 
+		uint64_t delta = (uint64_t) ((cur_lsn - oldest_lsn) / 3.0 *  PMEM_CKPT_THRESHOLD); 
+		
+		//printf("==> pline %zu trigger ckpt lsn delta %f seconds\n", pline->hashed_id, (delta * 1.0 / 1000000));
+
+		//Method 1
 		pline->ckpt_lsn = oldest_lsn + delta;
+
+		//Method 2 => no ckpt call
+		//pline->ckpt_lsn = oldest_lsn + 1000000 ;
+		
+		//Method 3 => call ckpt for each 20 ~ 40 seconds, not godd performance
+		//pline->ckpt_lsn = cur_lsn - delta ;
 		
 		//update the global checkpoint lsn	
 		pmemobj_rwlock_wrlock(pop, &ppl->ckpt_lock);
@@ -2462,14 +2453,13 @@ pm_ppl_write(
 	uint32_t col;
 
 	ulint hashed;
-	ulint i, j;
+	ulint i;
 
-	uint64_t n, k;
+	uint64_t n;
+	//uint64_t k;
 	uint64_t bucket_id, local_id;
-	uint64_t n_try;
 
 
-	int64_t block_id, new_block_id;
 
 	PMEM_TT* ptt;
 
@@ -2490,7 +2480,7 @@ pm_ppl_write(
 	pm_ppl_parse_entry_id(entry_id, &type, &row, &col);
 
 	n = ptt->n_buckets;
-	k = ptt->n_entries_per_bucket;
+	//k = ptt->n_entries_per_bucket;
 	
 	if (type == PMEM_EID_UNDEFINED)
 	{
@@ -2664,10 +2654,10 @@ pm_ppl_get_log_block_by_key(
 			uint64_t			key)
 {
 	ulint hashed;
-	ulint i, j;
+	ulint j;
 
-	uint64_t n, k;
-	uint64_t bucket_id, local_id;
+	uint64_t n;
+	//uint64_t k;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
@@ -2676,7 +2666,7 @@ pm_ppl_get_log_block_by_key(
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 
 	n = ppl->n_buckets;
-	k = ppl->n_blocks_per_bucket;
+	//k = ppl->n_blocks_per_bucket;
 
 	PMEM_LOG_HASH_KEY(hashed, key, n);
 	assert (hashed < n);
@@ -2703,7 +2693,6 @@ __get_log_block_by_id(
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			bid)
 {
-	uint64_t n, k;
 	uint64_t bucket_id, local_id;
 	uint16_t type;
 	uint32_t row, col;
@@ -2714,12 +2703,6 @@ __get_log_block_by_id(
 	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 
-
-	n = ppl->n_buckets;
-	k = ppl->n_blocks_per_bucket;
-
-	//bucket_id = bid / k;
-	//local_id = bid % k;
 	pm_ppl_parse_entry_id(bid, &type, &row, &col);
 	bucket_id = row;
 	local_id = col;
@@ -2760,25 +2743,12 @@ void __handle_pm_ppl_write_by_entry(
 	uint64_t key;	
 	uint64_t rec_size;// log record size
 	uint64_t cur_off;
-	uint64_t eid;
-	
 	uint64_t LSN = 0;	// log record LSN
-	byte* end_ptr;
-
-	uint64_t block_len;
-	uint64_t sum_len;
-
-	uint16_t type;
-	uint32_t row;
-	uint32_t col;
 
 	PMEM_PAGE_REF* pref;
 
 	i = 0;
 	cur_off = 0;
-
-
-	end_ptr = log_src + size;
 
 	while (cur_off < size){
 		// retrieve info
@@ -2925,27 +2895,20 @@ __update_page_log_block_on_write(
 	uint32_t col;
 
 	ulint hashed;
-	ulint i, j;
+	ulint i;
 
-	uint64_t n, k;
+	uint64_t n;
 	uint64_t bucket_id, local_id;
 	int64_t n_try;
-
-	int64_t idx;
-
-	byte* pdata = ppl->p_align;
-	byte* log_des;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
 
 	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
-
-	PMEM_PAGE_LOG_BUF* plogbuf;
 	
 	n = ppl->n_buckets;
-	k = ppl->n_blocks_per_bucket;
+	//k = ppl->n_blocks_per_bucket;
 
 	if (block_id == PMEM_DUMMY_EID) {
 		//Case A: there is no help from fast access, the log block may exist or not. Search from the beginning
@@ -3126,7 +3089,6 @@ __pm_write_log_buf(
 {
 
 	byte* log_des;
-	byte* pdata;
 	byte* temp;
 
 	mlog_id_t type;
@@ -3249,7 +3211,7 @@ get_free_buf:
 		plog_block->lastLSN = *rec_lsn;
 
 
-		__pm_write_log_rec_low(pop,
+		pm_write_log_rec_low(pop,
 				log_des,
 				log_src + src_off,
 				rec_size);
@@ -3283,7 +3245,7 @@ get_free_buf:
 
 		log_des = ppl->p_align + plogbuf->pmemaddr + plogbuf->cur_off;
 
-		__pm_write_log_rec_low(pop,
+		pm_write_log_rec_low(pop,
 				log_des,
 				log_src + src_off,
 				rec_size);
@@ -3357,7 +3319,7 @@ assign_worker:
 	if (n_try == 0) {
 		/*This imply an logical error 
 		 * */
-		printf("PMEM_ERROR in pm_log_buf_assign_flusher() requested/size = %zu /%zu / %zu\n", flusher->n_requested, flusher->size);
+		printf("PMEM_ERROR in pm_log_buf_assign_flusher() requested/size = %zu /%zu \n", flusher->n_requested, flusher->size);
 		mutex_exit(&flusher->mutex);
 		assert (n_try);
 	}
@@ -3374,45 +3336,10 @@ pm_log_flush_log_buf(
 		PMEM_PAGE_PART_LOG*		ppl,
 		PMEM_PAGE_LOG_BUF*		plogbuf) 
 {
-	uint64_t i;
-
-	uint64_t min_diskaddr;
-	uint64_t min_off;
-
-	PMEM_PAGE_LOG_FREE_POOL* pfree_pool;
 	TOID(PMEM_PAGE_LOG_BUF) logbuf;
 
 	assert(plogbuf);
 	TOID_ASSIGN(logbuf, plogbuf->self);
-
-	PMEM_PAGE_LOG_HASHED_LINE* pline;
-	PMEM_PAGE_LOG_BLOCK* plog_block;
-
-	pline = D_RW(D_RW(ppl->buckets)[plogbuf->hashed_id]);
-
-	///*(1) Pre-flush*/
-	////this code just for test, simulate the checkpoint
-	//bool is_first = true;
-
-	//for (i = 0; i < ppl->n_blocks_per_bucket; i++){
-	//	plog_block = D_RW(D_RW(pline->arr)[i]);
-
-	//	if (!plog_block->is_free){
-	//		if (is_first){
-	//			is_first = false;
-	//			min_off = plog_block->start_off;
-	//			continue;
-	//		}
-
-	//		if (min_diskaddr > plog_block->start_diskaddr)
-	//			min_diskaddr = plog_block->start_diskaddr;
-	//		if (min_off > plog_block->start_off)
-	//			min_off = plog_block->start_off;
-	//	}
-	//}
-
-	//pline->recv_diskaddr = min_diskaddr;
-	//pline->recv_off = min_off;
 
 #if defined (UNIV_WRITE_LOG_ON_NVM)
 	/*(2) memcpy and reset */
@@ -3573,7 +3500,7 @@ assign_worker:
 	if (n_try == 0) {
 		/*This imply an logical error 
 		 * */
-		printf("PMEM_ERROR in pm_log_buf_assign_redoer() requested/size = %zu /%zu / %zu\n", redoer->n_requested, redoer->size);
+		printf("PMEM_ERROR in pm_log_buf_assign_redoer() requested/size = %zu /%zu \n", redoer->n_requested, redoer->size);
 
 		mutex_exit(&redoer->mutex);
 		assert (n_try);
@@ -3639,15 +3566,11 @@ pm_ppl_commit(
 	//test new DAL
 	return;
 
-	uint64_t n, k, i;
+	uint64_t i;
 	uint64_t bucket_id, local_id;
 
 	uint16_t type;
 	uint32_t row, col;
-
-	uint64_t cur_time;
-
-	bool is_reclaim;
 
 	PMEM_TT* ptt;
 
@@ -3657,7 +3580,6 @@ pm_ppl_commit(
 	TOID(PMEM_TT_ENTRY) entry;
 	PMEM_TT_ENTRY* pe;
 	PMEM_PAGE_REF* pref;
-	PMEM_MINI_BUF* pmbuf;
 
 	//(1) retreive the pe by eid
 	pm_ppl_parse_entry_id(eid, &type, &row, &col);
@@ -3669,8 +3591,6 @@ pm_ppl_commit(
 	ptt = D_RW(ppl->tt);
 	assert(ptt != NULL);
 
-	n = ptt->n_buckets;
-	k = ptt->n_entries_per_bucket;
 
 	bucket_id = row;
 	local_id = col;
@@ -3729,13 +3649,11 @@ __update_page_log_block_on_commit(
 		PMEM_PAGE_REF*		pref,
 		uint64_t			eid)
 {
-	ulint hashed;
-	uint32_t n, k, i;
 	uint64_t bucket_id, local_id;
 
 	uint16_t type;
 	uint32_t row, col;
-	
+
 	assert(pref != NULL);
 	assert(pref->idx != PMEM_DUMMY_EID);
 
@@ -3747,8 +3665,6 @@ __update_page_log_block_on_commit(
 	TOID(PMEM_PAGE_LOG_BLOCK) log_block;
 	PMEM_PAGE_LOG_BLOCK* plog_block;
 
-	n = ppl->n_buckets;
-	k = ppl->n_blocks_per_bucket;
 	
 	//(1) Get the log block by block id
 	
@@ -3812,9 +3728,6 @@ __update_page_log_block_on_commit(
 void 
 __reset_page_log_block(PMEM_PAGE_LOG_BLOCK* plog_block) 
 {
-
-	uint64_t i;
-	
 	plog_block->is_free = true;
 	plog_block->state = PMEM_FREE_BLOCK;
 	plog_block->key = 0;
@@ -3833,12 +3746,12 @@ __reset_page_log_block(PMEM_PAGE_LOG_BLOCK* plog_block)
 	plog_block->first_rec_found = 0;
 	plog_block->first_rec_size = 0;
 	plog_block->first_rec_type = (mlog_id_t) 0;
-
-
 }
 
 /*
- * Set a plogblock state to PMEM_IN_FLUSH_BLOCK
+ * Call when a cleaner thread flush page from buffer pool.
+ * Set a plogblock state to PMEM_IN_FLUSH_BLOCK but not modify plogblock
+ * On AIO complete, reset ploglock
  * */
 void
 pm_ppl_set_flush_state(
@@ -3902,8 +3815,6 @@ pm_ppl_flush_page(
 
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
 
-	PMEM_TT* ptt = D_RW(ppl->tt);
-
 	n = ppl->n_buckets;
 	
 	//(1) Start from the per-page log block
@@ -3923,10 +3834,10 @@ pm_ppl_flush_page(
 
 		plog_block = D_RW(D_RW(pline->arr)[item->block_off]);
 		assert(plog_block->key == key);
-		assert(plog_block->state == PMEM_IN_FLUSH_BLOCK);	
-		//plog_block->firstLSN may a little greater than bpage->oldest_modification, we don't assert here
-		//assert(plog_block->firstLSN == bpage->oldest_modification);
-
+		//if (plog_block->state != PMEM_IN_FLUSH_BLOCK){
+		//	printf("===> WARN in pm_ppl_flush_page() plog_block->state is %zu\n", plog_block->state);
+		//}
+		//assert(plog_block->state == PMEM_IN_FLUSH_BLOCK);	
 		//pmemobj_rwlock_wrlock(pop, &pline->lock);
 		pmemobj_rwlock_wrlock(pop, &pline->meta_lock);
 		pmemobj_rwlock_wrlock(pop, &plog_block->lock);
@@ -3969,7 +3880,14 @@ pm_ppl_flush_page(
 				PMEM_PAGE_LOG_BLOCK* pmin_log_block;
 				pmin_log_block = D_RW(D_RW(pline->arr)[min_off]);
 				/*the second smallest must larger than the smallest*/
-				assert(pmin_log_block->start_diskaddr + pmin_log_block->start_off > write_off);
+				if (pmin_log_block->start_diskaddr + pmin_log_block->start_off <= write_off){
+					printf("===> PMEM_ERROR in pm_ppl_flush_page, second smallest (%zu + %zu = %zu) must larger than the smallest write_off %zu",
+							pmin_log_block->start_diskaddr,
+							pmin_log_block->start_off,
+							pmin_log_block->start_diskaddr + pmin_log_block->start_off,
+							write_off);
+					assert(pmin_log_block->start_diskaddr + pmin_log_block->start_off > write_off);
+				}
 
 				if (pline->is_req_checkpoint){
 					if (pmin_log_block->firstLSN > pline->ckpt_lsn){
@@ -4005,17 +3923,14 @@ pm_ppl_update_oldest(
 		)
 {
 
-	uint32_t i,  n;
+	uint32_t i;
 
 	uint64_t min_off;
-	uint64_t cur_off;
 	uint64_t tem_off;
 	uint64_t oldest_block_off;
 	uint64_t oldest_lsn;
-	uint64_t threshold;
 
 	PMEM_PAGE_LOG_BLOCK*	plog_block;
-	PMEM_PAGE_LOG_BUF*		plogbuf;
 
 	oldest_block_off = UINT32_MAX;
 	min_off = ULONG_MAX;

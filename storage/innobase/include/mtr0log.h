@@ -250,7 +250,12 @@ mlog_parse_index(
 #ifndef UNIV_HOTBACKUP
 /** Insert, update, and maybe other functions may use this value to define an
 extra mlog buffer size for variable size data */
+#if defined (UNIV_PMEMOBJ_PART_PL)
+/*we need to increase this value for Linkbench*/
+#define MLOG_BUF_MARGIN	512
+#else //original
 #define MLOG_BUF_MARGIN	256
+#endif //UNIV_PMEMOBJ_PART_PL
 #endif /* !UNIV_HOTBACKUP */
 
 #ifndef UNIV_NONINL

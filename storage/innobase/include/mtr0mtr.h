@@ -643,8 +643,6 @@ struct mtr_t {
 
 		cur_max_size = m_impl.max_buf_size;
 		if (m_impl.cur_off + size > cur_max_size){
-			//since reallocate cause some bugs (e.g. b-tree split) we report bug here
-			//assert(0);
 
 			new_size = ((size / cur_max_size) + 2) * cur_max_size;
 			new_ptr = (byte*) realloc(m_impl.buf, new_size);

@@ -2202,7 +2202,6 @@ srv_master_do_active_tasks(void)
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	//check for PPL checkpoint
-	//if (gb_pmw->ppl->min_oldest_lsn > gb_pmw->ppl->ckpt_lsn )
 	if (gb_pmw->ppl->max_oldest_lsn > gb_pmw->ppl->ckpt_lsn )
 	{
 		pm_ppl_checkpoint(gb_pmw->pop, gb_pmw->ppl);	

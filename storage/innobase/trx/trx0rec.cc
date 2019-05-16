@@ -2082,7 +2082,7 @@ trx_undo_report_row_operation(
 		page_no = undo->last_page_no;
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-		printf("++++ PMEM_INFO: UNDO page %zu is full, try to extend one page, new page %zu \n", mach_read_from_4(undo_page + FIL_PAGE_OFFSET), mach_read_from_4(undo_block->frame + FIL_PAGE_OFFSET));
+		//printf("++++ PMEM_INFO: UNDO page %zu is full, try to extend one page, new page %zu \n", mach_read_from_4(undo_page + FIL_PAGE_OFFSET), mach_read_from_4(undo_block->frame + FIL_PAGE_OFFSET));
 #endif
 		DBUG_EXECUTE_IF("ib_err_ins_undo_page_add_failure",
 				undo_block = NULL;);

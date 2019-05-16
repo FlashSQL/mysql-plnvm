@@ -1134,7 +1134,8 @@ buf_flush_write_block_low(
 #endif /*UNIV_PMEMOBJ_BUF*/
 
 #if defined (UNIV_PMEMOBJ_PART_PL)
-		pm_ppl_set_flush_state(gb_pmw->pop, gb_pmw->ppl, bpage);
+		/*We don't set state anymore*/
+		//pm_ppl_set_flush_state(gb_pmw->pop, gb_pmw->ppl, bpage);
 #endif /*UNIV_PMEMOBJ_PART_PL*/
 
 	/* Disable use of double-write buffer for temporary tablespace.

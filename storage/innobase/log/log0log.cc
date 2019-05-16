@@ -585,7 +585,9 @@ log_close(void)
 
 			log_has_printed_chkp_warning = true;
 			log_last_warning_time = time(NULL);
-
+#if defined (UNIV_SKIPLOG)
+			printf("===> SKIPLOG ERROR lsn %zu last_checkpoint_lsn %zu age %zu \n", lsn, log->last_checkpoint_lsn, checkpoint_age );
+#endif
 			ib::error() << "The age of the last checkpoint is "
 				<< checkpoint_age << ", which exceeds the log"
 				" group capacity " << log->log_group_capacity
@@ -1948,8 +1950,8 @@ log_checkpoint(
 	}
 #endif /* !_WIN32 */
 
-//#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
-#if defined (UNIV_PMEMOBJ_PL)
+#if defined (UNIV_PMEMOBJ_PL) || defined (UNIV_SKIPLOG)
+//#if defined (UNIV_PMEMOBJ_PL)
 	//printf("PL DEBUG ====> log_checkpoint()\n");
 	//hot fix bug: when start server recv_recovery_rollback_active() ->
 	// row_merge_drop_temp_indexes() -> que_eval_sql() -> que_run_threads()
@@ -2015,6 +2017,9 @@ log_checkpoint(
 #if defined (UNIV_PMEMOBJ_WAL)
 	//no flush log at checkpoint
 #else //original
+	//tdnguyen test
+//	ulint t = ut_time_us(NULL);
+//	printf("===> ckpt_trace LOGWRITE time %zu log_write_up_to flush_lsn %zu sync %zu\n", t, flush_lsn, sync);
 	log_write_up_to(flush_lsn, true);
 #endif
 	DBUG_EXECUTE_IF(
@@ -2087,30 +2092,19 @@ pm_ppl_checkpoint(
 	
 	new_oldest = ppl->max_oldest_lsn;
 
-	printf("PMEM_INFO: call pm_ppl_checkpoint new_oldest %zu ppl->ckpt_lsn %zu\n",
-		   	new_oldest, ppl->ckpt_lsn);
+	float delta = (ppl->max_oldest_lsn - ppl->ckpt_lsn) * 1.0 / 1000000;
+
+	printf("PMEM_INFO: call pm_ppl_checkpoint new_oldest %zu ppl->ckpt_lsn %zu delta %f seconds \n",
+		   	new_oldest, ppl->ckpt_lsn, delta);
 	
 	/*(2) simulate fil_names_clear()*/
 	pm_ppl_fil_names_clear(new_oldest);
 
 	/*(3) Write pages in buffer pool upto the ckpt_lsn*/
-	//success = log_preflush_pool_modified_pages(new_oldest);
-	
 	/*simulate buf_flush_request_force() without call buf_flush_wait_flushed() as in log_preflush_pool_modified_pages() */
 	pm_ppl_buf_flush_request_force(new_oldest);
 
 	buf_flush_wait_flushed(new_oldest);
-
-	///*(4) reset the ckpt_lsn */
-	//for (i = 0; i < n; i++){
-	//	pline = D_RW(D_RW(ppl->buckets)[i]);
-
-	//	pmemobj_rwlock_wrlock(pop, &pline->lock);
-	//	if (pline->ckpt_lsn > 0){
-	//		pline->ckpt_lsn = 0;
-	//	}
-	//	pmemobj_rwlock_unlock(pop, &pline->lock);
-	//}
 
 	/* (5) update the global ckpt_lsn*/
 	pmemobj_rwlock_wrlock(pop, &ppl->ckpt_lock);
@@ -2130,7 +2124,8 @@ log_make_checkpoint_at(
 	bool			write_always)
 {
 	//tdnguyen test
-	//printf("=========== \nCKPT: call log_checkpoint() from log_make_checkpoint_at()\n===========\n");
+	ulint t = ut_time_ms();
+	printf("=========== \n%zu CKPT: call log_checkpoint() from log_make_checkpoint_at()\n===========\n", t);
 	/* Preflush pages synchronously */
 
 	while (!log_preflush_pool_modified_pages(lsn)) {
@@ -2203,7 +2198,6 @@ loop:
 
 	if (advance) {
 		lsn_t	new_oldest = oldest_lsn + advance;
-
 		success = log_preflush_pool_modified_pages(new_oldest);
 
 		/* If the flush succeeded, this thread has done its part

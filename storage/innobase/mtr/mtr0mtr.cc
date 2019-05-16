@@ -614,6 +614,7 @@ mtr_t::start(bool sync, bool read_only)
 	//ulint max_init_size = 16384;	
 	//ulint max_init_size = 8192;	//debug OK
 	//ulint max_init_size = 4096;	
+	//ulint max_init_size = 1024;	// for Linkbench
 	ulint max_init_size = 512;	// original value
 
 	m_impl.buf = (byte*) calloc(max_init_size, sizeof(byte));
@@ -1159,6 +1160,16 @@ mtr_t::pmem_check_mtrlog(mtr_t* mtr)
 		//skip the rec_lsn
 		temp_ptr += 8;
 		
+		if ( (temp_ptr - ptr) == parsed_len){
+			/*empty body rec*/
+			if (type != MLOG_INIT_FILE_PAGE2
+					&& type != MLOG_COMP_PAGE_CREATE 
+					&& type != MLOG_IBUF_BITMAP_INIT
+					&& type != MLOG_UNDO_ERASE_END){
+				printf("pm_check_mtrlog() ERROR: empty body rec has type %zu is not valid!\n", type);
+				assert(0);
+			}
+		}
 
 		//check for MLOG_COMP_LIST_END_COPY_CREATED (type == 45) 
 		if (type == 45){
@@ -1468,13 +1479,8 @@ mtr_t::Command::execute()
 			   this tablespace since the latest checkpoint, so
 			   some MLOG_FILE_NAME records were appended to m_log. */
 			ut_ad(m_impl->m_n_log_recs > n_recs);
-#if defined(UNIV_PMEMOBJ_PART_PL)
-		mlog_catenate_ulint(
-			m_impl->m_mtr, MLOG_MULTI_REC_END, MLOG_1BYTE);
-#else
 			mlog_catenate_ulint(
 					&m_impl->m_log, MLOG_MULTI_REC_END, MLOG_1BYTE);
-#endif
 			len = m_impl->m_log.size();
 		} else {
 			/* This was not the first time of dirtying a
@@ -1494,14 +1500,9 @@ mtr_t::Command::execute()
 				   multiple log records, append MLOG_MULTI_REC_END
 				   at the end. */
 
-#if defined(UNIV_PMEMOBJ_PART_PL)
-		mlog_catenate_ulint(
-			m_impl->m_mtr, MLOG_MULTI_REC_END, MLOG_1BYTE);
-#else
 				mlog_catenate_ulint(
 						&m_impl->m_log, MLOG_MULTI_REC_END,
 						MLOG_1BYTE);
-#endif
 				len++;
 			}
 		}

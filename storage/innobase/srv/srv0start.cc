@@ -2925,6 +2925,11 @@ files_checked:
 	total_recv_time = (ulint) (end_recv_time - start_recv_time) * 1.0 / 1000;
 
 	other_time = total_recv_time - t1 - t2 - t3;
+
+	/*adjust the t1 and t3 for the original because it may call REDO2 in between REDO1 and the last REDO2*/
+	ulint tem = (ulint) (recv_sys->redo1_time * 1.0 / 1000);
+	t1 = t1 - tem;
+	t3 = t3 + tem;
 		
 	printf("============= RECOVERY OVERHEAD ==========\n");		
 	printf("Redo phase1 time (ms):\t\t %zu\n", t1); 
