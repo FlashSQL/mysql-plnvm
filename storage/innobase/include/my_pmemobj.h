@@ -313,6 +313,9 @@ struct __pmem_wrapper {
 #if defined (UNIV_PMEMOBJ_LSB)
 	PMEM_LSB* plsb;
 #endif
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	uint64_t PMEM_SIM_CPU_CYCLES; //used in simulate latency
+#endif
 	bool is_new;
 };
 
@@ -332,7 +335,15 @@ pm_wrapper_free(PMEM_WRAPPER* pmw);
 PMEMoid pm_pop_alloc_bytes(PMEMobjpool* pop, size_t size);
 void pm_pop_free(PMEMobjpool* pop);
 
-
+#if defined (UNIV_PMEM_SIM_LATENCY)
+#define PMEM_DELAY(start, end, t) do {\
+	start = my_timer_cycles();\
+	end = start;\
+	while( (end - start) < t){\
+		end = my_timer_cycles();\
+	}\
+} while(0)
+#endif
 //////////////////// PARTITIONED-LOG 2018.11.2/////////////
 
 #if defined (UNIV_PMEMOBJ_PL)

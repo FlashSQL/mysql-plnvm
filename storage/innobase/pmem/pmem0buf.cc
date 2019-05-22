@@ -23,6 +23,12 @@
 #include "buf0dblwr.h"
 
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+static uint64_t PMEM_SIM_LATENCY = 1000;
+static float PMEM_CPU_FREQ = 2.2;
+static uint64_t PMEM_SIM_CPU_CYCLES = PMEM_SIM_LATENCY * PMEM_CPU_FREQ;
+#endif //UNIV_PMEM_SIM_LATENCY
+
 #if defined (UNIV_PMEMOBJ_BUF)
 /*
   There are two types of structure need to be allocated: structures in NVM that non-volatile after shutdown server or power-off and D-RAM structures that only need when the server is running. 
@@ -733,6 +739,11 @@ TX_BEGIN(pop) {
 			//pspec_block->file_handle = node->handle;
 			strcpy(pspec_block->file_name, node->name);
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+			/*5 times write to NVM*/
+			PMEM_DELAY(start_cycle, end_cycle, 5 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
+
 #if defined (UNIV_PMEMOBJ_NO_PERSIST)
 			pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
 			//memcpy(pdata + pspec_block->pmemaddr, src_data, page_size); 
@@ -830,6 +841,10 @@ retry:
 					}
 				}
 				pfree_block->sync = sync;
+#if defined (UNIV_PMEM_SIM_LATENCY)
+			/*3 times write to NVM*/
+			PMEM_DELAY(start_cycle, end_cycle, 3 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
 #if defined (UNIV_PMEMOBJ_NO_PERSIST)
 				pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 				//memcpy(pdata + pfree_block->pmemaddr, src_data, page_size); 
@@ -923,6 +938,10 @@ TX_BEGIN(pop) {
 	else
 		++(phashlist->n_sio_pending);		
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	/*7 times write to NVM*/
+	PMEM_DELAY(start_cycle, end_cycle, 7 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
 // HANDLE FULL LIST ////////////////////////////////////////////////////////////
 	if (phashlist->cur_pages >= phashlist->max_pages * PMEM_BUF_FLUSH_PCT) {
 		//(3) The hashlist is (nearly) full, flush it and assign a free list 
@@ -1303,6 +1322,10 @@ pm_handle_finished_block(
 		for (i = 0; i < pflush_list->max_pages; i++) {
 			D_RW(D_RW(pflush_list->arr)[i])->state = PMEM_FREE_BLOCK;
 			D_RW(D_RW(pflush_list->arr)[i])->sync = false;
+#if defined (UNIV_PMEM_SIM_LATENCY)
+			/*2 times write to NVM*/
+			PMEM_DELAY(start_cycle, end_cycle, 2 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
 		}
 
 		pflush_list->cur_pages = 0;
@@ -1336,11 +1359,20 @@ pm_handle_finished_block(
 		PMEM_BUF_FREE_POOL* pfree_pool;
 		pfree_pool = D_RW(buf->free_pool);
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		/*7 times write to NVM*/
+		PMEM_DELAY(start_cycle, end_cycle, 7 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
+
 		//printf("PMEM_DEBUG: in fil_aio_wait(), try to lock free_pool list id: %zd, cur_lists in free_pool= %zd \n", pflush_list->list_id, pfree_pool->cur_lists);
 		pmemobj_rwlock_wrlock(pop, &pfree_pool->lock);
 
 		POBJ_LIST_INSERT_TAIL(pop, &pfree_pool->head, flush_list, list_entries);
 		pfree_pool->cur_lists++;
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		/*2 times write to NVM*/
+		PMEM_DELAY(start_cycle, end_cycle, 2 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
 		//wakeup who is waitting for free_pool available
 		os_event_set(buf->free_pool_event);
 
@@ -1583,7 +1615,7 @@ pm_buf_read(
 	
 #if defined (UNIV_PMEMOBJ_BLOOM)
 				if (bloom_ret == BLOOM_MAY_EXIST){
-					printf("++++> BLOOM false positive fold %zu \n", page_id.fold());
+					//printf("++++> BLOOM false positive fold %zu \n", page_id.fold());
 					buf->cbf->n_false_pos_reads++;
 				}
 #endif

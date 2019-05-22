@@ -1809,6 +1809,9 @@ innobase_start_or_create_for_mysql(void)
 	#ifdef UNIV_PMEMOBJ_WAL
 		ib::info() << "======= Hello PMEMOBJ WAL from VLDB lab ========\n";
 	#endif 
+	#if defined (UNIV_PMEM_SIM_LATENCY)
+		ib::info() << "======= Simulate addtional latency %zu ns ========\n", srv_pmem_sim_latency;
+	#endif
 	#ifdef UNIV_PMEOBJ_BUF
 	ib::info() << "======== pool_size =" << srv_pmem_pool_size << 
 		"MB; srv_pmem_buf_size= " << srv_pmem_buf_size << "MB; " <<
@@ -1972,6 +1975,12 @@ innobase_start_or_create_for_mysql(void)
 
 	fsp_init();
 	log_init();
+
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	PMEM_SIM_LATENCY = srv_pmem_sim_latency;
+	PMEM_SIM_CPU_CYCLES = PMEM_SIM_LATENCY * 1.0 * PMEM_CPU_FREQ;
+	pmw->PMEM_SIM_CPU_CYCLES = PMEM_SIM_CPU_CYCLES;
+#endif
 
 #if defined (UNIV_PMEMOBJ_BUF)
 	size_t buf_size = srv_pmem_buf_size * 1024 * 1024;

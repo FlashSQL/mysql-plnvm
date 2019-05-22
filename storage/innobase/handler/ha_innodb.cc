@@ -3769,6 +3769,11 @@ innobase_init(
 		srv_ppl_log_files_per_bucket = 1;
 	}
 #endif
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	if (!srv_pmem_sim_latency) {
+		srv_pmem_sim_latency = 1000 ; //1000 ns
+	}
+#endif
 
 #if defined(UNIV_PMEMOBJ_BUF) 
 	if (!srv_pmem_buf_bucket_size) {
@@ -19623,6 +19628,13 @@ static MYSQL_SYSVAR_DOUBLE(pmem_bloom_fpr, srv_pmem_bloom_fpr,
   NULL, NULL, 0.001, 0, 1,0);
 #endif
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+static MYSQL_SYSVAR_ULONG(pmem_sim_latency, srv_pmem_sim_latency,
+  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+  "Additional latency , from 1 ns to 10000000, default 1000.",
+  NULL, NULL, 1000, 1, 10000000,0);
+#endif
+
 #if defined (UNIV_PMEMOBJ_BUF) || defined (UNIV_PMEMOBJ_DBW) || defined (UNIV_PMEMOBJ_LOG) || defined (UNIV_PMEMOBJ_WAL) || defined (UNIV_PMEMOBJ_PART_PL)
 static MYSQL_SYSVAR_STR(pmem_home_dir, srv_pmem_home_dir,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
@@ -20536,6 +20548,9 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(pmem_n_flush_threads),
   MYSQL_SYSVAR(pmem_flush_threshold),
 #endif 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+  MYSQL_SYSVAR(pmem_sim_latency),
+#endif
 #if defined (UNIV_PMEMOBJ_BUF_PARTITION)
   MYSQL_SYSVAR(pmem_n_space_bits),
   MYSQL_SYSVAR(pmem_page_per_bucket_bits),

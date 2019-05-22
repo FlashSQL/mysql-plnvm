@@ -71,6 +71,9 @@ static bool USE_BIT_ARRAY = true;
 //static bool USE_BIT_ARRAY = false;
 static uint64_t BIT_BLOCK_SIZE = sizeof(long long);
 
+/*call pmemobj_persist() at every log record write*/
+static bool PERSIST_AT_WRITE = true;
+
 #endif //UNIV_PMEMOBJ_PL
 //////////////// NEW PMEM PARTITION LOG /////////////
 
@@ -1710,6 +1713,9 @@ get_free_buf:
 #endif	
 		//move the diskaddr on the line ahead, the written size should be aligned with 512B for DIRECT_IO works
 		pline->diskaddr += plogbuf->size;
+		if (PERSIST_AT_WRITE){
+			pmemobj_persist(pop, &pline->diskaddr, sizeof(pline->diskaddr));
+		}
 
 		// (1.4) write log rec on new buf
 		D_RW(free_buf)->hashed_id = pline->hashed_id; 
@@ -1778,14 +1784,27 @@ get_free_buf:
 			//update the oldest
 			if (pline->oldest_block_off == UINT32_MAX) {
 				pline->oldest_block_off = item->block_off;
+				if (PERSIST_AT_WRITE){
+					pmemobj_persist(pop, &pline->oldest_block_off, sizeof(pline->oldest_block_off));
+				}
 			}
 			//test
 			/*insert the pair (offset, bid) into the set*/
 			write_off = plog_block->start_diskaddr + plog_block->start_off;
 			pline->offset_map->insert( std::make_pair(write_off, item->block_off));
 
+			if (PERSIST_AT_WRITE){
+				pmemobj_persist(pop, plog_block, sizeof(PMEM_PAGE_LOG_BLOCK));
+			}
+
 		}
 		plog_block->lastLSN = rec_lsn;
+
+		/*persist the plogblock*/
+		if (PERSIST_AT_WRITE){
+			pmemobj_persist(pop, D_RW(free_buf), sizeof(PMEM_PAGE_LOG_BUF));
+			pmemobj_persist(pop, plogbuf, sizeof(PMEM_PAGE_LOG_BUF));
+		}
 
 
 		// (1.6) assign a pointer in the flusher to the full log buf, this function return immediately 
@@ -1814,6 +1833,9 @@ get_free_buf:
 
 		old_off = plogbuf->cur_off;
 		plogbuf->cur_off += rec_size;
+		if (PERSIST_AT_WRITE){
+			pmemobj_persist(pop, &plogbuf->cur_off, sizeof(plogbuf->cur_off));
+		}
 
 		if (!pline->is_req_checkpoint){
 			/*comment this line to disable checkpoint (for debugging)*/
@@ -1850,13 +1872,21 @@ get_free_buf:
 			//update the oldest
 			if (pline->oldest_block_off == UINT32_MAX) {
 				pline->oldest_block_off = item->block_off;
+				if (PERSIST_AT_WRITE){
+					pmemobj_persist(pop, &pline->oldest_block_off, sizeof(pline->oldest_block_off));
+				}
 			}
 			//test
 			/*insert the pair (offset, bid) into the set*/
 			write_off = plog_block->start_diskaddr + plog_block->start_off;
+
 			pmemobj_rwlock_wrlock(pop, &pline->meta_lock);
 			pline->offset_map->insert( std::make_pair(write_off, item->block_off));
 			pmemobj_rwlock_unlock(pop, &pline->meta_lock);
+
+			if (PERSIST_AT_WRITE){
+				pmemobj_persist(pop, plog_block, sizeof(PMEM_PAGE_LOG_BLOCK));
+			}
 		}
 
 		plog_block->lastLSN = rec_lsn;
@@ -2397,6 +2427,7 @@ pm_ppl_check_for_ckpt(
 
 		//Method 1
 		pline->ckpt_lsn = oldest_lsn + delta;
+		//pmemobj_persist(pop, &pline->ckpt_lsn, sizeof(pline->ckpt_lsn));
 
 		//Method 2 => no ckpt call
 		//pline->ckpt_lsn = oldest_lsn + 1000000 ;
@@ -2408,6 +2439,7 @@ pm_ppl_check_for_ckpt(
 		pmemobj_rwlock_wrlock(pop, &ppl->ckpt_lock);
 		if (ppl->max_oldest_lsn < pline->ckpt_lsn){
 			ppl->max_oldest_lsn = pline->ckpt_lsn;
+			//pmemobj_persist(pop, &ppl->max_oldest_lsn, sizeof(ppl->max_oldest_lsn));
 		}
 
 		//printf("SET is_req_checkpoint to true pline %zu \n", pline->hashed_id);
