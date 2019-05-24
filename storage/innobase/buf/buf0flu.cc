@@ -4789,10 +4789,13 @@ retry:
 void
 pm_handle_finished_block_with_flusher(
 		PMEMobjpool*		pop,
+		PMEM_WRAPPER*       pmw ,
 	   	PMEM_BUF*			buf,
 	   	PMEM_BUF_BLOCK*		pblock)
 {
-	
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	uint64_t start_cycle, end_cycle;
+#endif	
 	PMEM_FLUSHER* flusher;
 	ulint i;
 
@@ -4845,13 +4848,35 @@ pm_handle_finished_block_with_flusher(
 
 		//(1) Reset blocks in the list
 		for (i = 0; i < pflush_list->max_pages; i++) {
-			D_RW(D_RW(pflush_list->arr)[i])->state = PMEM_FREE_BLOCK;
-			D_RW(D_RW(pflush_list->arr)[i])->sync = false;
+			PMEM_BUF_BLOCK*		it = D_RW(D_RW(pflush_list->arr)[i]);
+
+			it->state = PMEM_FREE_BLOCK;
+			it->sync = false;
+
+#if defined (UNIV_PMEMOBJ_PERSIST)
+			pmemobj_persist(pop, &it->state, sizeof(it->state));
+			pmemobj_persist(pop, &it->sync, sizeof(it->sync));
+#endif	
+			//D_RW(D_RW(pflush_list->arr)[i])->state = PMEM_FREE_BLOCK;
+			//D_RW(D_RW(pflush_list->arr)[i])->sync = false;
+#if defined (UNIV_PMEM_SIM_LATENCY)
+			PMEM_DELAY(start_cycle, end_cycle, 2 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
 		}
 
 		pflush_list->cur_pages = 0;
 		pflush_list->is_flush = false;
 		pflush_list->hashed_id = PMEM_ID_NONE;
+
+#if defined (UNIV_PMEMOBJ_PERSIST)
+		pmemobj_persist(pop, &pflush_list->cur_pages, sizeof(pflush_list->cur_pages));
+		pmemobj_persist(pop, &pflush_list->is_flush, sizeof(pflush_list->is_flush));
+		pmemobj_persist(pop, &pflush_list->hashed_id, sizeof(pflush_list->hashed_id));
+#endif
+
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, 3 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
 		
 		// (2) Remove this list from the doubled-linked list
 		//assert( !TOID_IS_NULL(pflush_list->prev_list) );
@@ -4888,45 +4913,13 @@ pm_handle_finished_block_with_flusher(
 			}
 		}
 
-		//if( !TOID_IS_NULL(pflush_list->prev_list) &&
-		// D_RW(pflush_list->prev_list) != NULL &&
-		// D_RW(D_RW(pflush_list->prev_list)->next_list) != NULL  ) {
-		//	//if (is_lock_prev_list)
-		//	//pmemobj_rwlock_wrlock(pop, &D_RW(pflush_list->prev_list)->lock);
-		//	if (D_RW(pflush_list->next_list) == NULL) {
-		//		TOID_ASSIGN( D_RW(pflush_list->prev_list)->next_list, OID_NULL); 
-		//	}
-		//	else {
-		//		TOID_ASSIGN( D_RW(pflush_list->prev_list)->next_list, pflush_list->next_list.oid);
-		//	}
-		//	//if (is_lock_prev_list)
-		//	//pmemobj_rwlock_unlock(pop, &D_RW(pflush_list->prev_list)->lock);
-		//}
-
-//This case is rarely, can occur bug if happen
-		//if (!TOID_IS_NULL(pflush_list->next_list) &&
-		//  D_RW(pflush_list->next_list) != NULL && 
-		//  D_RW(D_RW(pflush_list->next_list)->prev_list) != NULL ) {
-		//	//pmemobj_rwlock_wrlock(pop, &D_RW(pflush_list->next_list)->lock);
-		//	if ( D_RW(pflush_list->prev_list) == NULL) {
-		//		TOID_ASSIGN( D_RW(pflush_list->next_list)->prev_list, OID_NULL);
-		//	}
-		//	else {
-		//	#if defined (UNIV_PMEMOBJ_BUF_RECOVERY_DEBUG)
-		//	printf("[4] !!!!! handle finish, cur_list_id %zu ",
-		//			pflush_list->list_id);
-		//	printf ("[4] !!!!  has next_list_id %zu ", D_RW(pflush_list->next_list)->list_id);
-		//	printf ("[4] !!!! has prev_list_id %zu \n", D_RW(pflush_list->prev_list)->list_id);
-		//	#endif
-		//		TOID_ASSIGN(D_RW(pflush_list->next_list)->prev_list, pflush_list->prev_list.oid);
-		//	}
-
-		//	//pmemobj_rwlock_unlock(pop, &D_RW(pflush_list->next_list)->lock);
-		//}
-		
 		TOID_ASSIGN(pflush_list->next_list, OID_NULL);
+
 		TOID_ASSIGN(pflush_list->prev_list, OID_NULL);
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, 4 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
 		// (3) we return this list to the free_pool
 		PMEM_BUF_FREE_POOL* pfree_pool;
 		pfree_pool = D_RW(buf->free_pool);
@@ -4935,6 +4928,13 @@ pm_handle_finished_block_with_flusher(
 
 		POBJ_LIST_INSERT_TAIL(pop, &pfree_pool->head, flush_list, list_entries);
 		pfree_pool->cur_lists++;
+
+#if defined (UNIV_PMEMOBJ_PERSIST)
+		pmemobj_persist(pop, &pfree_pool->cur_lists, sizeof(pfree_pool->cur_lists));
+#endif
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, 2 * pmw->PMEM_SIM_CPU_CYCLES);
+#endif
 		//wakeup who is waitting for free_pool available
 		os_event_set(buf->free_pool_event);
 		

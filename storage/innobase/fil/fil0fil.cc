@@ -6858,10 +6858,10 @@ fil_aio_wait(
 			#if defined (UNIV_PMEMOBJ_LSB) // case B: LSB implement
 				pm_lsb_handle_finished_block(gb_pmw->pop, gb_pmw->plsb,  pblock);
 			#else // case A: PB-NVM
-				pm_handle_finished_block_with_flusher(gb_pmw->pop, gb_pmw->pbuf,  pblock);
+				pm_handle_finished_block_with_flusher(gb_pmw->pop, gb_pmw, gb_pmw->pbuf,  pblock);
 			#endif //UNIV_PMEMOBJ_LSB
 		#else //the stable version
-				pm_handle_finished_block(gb_pmw->pop, gb_pmw->pbuf,  pblock);
+				pm_handle_finished_block(gb_pmw->pop, gb_pmw, gb_pmw->pbuf,  pblock);
 		#endif
 			} //end if pmem aio
 			else {

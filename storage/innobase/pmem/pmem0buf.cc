@@ -25,7 +25,7 @@
 
 #if defined (UNIV_PMEM_SIM_LATENCY)
 static uint64_t PMEM_SIM_LATENCY = 1000;
-static float PMEM_CPU_FREQ = 2.2;
+//static float PMEM_CPU_FREQ = 2.2;
 static uint64_t PMEM_SIM_CPU_CYCLES = PMEM_SIM_LATENCY * PMEM_CPU_FREQ;
 #endif //UNIV_PMEM_SIM_LATENCY
 
@@ -628,6 +628,9 @@ pm_buf_write_with_flusher(
 		   	bool			sync) 
 {
 	
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	uint64_t start_cycle, end_cycle;
+#endif
 	PMEM_BUF* buf = pmw->pbuf;
 	//bool is_lock_free_block = false;
 	//bool is_lock_free_list = false;
@@ -693,7 +696,10 @@ pm_cbf_add(buf->cbf, page_id.fold());
 						strstr(pspec_block->file_name, node->name) != 0) {
 					//overwrite this spec block
 					pspec_block->sync = sync;
-#if defined (UNIV_PMEMOBJ_NO_PERSIST)
+#if defined (UNIV_PMEMOBJ_PERSIST)
+					pmemobj_persist(pop, &pspec_block->sync, sizeof(pspec_block->sync));
+#endif
+#if defined (UNIV_PMEMOBJ_NO_TX)
 					//memcpy(pdata + pspec_block->pmemaddr, src_data, page_size); 
 					pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
 #else
@@ -706,7 +712,9 @@ TX_BEGIN(pop) {
 					//update the file_name, page_id in case of tmp space
 					strcpy(pspec_block->file_name, node->name);
 					pspec_block->id.copy_from(page_id);
-
+#if defined (UNIV_PMEMOBJ_PERSIST)
+					pmemobj_persist(pop, &pspec_block->id, sizeof(pspec_block->id));
+#endif
 					pmemobj_rwlock_unlock(pop, &pspec_list->lock);
 
 					return PMEM_SUCCESS;
@@ -724,7 +732,6 @@ TX_BEGIN(pop) {
 			pspec_block = D_RW(D_RW(pspec_list->arr)[i]);
 			//add new block to the spec list
 			pspec_block->sync = sync;
-
 			pspec_block->id.copy_from(page_id);
 			pspec_block->state = PMEM_IN_USED_BLOCK;
 			//get file handle
@@ -734,17 +741,21 @@ TX_BEGIN(pop) {
 				printf("PMEM_ERROR node from space is NULL\n");
 				assert(0);
 			}
-
-			//printf ("PMEM_INFO add file %s fd %d\n", node->name, node->handle.m_file);
-			//pspec_block->file_handle = node->handle;
 			strcpy(pspec_block->file_name, node->name);
+
+#if defined (UNIV_PMEMOBJ_PERSIST)
+			pmemobj_persist(pop, &pspec_block->sync, sizeof(pspec_block->sync));
+			pmemobj_persist(pop, &pspec_block->id, sizeof(pspec_block->id));
+			pmemobj_persist(pop, &pspec_block->state, sizeof(pspec_block->state));
+			pmemobj_persist(pop, &pspec_block->file_name, sizeof(pspec_block->file_name));
+#endif
 
 #if defined (UNIV_PMEM_SIM_LATENCY)
 			/*5 times write to NVM*/
 			PMEM_DELAY(start_cycle, end_cycle, 5 * pmw->PMEM_SIM_CPU_CYCLES);
-#endif
-
-#if defined (UNIV_PMEMOBJ_NO_PERSIST)
+			memcpy(pdata + pspec_block->pmemaddr, src_data, page_size); 
+#else
+#if defined (UNIV_PMEMOBJ_NO_TX)
 			pmemobj_memcpy_persist(pop, pdata + pspec_block->pmemaddr, src_data, page_size); 
 			//memcpy(pdata + pspec_block->pmemaddr, src_data, page_size); 
 #else
@@ -752,7 +763,9 @@ TX_BEGIN(pop) {
 			TX_MEMCPY(pdata + pspec_block->pmemaddr, src_data, page_size); 
 }TX_ONABORT {
 }TX_END
-#endif //UNIV_PMEMOBJ_NO_PERSIST
+#endif //UNIV_PMEMOBJ_NO_TX
+
+#endif //UNIV_PMEM_SIM_LATENCY
 			++(pspec_list->cur_pages);
 
 			printf("Add new block to the spec list, space_no %zu,file %s cur_pages %zu \n", page_id.space(),node->name,  pspec_list->cur_pages);
@@ -841,11 +854,16 @@ retry:
 					}
 				}
 				pfree_block->sync = sync;
+#if defined (UNIV_PMEMOBJ_PERSIST)
+				pmemobj_persist(pop, &pfree_block->sync, sizeof(pfree_block->sync));
+#endif
+
 #if defined (UNIV_PMEM_SIM_LATENCY)
 			/*3 times write to NVM*/
 			PMEM_DELAY(start_cycle, end_cycle, 3 * pmw->PMEM_SIM_CPU_CYCLES);
-#endif
-#if defined (UNIV_PMEMOBJ_NO_PERSIST)
+			memcpy(pdata + pfree_block->pmemaddr, src_data, page_size); 
+#else //PMEM_BUF
+#if defined (UNIV_PMEMOBJ_NO_TX)
 				pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 				//memcpy(pdata + pfree_block->pmemaddr, src_data, page_size); 
 #else
@@ -853,7 +871,9 @@ TX_BEGIN(pop) {
 				TX_MEMCPY(pdata + pfree_block->pmemaddr, src_data, page_size); 
 }TX_ONABORT {
 }TX_END
-#endif //UNIV_PMEMOBJ_NO_PERSIST
+#endif //UNIV_PMEMOBJ_NO_TX
+
+#endif //UNIV_PMEM_SIM_LATENCY
 
 #if defined (UNIV_PMEMOBJ_BUF_STAT)
 				++buf->bucket_stats[hashed].n_overwrites;
@@ -902,16 +922,23 @@ TX_BEGIN(pop) {
 	strcpy(pfree_block->file_name, node->name);
 	//end code
 	
-	//D_RW(free_block)->bpage = bpage;
 	pfree_block->sync = sync;
-
 	pfree_block->id.copy_from(page_id);
 	
 	assert(pfree_block->size.equals_to(size));
 	assert(pfree_block->state == PMEM_FREE_BLOCK);
 	pfree_block->state = PMEM_IN_USED_BLOCK;
 
-#if defined (UNIV_PMEMOBJ_NO_PERSIST)
+#if defined (UNIV_PMEMOBJ_PERSIST)
+	pmemobj_persist(pop, &pfree_block->sync, sizeof(pfree_block->sync));
+	pmemobj_persist(pop, &pfree_block->id, sizeof(pfree_block->id));
+	pmemobj_persist(pop, &pfree_block->state, sizeof(pfree_block->state));
+#endif
+
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		memcpy(pdata + pfree_block->pmemaddr, src_data, page_size); 
+#else
+#if defined (UNIV_PMEMOBJ_NO_TX)
 		pmemobj_memcpy_persist(pop, pdata + pfree_block->pmemaddr, src_data, page_size); 
 		//memcpy(pdata + pfree_block->pmemaddr, src_data, page_size); 
 #else
@@ -919,7 +946,8 @@ TX_BEGIN(pop) {
 		TX_MEMCPY(pdata + pfree_block->pmemaddr, src_data, page_size); 
 	}TX_ONABORT {
 	}TX_END
-#endif //UNIV_PMEMOBJ_NO_PERSIST
+#endif //UNIV_PMEMOBJ_NO_TX
+#endif //UNIV_PMEM_SIM_LATENCY
 
 	//if(is_lock_free_block)
 	//pmemobj_rwlock_unlock(pop, &pfree_block->lock);
@@ -930,7 +958,9 @@ TX_BEGIN(pop) {
 	//handle hash_list, 
 
 	++(phashlist->cur_pages);
-	
+#if defined (UNIV_PMEMOBJ_PERSIST)
+	pmemobj_persist(pop, &phashlist->cur_pages, sizeof(phashlist->cur_pages));
+#endif	
 	//phashlist->n_aio_pending = phashlist->cur_pages;
 	//we only pending aio when flush list
 	if (sync == false)
@@ -947,6 +977,11 @@ TX_BEGIN(pop) {
 		//(3) The hashlist is (nearly) full, flush it and assign a free list 
 		phashlist->hashed_id = hashed;
 		phashlist->is_flush = true;
+
+#if defined (UNIV_PMEMOBJ_PERSIST)
+		pmemobj_persist(pop, &phashlist->hashed_id, sizeof(phashlist->hashed_id));
+		pmemobj_persist(pop, &phashlist->is_flush, sizeof(phashlist->is_flush));
+#endif
 		//block upcomming writes into this bucket
 		os_event_reset(buf->flush_events[hashed]);
 		
@@ -1290,10 +1325,14 @@ pm_buf_flush_list(
 void
 pm_handle_finished_block(
 		PMEMobjpool*		pop,
+		PMEM_WRAPPER*		pmw	,
 	   	PMEM_BUF*			buf,
 	   	PMEM_BUF_BLOCK*		pblock)
 {
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	uint64_t start_cycle, end_cycle;
+#endif
 	//bool is_lock_prev_list = false;
 
 	//(1) handle the flush_list

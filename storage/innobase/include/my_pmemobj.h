@@ -2429,6 +2429,7 @@ void pm_buf_print_lists_info(PMEM_BUF* buf);
 void
 pm_handle_finished_block(
 		PMEMobjpool*		pop,
+		PMEM_WRAPPER*		pmw	,
 	   	PMEM_BUF*			buf,
 	   	PMEM_BUF_BLOCK* pblock);
 
@@ -2442,6 +2443,7 @@ pm_handle_finished_block_no_free_pool(
 void
 pm_handle_finished_block_with_flusher(
 		PMEMobjpool*		pop,
+		PMEM_WRAPPER*		pmw	,
 	   	PMEM_BUF*			buf,
 	   	PMEM_BUF_BLOCK*		pblock);
 

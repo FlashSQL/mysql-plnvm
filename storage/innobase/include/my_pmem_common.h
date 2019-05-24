@@ -39,7 +39,7 @@
 //#define MAX_TX_PER_PAGE 64 
 //
 
-
+#define PMEM_CPU_FREQ 2.2
 
 ////////////// End Partitioned-Log ////////////
 
