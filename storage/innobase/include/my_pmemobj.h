@@ -1243,6 +1243,7 @@ pm_ppl_parse_entry_id(
 uint64_t
 pm_ppl_write_rec(
 			PMEMobjpool*		pop,
+			PMEM_WRAPPER*		pmw,
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			key,
 			byte*				log_src,
@@ -1391,6 +1392,7 @@ pm_ppl_set_flush_state(
 void 
 pm_ppl_flush_page(
 		PMEMobjpool*		pop,
+		PMEM_WRAPPER*		pmw,
 		PMEM_PAGE_PART_LOG*	ppl,
 		buf_page_t*			bpage,
 		uint64_t			space,

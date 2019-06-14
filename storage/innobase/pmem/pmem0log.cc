@@ -1579,6 +1579,7 @@ pm_ppl_parse_entry_id(
 uint64_t
 pm_ppl_write_rec(
 			PMEMobjpool*		pop,
+			PMEM_WRAPPER*		pmw,
 			PMEM_PAGE_PART_LOG*	ppl,
 			uint64_t			key,
 			byte*				log_src,
@@ -1610,6 +1611,10 @@ pm_ppl_write_rec(
 	uint64_t start_time, end_time;
 	uint64_t t1, t2;
 #endif	
+
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	uint64_t start_cycle, end_cycle;
+#endif
 
 
 	assert(rec_size > 0);
@@ -1713,9 +1718,9 @@ get_free_buf:
 #endif	
 		//move the diskaddr on the line ahead, the written size should be aligned with 512B for DIRECT_IO works
 		pline->diskaddr += plogbuf->size;
-		if (PERSIST_AT_WRITE){
-			pmemobj_persist(pop, &pline->diskaddr, sizeof(pline->diskaddr));
-		}
+#if defined (UNIV_PMEMOBJ_PERSIST)
+		pmemobj_persist(pop, &pline->diskaddr, sizeof(pline->diskaddr));
+#endif
 
 		// (1.4) write log rec on new buf
 		D_RW(free_buf)->hashed_id = pline->hashed_id; 
@@ -1739,6 +1744,9 @@ get_free_buf:
 		old_off = D_RW(free_buf)->cur_off;
 		D_RW(free_buf)->cur_off += rec_size;
 		
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, 11 * pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 		// (1.5) write the header. This header is needed when recovery,
 		byte* header = ppl->p_align + plogbuf->pmemaddr + 0;
 		byte* ptr = header;
@@ -1757,6 +1765,9 @@ get_free_buf:
 		pline->is_flushing = false;
 		os_event_set(pline->log_flush_event);
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, 4 * pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 		/*we update metadata on plogblock and flushing logbuf in non-critical section*/
 
 		/*(2) Get the plogblock*/	
@@ -1781,31 +1792,44 @@ get_free_buf:
 			plog_block->first_rec_size = rec_size;
 			plog_block->first_rec_type = type;
 
+#if defined (UNIV_PMEMOBJ_PERSIST)
+			pmemobj_persist(pop, &plog_block->start_off, sizeof(plog_block->start_off));
+			pmemobj_persist(pop, &plog_block->start_diskaddr, sizeof(plog_block->start_diskaddr));
+			pmemobj_persist(pop, &plog_block->firstLSN, sizeof(plog_block->firstLSN));
+			pmemobj_persist(pop, &plog_block->first_rec_size, sizeof(plog_block->first_rec_size));
+			pmemobj_persist(pop, &plog_block->first_rec_type, sizeof(plog_block->first_rec_type));
+#endif
+
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, 5 * pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 			//update the oldest
 			if (pline->oldest_block_off == UINT32_MAX) {
 				pline->oldest_block_off = item->block_off;
-				if (PERSIST_AT_WRITE){
-					pmemobj_persist(pop, &pline->oldest_block_off, sizeof(pline->oldest_block_off));
-				}
+#if defined (UNIV_PMEMOBJ_PERSIST)
+				pmemobj_persist(pop, &pline->oldest_block_off, sizeof(pline->oldest_block_off));
+#endif
+
+#if defined (UNIV_PMEM_SIM_LATENCY)
+				PMEM_DELAY(start_cycle, end_cycle, pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 			}
 			//test
 			/*insert the pair (offset, bid) into the set*/
 			write_off = plog_block->start_diskaddr + plog_block->start_off;
 			pline->offset_map->insert( std::make_pair(write_off, item->block_off));
 
-			if (PERSIST_AT_WRITE){
-				pmemobj_persist(pop, plog_block, sizeof(PMEM_PAGE_LOG_BLOCK));
-			}
-
 		}
 		plog_block->lastLSN = rec_lsn;
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 
 		/*persist the plogblock*/
-		if (PERSIST_AT_WRITE){
-			pmemobj_persist(pop, D_RW(free_buf), sizeof(PMEM_PAGE_LOG_BUF));
-			pmemobj_persist(pop, plogbuf, sizeof(PMEM_PAGE_LOG_BUF));
-		}
-
+#if defined (UNIV_PMEMOBJ_PERSIST)
+		pmemobj_persist(pop, D_RW(free_buf), sizeof(PMEM_PAGE_LOG_BUF));
+		pmemobj_persist(pop, plogbuf, sizeof(PMEM_PAGE_LOG_BUF));
+#endif
 
 		// (1.6) assign a pointer in the flusher to the full log buf, this function return immediately 
 		pm_log_buf_assign_flusher(ppl, plogbuf);
@@ -1837,6 +1861,9 @@ get_free_buf:
 			pmemobj_persist(pop, &plogbuf->cur_off, sizeof(plogbuf->cur_off));
 		}
 
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, 5 * pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 		if (!pline->is_req_checkpoint){
 			/*comment this line to disable checkpoint (for debugging)*/
 			pm_ppl_check_for_ckpt(pop, ppl, pline, plogbuf, rec_lsn);
@@ -1869,12 +1896,26 @@ get_free_buf:
 			plog_block->first_rec_size = rec_size;
 			plog_block->first_rec_type = type;
 
+#if defined (UNIV_PMEMOBJ_PERSIST)
+			pmemobj_persist(pop, &plog_block->start_off, sizeof(plog_block->start_off));
+			pmemobj_persist(pop, &plog_block->start_diskaddr, sizeof(plog_block->start_diskaddr));
+			pmemobj_persist(pop, &plog_block->firstLSN, sizeof(plog_block->firstLSN));
+			pmemobj_persist(pop, &plog_block->first_rec_size, sizeof(plog_block->first_rec_size));
+			pmemobj_persist(pop, &plog_block->first_rec_type, sizeof(plog_block->first_rec_type));
+#endif
+
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, 5 * pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 			//update the oldest
 			if (pline->oldest_block_off == UINT32_MAX) {
 				pline->oldest_block_off = item->block_off;
-				if (PERSIST_AT_WRITE){
-					pmemobj_persist(pop, &pline->oldest_block_off, sizeof(pline->oldest_block_off));
-				}
+#if defined (UNIV_PMEMOBJ_PERSIST)
+				pmemobj_persist(pop, &pline->oldest_block_off, sizeof(pline->oldest_block_off));
+#endif
+#if defined (UNIV_PMEM_SIM_LATENCY)
+				PMEM_DELAY(start_cycle, end_cycle, pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 			}
 			//test
 			/*insert the pair (offset, bid) into the set*/
@@ -1884,12 +1925,12 @@ get_free_buf:
 			pline->offset_map->insert( std::make_pair(write_off, item->block_off));
 			pmemobj_rwlock_unlock(pop, &pline->meta_lock);
 
-			if (PERSIST_AT_WRITE){
-				pmemobj_persist(pop, plog_block, sizeof(PMEM_PAGE_LOG_BLOCK));
-			}
 		}
 
 		plog_block->lastLSN = rec_lsn;
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		PMEM_DELAY(start_cycle, end_cycle, pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 
 		//pmemobj_rwlock_unlock(pop, &plog_block->lock);
 		//pmemobj_rwlock_unlock(pop, &pline->lock);
@@ -3826,6 +3867,7 @@ pm_ppl_set_flush_state(
 void 
 pm_ppl_flush_page(
 		PMEMobjpool*		pop,
+		PMEM_WRAPPER*		pmw,
 		PMEM_PAGE_PART_LOG*	ppl,
 		buf_page_t*			bpage,
 		uint64_t			space,
@@ -3833,6 +3875,9 @@ pm_ppl_flush_page(
 		uint64_t			key,
 		uint64_t			pageLSN) 
 {
+#if defined (UNIV_PMEM_SIM_LATENCY)
+	uint64_t start_cycle, end_cycle;
+#endif
 
 	ulint hashed;
 	uint32_t n;
@@ -3880,7 +3925,16 @@ pm_ppl_flush_page(
 		if (USE_BIT_ARRAY) {
 			pm_bit_clear(pline, pline->bit_arr, sizeof(long long), plog_block->id);
 		}
+
 		__reset_page_log_block(plog_block);
+#if defined (UNIV_PMEMOBJ_PERSIST)
+		pmemobj_persist(pop, plog_block, sizeof(PMEM_PAGE_LOG_BLOCK));
+#endif
+
+#if defined (UNIV_PMEM_SIM_LATENCY)
+		/*the reset function takes 12 accesses*/
+		PMEM_DELAY(start_cycle, end_cycle, 12 * pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 
 		pmemobj_rwlock_unlock(pop, &plog_block->lock);
 
@@ -3931,8 +3985,11 @@ pm_ppl_flush_page(
 			}
 
 			pline->oldest_block_off = min_off;	
+#if defined (UNIV_PMEM_SIM_LATENCY)
+			PMEM_DELAY(start_cycle, end_cycle, 11 * pmw->PMEM_SIM_CPU_CYCLES); 
+#endif
 
-		}
+		}//end if (item->block_off == ...)
 		//pmemobj_rwlock_wrlock(pop, &pline->meta_lock);
 		HASH_DELETE(plog_hash_t, addr_hash, pline->addr_hash, key, item);
 		pmemobj_rwlock_unlock(pop, &pline->meta_lock);

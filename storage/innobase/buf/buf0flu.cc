@@ -833,7 +833,7 @@ buf_flush_write_complete(
 #if defined (UNIV_PMEMOBJ_PART_PL)
 	//we only call pm_ppl_flush_page when the flushed page is persist on storage
 	pm_ppl_flush_page(
-			gb_pmw->pop, gb_pmw->ppl,
+			gb_pmw->pop, gb_pmw, gb_pmw->ppl,
 			bpage,
 			bpage->id.space(),
 			bpage->id.page_no(),

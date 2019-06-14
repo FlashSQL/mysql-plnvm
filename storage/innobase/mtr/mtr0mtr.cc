@@ -1214,7 +1214,7 @@ uint64_t mtr_t::add_rec_to_ppl(
 	   	byte*		log_src,
 	   	uint32_t	rec_size)
 {
-	return pm_ppl_write_rec(gb_pmw->pop, gb_pmw->ppl, key, log_src, rec_size);
+	return pm_ppl_write_rec(gb_pmw->pop, gb_pmw, gb_pmw->ppl, key, log_src, rec_size);
 }
 
 void
