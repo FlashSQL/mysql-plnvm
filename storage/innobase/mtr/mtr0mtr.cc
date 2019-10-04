@@ -44,7 +44,7 @@ extern volatile int64 gb_write_log_time;
 extern volatile int64 gb_n_write_log;
 #endif
 
-#if defined (UNIV_PMEMOBJ_PART_PL) || defined (UNIV_PMEMOBJ_WAL_ELR)
+#if defined (UNIV_PMEMOBJ_PART_PL) || defined (UNIV_PMEMOBJ_WAL_ELR) || defined(UNIV_PMEMOBJ_WAL)
 #include "my_pmemobj.h"
 extern PMEM_WRAPPER* gb_pmw; 
 #endif /* UNIV_PMEMOBJ_PART_PL */
@@ -1369,7 +1369,7 @@ skip_prepare:
 #endif
 }
 
-#else //old method
+#else //old method for UNIV_SKIPLOG
 
 // In PL-NVM, we keep log records in our data structure
 // This function just release the resource without writing any logs
@@ -1410,8 +1410,9 @@ mtr_t::Command::execute()
 	release_resources();
 }
 #endif //UNIV_PMEMOBJ_PART_PL
-#elif defined (UNIV_PMEMOBJ_WAL) && defined (UNIV_PMEMOBJ_WAL_ELR)
-	//Early lock release
+//#elif defined (UNIV_PMEMOBJ_WAL) && defined (UNIV_PMEMOBJ_WAL_ELR)
+#elif defined (UNIV_PMEMOBJ_WAL)
+	//Centralized logging methods: regular or Early lock release
 void
 mtr_t::Command::execute()
 {
@@ -1596,7 +1597,10 @@ part_loop:
 #if defined(UNIV_PMEMOBJ_LOG) || defined(UNIV_PMEMOBJ_WAL)
 		// update the lsn and buf_free
 		gb_pmw->plogbuf->lsn = log->lsn;
+		pmemobj_persist(gb_pmw->pop, &gb_pmw->plogbuf->lsn, sizeof(gb_pmw->plogbuf->lsn));
+
 		gb_pmw->plogbuf->buf_free = log->buf_free;	
+		pmemobj_persist(gb_pmw->pop, &gb_pmw->plogbuf->buf_free, sizeof(gb_pmw->plogbuf->buf_free));
 #endif /*UNIV_PMEMOBJ_LOG */
 		srv_stats.log_write_requests.inc();
 
@@ -1611,21 +1615,26 @@ skip_write:
 	if (m_impl->m_made_dirty) {
 		log_flush_order_mutex_enter();
 	}
-
+#if defined (UNIV_PMEMOBJ_WAL_ELR)
 	/* It is now safe to release the log mutex because the
 	flush_order mutex will ensure that we are the first one
 	to insert into the flush list. */
 	log_mutex_exit();
+#endif //UNIV_PMEMOBJ_WAL_ELR
 
 	//now we do the memcpy
 	TX_BEGIN(gb_pmw->pop) {
 		TX_MEMCPY(start_cpy, start_log_ptr, len_cpy);
 	} TX_ONABORT {
 	} TX_END
+
 	gb_pmw->plogbuf->need_recv = true;
+	pmemobj_persist(gb_pmw->pop, &gb_pmw->plogbuf->need_recv, sizeof(gb_pmw->plogbuf->need_recv));
 
 	m_impl->m_mtr->m_commit_lsn = m_end_lsn;
-
+#if !defined(UNIV_PMEMOBJ_WAL_ELR)
+	log_mutex_exit();
+#endif
 	release_blocks();
 
 	if (m_impl->m_made_dirty) {

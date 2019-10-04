@@ -2127,9 +2127,6 @@ ibuf_remove_free_page(void)
 	pages from the free list, but they take them from the start, and
 	the free list was so long that they cannot have taken the last
 	page from it. */
-//#if defined (UNIV_PMEMOBJ_PART_PL)
-//	printf("ibuf_remove_free_page() page (%zu, %zu)\n", IBUF_SPACE_ID, page_no);
-//#endif
 	fseg_free_page(header_page + IBUF_HEADER + IBUF_TREE_SEG_HEADER,
 		       IBUF_SPACE_ID, page_no, false, &mtr);
 

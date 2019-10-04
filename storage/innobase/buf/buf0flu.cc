@@ -5072,7 +5072,9 @@ DECLARE_THREAD(pm_buf_flush_list_cleaner_coordinator)(
 				D_RW(gb_pmw->pbuf->spec_list)->cur_pages);
 
 		//pm_bloom_stats(gb_pmw->pbuf->bf);
-		pm_cbf_stats(gb_pmw->pbuf->cbf);
+		
+		/*print the BloomFilter stat info*/
+		//pm_cbf_stats(gb_pmw->pbuf->cbf);
 #else
 		printf("cur free list = %zu, cur spec_list = %zu\n",
 			   	D_RW(gb_pmw->pbuf->free_pool)->cur_lists,
