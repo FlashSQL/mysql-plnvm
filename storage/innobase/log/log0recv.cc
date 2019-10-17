@@ -4428,6 +4428,7 @@ pm_ppl_analysis(
 	uint64_t min_delta;
 	uint64_t max_delta;
 	uint64_t total_delta;
+	uint64_t min_write_off;
 
 	TOID(PMEM_PAGE_LOG_HASHED_LINE) line;
 	PMEM_PAGE_LOG_HASHED_LINE* pline;
@@ -4478,13 +4479,27 @@ pm_ppl_analysis(
 					//plog_block->state = PMEM_FREE_BLOCK;
 					continue;
 				}
-				/*add block->key into the per-line hashtable */
-				pm_ppl_hash_add(pline, plog_block, j);
 
-				if(low_watermark > 
-						(plog_block->start_diskaddr + plog_block->start_off)){
-				
-                    low_watermark = (plog_block->start_diskaddr + plog_block->start_off);
+				/*add block->key into the per-line hashtable */
+				//pm_ppl_hash_add(pline, plog_block, j);
+
+				/*the minimum write offset of each pline*/
+				min_write_off = plog_block->start_diskaddr + plog_block->start_off;
+
+				/*add block->key into the per-line hashtable */
+				pline->key_map->insert(std::make_pair(plog_block->key, plog_block));
+
+				/*add min_write_off into the per-line sorted map*/
+				pline->offset_map->insert(std::make_pair(min_write_off, plog_block));
+
+				auto it = pline->offset_map->find(min_write_off);
+				if (it != pline->offset_map->end()){
+					assert(it->first == min_write_off);
+				}	
+
+				if(low_watermark > min_write_off) 
+				{	
+                    low_watermark = min_write_off;
                     low_diskaddr = plog_block->start_diskaddr;
                     low_offset = plog_block->start_off;
 
@@ -5219,13 +5234,16 @@ pm_ppl_recv_parse_log_rec(
 	PMEM_FOLD(key, *space, *page_no);
 
 	/*Get the log_block by hashtable. This hashtable is built during analysis phase*/
-	item = pm_ppl_hash_get(pop, ppl, pline, key);
+	//item = pm_ppl_hash_get(pop, ppl, pline, key);
 
-	if (item == NULL) {
-		plog_block = NULL;
-	} else {
-		plog_block = D_RW(D_RW(pline->arr)[item->block_off]);
-	}
+	//if (item == NULL) {
+	//	plog_block = NULL;
+	//} else {
+	//	plog_block = D_RW(D_RW(pline->arr)[item->block_off]);
+	//}
+
+	plog_block = pm_ppl_hash_get(pop, ppl, pline, key);
+
 	//We don't use this function because it has high overhead O(k)
 	//plog_block = pm_ppl_get_log_block_by_key(pop, ppl, key);
 	if (plog_block == NULL){

@@ -21,6 +21,8 @@
 #include <wchar.h>
 #include <unistd.h> //for access()
 
+#include <unordered_map>
+
 #include "univ.i"
 #include "ut0byte.h"
 #include "ut0rbt.h"
@@ -217,6 +219,12 @@ typedef struct __pmem_recv_line PMEM_RECV_LINE;
 
 struct __pmem_space_t;
 typedef struct __pmem_space_t PMEM_SPACE;
+
+//typedef std::map<uint64_t, PMEM_PAGE_LOG_BLOCK*, std::less<uint64_t>, ut_allocator<std::pair<uint64_t, PMEM_PAGE_LOG_BLOCK*>>> OFFSET_MAP;
+//typedef std::map<uint64_t, PMEM_PAGE_LOG_BLOCK*> OFFSET_MAP;
+
+//typedef std::unordered_map<uint64_t, PMEM_PAGE_LOG_BLOCK*, std::hash<uint64_t>, std::equal_to<uint64_t>> KEY_MAP;
+//typedef std::unordered_map<uint64_t, PMEM_PAGE_LOG_BLOCK*> KEY_MAP;
 
 // End Per-Page Logging
 
@@ -578,6 +586,14 @@ struct plog_hash_t {
 	hash_node_t	addr_hash;/*!< hash node in the hash bucket chain */
 };
 
+using OFFSET_MAP = 
+std::map<uint64_t, PMEM_PAGE_LOG_BLOCK*, std::less<uint64_t>,
+	ut_allocator<std::pair<uint64_t, PMEM_PAGE_LOG_BLOCK*>>>;	
+//
+using KEY_MAP = 
+std::unordered_map<uint64_t, PMEM_PAGE_LOG_BLOCK*, std::hash<uint64_t>, std::equal_to<uint64_t>,
+	ut_allocator<std::pair<uint64_t, PMEM_PAGE_LOG_BLOCK*>>>;
+
 /*
  * A hashed line has array of log blocks share the same hashed value and log buffer
  * */
@@ -597,7 +613,7 @@ struct __pmem_page_log_hashed_line {
 	uint64_t		write_diskaddr; //diskaddr that log recs are durable write write_diskaddr < diskaddr
 
 	/*for checkpoint*/	
-	uint32_t		oldest_block_off;//offset of the block has min (start_diskaddr + start_off)
+	uint32_t		oldest_block_id;//offset of the oldest block(start_diskaddr + start_off)
 	uint64_t		ckpt_lsn;
 	bool			is_req_checkpoint;
 
@@ -615,10 +631,17 @@ struct __pmem_page_log_hashed_line {
 	long long* bit_arr; //bit array to manage free slots
 	uint16_t n_bit_blocks; //number of block in bit_arr
 
-	/*Hash table*/
-	hash_table_t* addr_hash; //hash the log block in this line
-	
-	std::map<uint64_t, uint32_t>* offset_map;
+	/* DRAM data structures: (1) hashtables and (2) recovery objects.
+	 * */
+	KEY_MAP* key_map; //hash the log block in this line
+    //std::unordered_map<uint64_t, PMEM_PAGE_LOG_BLOCK*>* key_map;
+    //std::map<uint64_t, PMEM_PAGE_LOG_BLOCK*>* key_map;
+
+	OFFSET_MAP* offset_map;
+	//std::map<uint64_t, PMEM_PAGE_LOG_BLOCK*> * offset_map;
+	///*Hash table*/
+	//hash_table_t* addr_hash; //hash the log block in this line
+	//std::map<uint64_t, uint32_t>* offset_map;
 
 	/*PART 3: recovery*/
 	//Alternative to recv_sys_t in InnoDB, allocate in DRAM when recovery
@@ -1151,7 +1174,8 @@ pm_page_part_log_hash_free(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*		ppl);
 
-plog_hash_t*
+//plog_hash_t*
+PMEM_PAGE_LOG_BLOCK*
 pm_ppl_hash_get(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*		ppl,
@@ -1167,24 +1191,25 @@ pm_ppl_hash_get(
  * @param[in] idx index of the block on the line
  * @return: the hash item added
  * */
-static inline void
-pm_ppl_hash_add(
-		PMEM_PAGE_LOG_HASHED_LINE* pline,
-		PMEM_PAGE_LOG_BLOCK*	plog_block,
-		uint32_t				idx
-		)
-{
+//static inline void
+//pm_ppl_hash_add(
+//		PMEM_PAGE_LOG_HASHED_LINE* pline,
+//		PMEM_PAGE_LOG_BLOCK*	plog_block,
+//		uint32_t				idx
+//		)
+//{
+//
+//	plog_hash_t* item;
+//
+//	item = (plog_hash_t*) malloc(sizeof(plog_hash_t));
+//	item->key = plog_block->key;
+//	item->block_off = idx;
+//	HASH_INSERT(plog_hash_t, addr_hash, pline->addr_hash, plog_block->key, item);
+//	
+//}
 
-	plog_hash_t* item;
-
-	item = (plog_hash_t*) malloc(sizeof(plog_hash_t));
-	item->key = plog_block->key;
-	item->block_off = idx;
-	HASH_INSERT(plog_hash_t, addr_hash, pline->addr_hash, plog_block->key, item);
-	
-}
-
-plog_hash_t*
+//plog_hash_t*
+PMEM_PAGE_LOG_BLOCK*
 pm_ppl_hash_check_and_add(
 		PMEMobjpool*		pop,
 		PMEM_PAGE_PART_LOG*		ppl,
