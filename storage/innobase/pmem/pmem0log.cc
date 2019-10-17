@@ -25,6 +25,7 @@
 #include "os0file.h"
 
 #if defined (UNIV_PMEMOBJ_PL)
+#include <libpmem.h>
 
 #if defined (UNIV_PMEMOBJ_PL)
 //static FILE* debug_ptxl_file = fopen("pll_debug.txt","a");
@@ -160,6 +161,13 @@ pm_wrapper_page_log_alloc_or_open(
 		printf("Total NVDIMM allocated = \t\t %f (MB)\n", (pmw->ppl->pmem_alloc_size * 1.0)/ (1024*1024));
 		float log_file_size_MB = PMEM_LOG_FILE_SIZE * 4 * 1024 * 1.0 / (1024 * 1024);
 		printf("Log files %zu x %f (MB) = \t %f (MB)\n", PMEM_N_LOG_BUCKETS, log_file_size_MB, (PMEM_N_LOG_BUCKETS * log_file_size_MB));
+
+		/*Test PMEM memory, we should ensure the allocated memory is persistent*/
+		/*pmem_is_pmem() require libpmem.h*/
+		bool is_pmem = pmem_is_pmem(pmw->ppl->p_align, pmw->ppl->pmem_alloc_size);
+		unsigned char*  end_addr = pmw->ppl->p_align + pmw->ppl->pmem_alloc_size;
+		printf("Memory address from %zu to %zu isPMEM = %d \n", pmw->ppl->p_align, end_addr, is_pmem);
+
 		printf(" =================================\n");
 
 	}

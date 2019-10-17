@@ -43,6 +43,17 @@ PMEM_WRAPPER* pm_wrapper_create(const char* path, const size_t pool_size){
 		fprintf(stderr, "PMEM_ERROR: checking version fail: %s \n", pmemobj_errormsg());
 	}
 
+	/*Further checks */
+	int flush;
+	char *e = getenv("PMEM_NO_FLUSH");
+	printf("[PMEM_INFO] getenv PMEM_NO_FLUSH return %s\n", e);
+	if (e && (strcmp(e, "1") == 0)) {
+		flush = 0;
+		printf("Forced not flushing CPU_cache\n");
+	} else if (e && (strcmp(e, "0") == 0)) {
+		flush = 1;
+		printf("Forced flushing CPU_cache\n");
+	}
 
 	pmw =  (PMEM_WRAPPER*) malloc(sizeof(PMEM_WRAPPER));
 	if (!pmw)
