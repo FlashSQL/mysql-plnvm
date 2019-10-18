@@ -30,6 +30,9 @@
 #define MAX_DPT_ENTRIES 8192
 #define MAX_TT_ENTRIES 8192
 
+//used in recovery
+#define PMEM_N_POOL_FREE_FRAMES 512
+
 //#define MAX_DPT_LINES 128 
 //#define MAX_DPT_LINES 8192 
 #define MAX_DPT_LINES 512 

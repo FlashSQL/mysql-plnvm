@@ -911,8 +911,8 @@ pm_ppl_buf_read_recv_pages(
 	PMEM_PAGE_PART_LOG*		ppl,
 	PMEM_RECV_LINE*			recv_line,
 	bool					sync,
-	ulint					space_id,
-	const ulint*			page_nos,
+	space_id_t					space_id,
+	const page_no_t*			page_nos,
 	ulint					n_stored)
 {
 	ulint			count;

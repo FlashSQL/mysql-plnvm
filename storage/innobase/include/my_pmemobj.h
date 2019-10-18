@@ -723,6 +723,17 @@ struct __pmem_page_log_block {
 	uint32_t		first_rec_size;
 	mlog_id_t		first_rec_type;
 };
+//////////////////////////////////////////////
+/* Optimized from MySQL 8.0*/
+typedef uint32_t page_no_t;
+typedef uint32_t space_id_t;
+
+template <typename T>
+void call_destructor(T *p) {
+	p->~T();
+}
+//////////////////////////////////
+
 
 /*
  * per-line mini recovery system
@@ -757,12 +768,47 @@ struct __pmem_recv_line {
 
 	mem_heap_t*	heap;	/*!< memory heap of log records and file addresses */
 	ulint		alloc_hash_size; //allocated heap size
-	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
+	
+	/*MySQL 5.7 use hash_table. MySQL 8.0 uses Spaces*/
+	//hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
+
+	/** Apply optimized from MySQL 8.0. Hash table of pages, indexed by SpaceID. */
+	using Pages =
+		std::unordered_map<page_no_t, recv_addr_t *, std::hash<page_no_t>,
+		std::equal_to<page_no_t>>;
+
+	/** Every space has its own heap and pages that belong to it. */
+	struct Space {
+		/** Constructor
+		 *     @param[in,out]  heap    Heap to use for the log records. */
+		explicit Space(mem_heap_t *heap) : m_heap(heap), m_pages() {}
+
+		/** Default constructor */
+		Space() : m_heap(), m_pages() {}
+
+		/** Memory heap of log records and file addresses */
+		mem_heap_t *m_heap;
+
+		/** Pages that need to be recovered */
+		Pages m_pages;
+	};
+	using Spaces = std::unordered_map<space_id_t, Space, std::hash<space_id_t>,
+		  std::equal_to<space_id_t>>;
+
+	Spaces *spaces;
+	/*In-mem space array, collected during PARSE phase 
+	 * and need to open by a single thread before APPLY*/
+	using Recv_Space_IDs = std::set<space_id_t>;
+	Recv_Space_IDs recv_space_ids;
+
+	// end apply optimized from MySQL 8.0
+
 	ulint			n_addrs;/*!< number of not processed pages in the hash table */
 	ulint			n_skip_done;/*!< number of not processed pages in the hash table */
 	ulint			n_cache_done;/*!< number of not processed pages in the hash table */
 	ulint			n_read_reqs; /*number of read request in phase 2 REDO */
 	ulint			n_read_done; /*number of read request in phase 2 REDO */
+
 
 	recv_dblwr_t	dblwr;
 	encryption_list_t* encryption_list;
@@ -1529,24 +1575,37 @@ pm_ppl_recv_line_empty_hash(
 	PMEM_PAGE_PART_LOG*	ppl,
 	PMEM_PAGE_LOG_HASHED_LINE* pline);
 
+
 void
 pm_ppl_recv_add_to_hash_table(
 	PMEMobjpool*		pop,
 	PMEM_PAGE_PART_LOG*	ppl,
 	PMEM_RECV_LINE* recv_line,
 	mlog_id_t	type,		/*!< in: log record type */
-	ulint		space,		/*!< in: space id */
-	ulint		page_no,	/*!< in: page number */
+	uint32_t		space_id,		/*!< in: space id */
+	uint32_t		page_no,	/*!< in: page number */
 	byte*		body,		/*!< in: log record body */
 	byte*		rec_end,	/*!< in: log record end */
 	lsn_t		start_lsn,
 	lsn_t		end_lsn);
 
+PMEM_RECV_LINE::Space*
+pm_ppl_recv_get_page_map(
+		PMEM_RECV_LINE* recv_line,
+		space_id_t space_id,
+		bool create);
+
+//recv_addr_t*
+//pm_ppl_recv_get_fil_addr_struct(
+//	PMEM_RECV_LINE* recv_line,
+//	ulint	space,
+//	ulint	page_no);
+
 recv_addr_t*
-pm_ppl_recv_get_fil_addr_struct(
+pm_ppl_recv_get_rec(
 	PMEM_RECV_LINE* recv_line,
-	ulint	space,
-	ulint	page_no);
+	uint32_t	space_id,
+	uint32_t	page_no);
 
 ulint
 pm_ppl_recv_get_max_recovered_lsn(
@@ -1601,8 +1660,8 @@ pm_ppl_buf_read_recv_pages(
 		PMEM_PAGE_PART_LOG*	ppl,
 		PMEM_RECV_LINE* recv_line,
 		bool sync,
-		ulint space_id,
-		const ulint* page_nos,
+		space_id_t space_id,
+		const page_no_t* page_nos,
 		ulint n_stored);
 
 void
