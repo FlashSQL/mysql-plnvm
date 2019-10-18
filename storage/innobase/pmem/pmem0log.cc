@@ -304,8 +304,11 @@ pm_page_part_log_bucket_reset(
 		TOID_ASSIGN(pline->tail_logbuf, (pline->logbuf).oid);
 
 		//(5) Maps
-		pline->key_map->clear();
-		pline->offset_map->clear();
+		if (pline->key_map != nullptr)
+			pline->key_map->clear();
+
+		if (pline->offset_map != nullptr)
+			pline->offset_map->clear();
 
     } //end for each line
 
@@ -1230,11 +1233,14 @@ pm_page_part_log_hash_free(
 	for (i = 0; i < ppl->n_buckets; i++) {
 		pline = D_RW(D_RW(ppl->buckets)[i]);
 		//hash_table_free(pline->addr_hash);
-		pline->key_map->clear();
-		free (pline->key_map);
-
-		pline->offset_map->clear();
-		free (pline->offset_map);
+		if (pline->key_map != nullptr) {
+			pline->key_map->clear();
+			free (pline->key_map);
+		}
+		if (pline->offset_map != nullptr) {
+			pline->offset_map->clear();
+			free (pline->offset_map);
+		}
 	}
 }
 
