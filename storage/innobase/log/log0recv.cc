@@ -88,7 +88,8 @@ this must be less than UNIV_PAGE_SIZE as it is stored in the buffer pool */
 
 /** Read-ahead area in applying log records to file pages */
 #if defined (UNIV_PMEMOBJ_PART_PL)
-#define RECV_READ_AHEAD_AREA	16
+//#define RECV_READ_AHEAD_AREA	16
+#define RECV_READ_AHEAD_AREA	64
 #else //original
 #define RECV_READ_AHEAD_AREA	32
 #endif //UNIV_PMEMOBJ_PART_PL
@@ -5409,13 +5410,6 @@ pm_ppl_recv_add_to_hash_table(
 	recv_data_t*	recv_data;
 	recv_data_t**	prev_field;
 
-
-	ut_ad(type != MLOG_FILE_DELETE);
-	ut_ad(type != MLOG_FILE_CREATE);
-	ut_ad(type != MLOG_FILE_RENAME);
-	ut_ad(type != MLOG_DUMMY_RECORD);
-	ut_ad(type != MLOG_INDEX_LOAD);
-
 	//recv_addr_t*	recv_addr; //MySQL 5.7
 	PMEM_RECV_LINE::Space *space; //MySQL 8.0
 	/*get the Space map from the hashtable.
@@ -5523,7 +5517,9 @@ pm_ppl_recv_get_page_map(
   } else if (create) {
     mem_heap_t *heap;
 
-    heap = mem_heap_create_typed(256, MEM_HEAP_FOR_RECV_SYS);
+	/*We should create the heap from Dynamic allocation rather than from Buffer */
+    //heap = mem_heap_create_typed(256, MEM_HEAP_FOR_RECV_SYS);
+    heap = mem_heap_create_typed(256, MEM_HEAP_FOR_PAGE_HASH);
 
     using Space = PMEM_RECV_LINE::Space;
     using value_type = PMEM_RECV_LINE::Spaces::value_type;
