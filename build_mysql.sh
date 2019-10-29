@@ -2,8 +2,8 @@
 MYSQL_HOME=/home/vldb/mysql-plnvm
 
 #debug mode
-#IS_DEBUG=0
-IS_DEBUG=1
+IS_DEBUG=0
+#IS_DEBUG=1
 
 #Next paper configs PL-NVM ##############################
 #BUILD_NAME="-DUNIV_TRACE_RECOVERY_TIME"

@@ -5517,9 +5517,11 @@ pm_ppl_recv_get_page_map(
   } else if (create) {
     mem_heap_t *heap;
 
-	/*We should create the heap from Dynamic allocation rather than from Buffer */
-    //heap = mem_heap_create_typed(256, MEM_HEAP_FOR_RECV_SYS);
-    heap = mem_heap_create_typed(256, MEM_HEAP_FOR_PAGE_HASH);
+	/*We should create the heap from Dynamic allocation rather than from Buffer 
+	 *However, using Dynamic heap cause degrate REDO1 performance
+	 * */
+    heap = mem_heap_create_typed(256, MEM_HEAP_FOR_RECV_SYS);
+    //heap = mem_heap_create_typed(256, MEM_HEAP_FOR_PAGE_HASH);
 
     using Space = PMEM_RECV_LINE::Space;
     using value_type = PMEM_RECV_LINE::Spaces::value_type;
